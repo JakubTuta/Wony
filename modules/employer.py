@@ -7,7 +7,8 @@ from helpers.cache import Cache
 from helpers.commands import Commands
 from helpers.decorators import capture_response, exit_on_exception
 from helpers.logger import logger
-from helpers.recognizer import Recognizer
+
+# from helpers.recognizer import Recognizer
 from helpers.registry import ServiceRegistry, register_job
 from modules.ai import AI
 
@@ -23,19 +24,20 @@ class Employer:
 
     @exit_on_exception
     def speak(self) -> None:
-        user_input = str(Recognizer.recognize_speech_from_mic())
+        pass
+        # user_input = str(Recognizer.recognize_speech_from_mic())
 
-        if not user_input:
-            print("I didn't hear anything.")
-            logger.log_system_event(
-                "speech_recognition_failed", "No speech detected or recognized"
-            )
-            return
+        # if not user_input:
+        #     print("I didn't hear anything.")
+        #     logger.log_system_event(
+        #         "speech_recognition_failed", "No speech detected or recognized"
+        #     )
+        #     return
 
-        print(f"\nTranscribed text: {user_input}")
-        logger.log_user_input(user_input, "speech")
+        # print(f"\nTranscribed text: {user_input}")
+        # logger.log_user_input(user_input, "speech")
 
-        self.job_on_command(user_input)
+        # self.job_on_command(user_input)
 
     def job_on_command(self, user_input: str) -> None:
         self._refresh_available_jobs()
@@ -216,4 +218,5 @@ class Employer:
             func_name = func.__name__.replace("_", " ").lower()
 
             if normalized_input == func_name:
+                return func()
                 return func()

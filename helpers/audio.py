@@ -2,7 +2,8 @@ import os
 
 import playsound
 import pyttsx3
-import speech_recognition as sr
+
+# import speech_recognition as sr
 
 
 class TTS_Engine:
@@ -23,8 +24,8 @@ class TTS_Engine:
 
 
 class Audio:
-    _microphone = sr.Microphone()
-    _recognizer = sr.Recognizer()
+    # _microphone = sr.Microphone()
+    # _recognizer = sr.Recognizer()
 
     @staticmethod
     def play_audio_from_file(filename: str) -> None:
@@ -51,11 +52,12 @@ class Audio:
 
         del tts_engine
 
-    @staticmethod
-    def record_audio(duration: int = 3) -> sr.AudioData:
-        Audio.play_audio_from_file("voice/bot/listening.wav")
+    # @staticmethod
+    # def record_audio(duration: int = 3) -> sr.AudioData:
+    #     Audio.play_audio_from_file("voice/bot/listening.wav")
 
-        with Audio._microphone as source:  # type: ignore
-            audio = Audio._recognizer.record(source, duration=duration)
+    #     with Audio._microphone as source:  # type: ignore
+    #         audio = Audio._recognizer.record(source, duration=duration)
 
-            return audio
+    #         return audio
+    #         return audio

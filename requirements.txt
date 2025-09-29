@@ -1,9 +1,9 @@
 ollama
 pyttsx3
-SpeechRecognition[google-cloud]
+# SpeechRecognition[google-cloud]
 geocoder
 simplegmail
-google-cloud-speech
+# google-cloud-speech
 python-dotenv
 flask
 playsound==1.2.2
