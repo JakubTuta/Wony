@@ -3,6 +3,7 @@ credentials/
 cache.json
 venv/
 .env
+config.yaml
 *test*
 screenshots/
 logs/

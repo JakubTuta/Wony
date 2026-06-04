@@ -13,6 +13,20 @@ from helpers.logger import logger
 from helpers.registry import method_job, simple_service
 
 
+def _persona() -> str:
+    """Build persona preamble from config."""
+    from helpers.config import Config
+
+    name = Config.get("assistant.name", "Wony")
+    owner = Config.get("assistant.owner_name", "User")
+    personality = Config.get("assistant.personality", "Friendly and concise.")
+    language = Config.get("assistant.language", "en")
+    return (
+        f"You are {name}, a personal AI assistant for {owner}. "
+        f"{personality} Respond in {language}."
+    )
+
+
 @simple_service
 class AI:
     client = None
@@ -68,7 +82,7 @@ class AI:
             Audio.text_to_speech(f"Asking {question}...")
         print(f"Asking {question}...")
 
-        assistant_instructions = "Answer the question as if you are a human. Keep the answer short and simple."
+        assistant_instructions = _persona() + " Answer the question as if you are a human. Keep the answer short and simple."
 
         response = helpers_model.send_message(
             client=self.client,
@@ -99,7 +113,12 @@ class AI:
             "",
         )
 
-        assistant_instructions = "You are tasked with determining the function to call based on the user's input. Make use of the keywords in the input to identify the appropriate function. If no function is applicable, return 'ask_question' as the default function."
+        assistant_instructions = (
+            _persona()
+            + " You are tasked with determining the function to call based on the user's input."
+            " Make use of the keywords in the input to identify the appropriate function."
+            " If no function is applicable, return 'ask_question' as the default function."
+        )
 
         response = helpers_model.send_message(
             client=self.client,
@@ -130,7 +149,12 @@ class AI:
         user_input: str,
         screenshot: np.ndarray,
     ) -> str:
-        assistant_instructions = "You are tasked with explaining the contents of the screenshot. If there is a highlighted text then focus on that and provide a concise explanation. Keep the answer short and simple."
+        assistant_instructions = (
+            _persona()
+            + " You are tasked with explaining the contents of the screenshot."
+            " If there is highlighted text, focus on that and provide a concise explanation."
+            " Keep the answer short and simple."
+        )
 
         try:
             response = helpers_model.send_message(
@@ -154,7 +178,11 @@ class AI:
         screenshot: np.ndarray,
         text: str,
     ) -> typing.Optional[typing.List[float]]:
-        assistant_instructions = "You are tasked with finding the text specified by user in the screenshot. Provide the bounding box coordinates in the format [ymin, xmin, ymax, xmax] normalized to 0-1000."
+        assistant_instructions = (
+            _persona()
+            + " You are tasked with finding the text specified by user in the screenshot."
+            " Provide the bounding box coordinates in the format [ymin, xmin, ymax, xmax] normalized to 0-1000."
+        )
 
         try:
             response = helpers_model.send_message(
@@ -172,11 +200,13 @@ class AI:
             return None
 
         try:
-            coordinates = eval(answer)
+            import ast
+            clean = answer.strip().strip("```json").strip("```").strip()
+            coordinates = ast.literal_eval(clean)
 
             if not isinstance(coordinates, list) or len(coordinates) != 4:
                 raise ValueError("Couldn't find the text in the screenshot.")
 
             return coordinates
-        except:
+        except Exception:
             raise ValueError("Couldn't find the text in the screenshot.")

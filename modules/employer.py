@@ -1,11 +1,10 @@
 import os
-import threading
 import typing
 
 from helpers.audio import Audio
 from helpers.cache import Cache
-from helpers.commands import Commands
-from helpers.decorators import capture_response, exit_on_exception
+from helpers.decorators import capture_response
+from helpers.jobs import BackgroundJobs
 from helpers.logger import logger
 from helpers.recognizer import Recognizer
 from helpers.registry import ServiceRegistry, register_job
@@ -14,14 +13,12 @@ from modules.ai import AI
 
 class Employer:
     available_jobs: typing.Dict[str, typing.Callable] = {}
-    _active_jobs: typing.Dict[str, threading.Thread] = {}
     _services = {}
 
     def __init__(self) -> None:
         self.service_instances = {}
         self.ai_model = AI()
 
-    @exit_on_exception
     def speak(self) -> None:
         user_input = str(Recognizer.recognize_speech_from_mic())
 
@@ -83,105 +80,131 @@ class Employer:
                 "job_on_command",
             )
 
-    @capture_response
     @register_job
+    @capture_response
     @staticmethod
     def help() -> str:
         """
-        [SYSTEM INFORMATION JOB] Provides comprehensive list of all available commands and capabilities.
-        This informational task retrieves and displays all registered commands in the system,
-        helping users understand what functionality is available to them.
+        [SYSTEM INFORMATION JOB] Lists all currently available commands grouped by module.
+        Shows only commands that are actually registered and working right now.
 
         Use this job when the user wants to:
         - See all available commands
         - Learn about system capabilities
-        - Get help with available functionality
         - Discover what the assistant can do
 
-        Keywords: help, commands, list commands, show commands, available commands, what can you do, options, functionality, capabilities,
-                 show help, list functions, available features, what commands, help menu
+        Keywords: help, commands, list commands, show commands, available commands, what can you do,
+                 options, functionality, capabilities, show help, list functions, available features
 
         Args:
             None
 
         Returns:
-            str: Numbered list of all available commands and their descriptions.
+            str: Commands grouped by module with descriptions.
         """
-
         audio = Cache.get_audio()
         if audio:
             Audio.text_to_speech("Getting all commands...")
-        print("Getting all commands...")
 
-        commands = Commands.get_all_commands()
+        job_modules = ServiceRegistry.get_job_modules()
+        job_summaries = ServiceRegistry.get_job_summaries()
+        all_jobs = ServiceRegistry.get_all_jobs()
 
-        list_commands = ""
-        for indes, command in enumerate(commands):
-            list_commands += f"{indes + 1}. {command}\n"
+        # Group by module
+        grouped: typing.Dict[str, typing.List[typing.Tuple[str, str]]] = {}
+        for job_name in all_jobs:
+            module = job_modules.get(job_name, "general")
+            summary = job_summaries.get(job_name, "")
+            grouped.setdefault(module, []).append((job_name, summary))
 
-        return f"Available commands are: {list_commands}."
+        lines = ["Available commands:"]
+        for module in sorted(grouped.keys()):
+            lines.append(f"\n  [{module or 'general'}]")
+            for name, summary in sorted(grouped[module]):
+                display = name.replace("_", " ")
+                if summary:
+                    lines.append(f"    {display} — {summary}")
+                else:
+                    lines.append(f"    {display}")
 
-    @capture_response
+        return "\n".join(lines)
+
     @register_job
+    @capture_response
     @staticmethod
     def stop_active_jobs() -> str:
         """
-        [SYSTEM CONTROL JOB] Terminates all currently running background jobs and processes.
-        This management task stops all active background threads including monitoring tasks,
-        automation jobs, and continuous processes running in the system.
+        [SYSTEM CONTROL JOB] Terminates all currently running background jobs.
 
         Use this job when the user wants to:
         - Stop all background activities
         - End all running automated tasks
         - Cancel continuous monitoring processes
-        - Clean up system resources by stopping threads
 
-        Keywords: stop jobs, cancel tasks, terminate processes, end running jobs, abort, halt, kill processes, stop threads,
-                 stop all, cancel everything, end tasks, stop background, terminate all
+        Keywords: stop jobs, cancel tasks, terminate processes, end running jobs, abort, halt,
+                 stop all, cancel everything, stop background, terminate all
 
         Args:
             None
 
         Returns:
-            str: Confirmation message that all active jobs have been stopped.
+            str: Confirmation message.
         """
-
         audio = Cache.get_audio()
         if audio:
             Audio.text_to_speech("Stopping all active jobs...")
-        print("Stopping all active jobs...")
 
-        for job_name, job_thread in Employer._active_jobs.items():
-            job_thread.join()
+        stopped = BackgroundJobs.stop_all()
+        if stopped:
+            return f"Stopped {len(stopped)} background job(s): {', '.join(stopped)}."
+        return "No background jobs were running."
 
-            del Employer._active_jobs[job_name]
+    @register_job
+    @capture_response
+    @staticmethod
+    def list_active_jobs() -> str:
+        """
+        [SYSTEM INFORMATION JOB] Lists all currently running background jobs.
 
-        return "All active jobs have been stopped."
+        Use this job when the user wants to:
+        - See what's running in the background
+        - Check active background tasks
+        - Monitor running processes
+
+        Keywords: list jobs, active jobs, running jobs, background tasks, what's running,
+                 show jobs, current tasks, running tasks
+
+        Args:
+            None
+
+        Returns:
+            str: Names of active background jobs.
+        """
+        running = BackgroundJobs.list_jobs()
+        if running:
+            return f"Active background jobs: {', '.join(running)}."
+        return "No background jobs are currently running."
 
     @register_job
     @staticmethod
     def exit() -> None:
         """
-        [APPLICATION TERMINATION JOB] Immediately terminates the entire AI assistant application.
-        This emergency shutdown task forcefully exits the program without cleanup,
-        ending all processes and closing the application completely.
+        [APPLICATION TERMINATION JOB] Exits the AI assistant application.
 
         Use this job when the user wants to:
         - Exit the AI assistant completely
         - End the application session
-        - Perform emergency shutdown
-        - Quit the program entirely
+        - Quit the program
 
-        Keywords: exit, quit, close app, shutdown, terminate program, end application, goodbye, bye, shut down,
+        Keywords: exit, quit, close app, shutdown, terminate program, end application, goodbye, bye,
                  close assistant, end program, terminate app, stop everything
 
         Args:
             None
 
         Returns:
-            None: Application will terminate immediately.
+            None
         """
-
         audio = Cache.get_audio()
         if audio:
             Audio.text_to_speech("Exiting program. o7")
@@ -191,15 +214,12 @@ class Employer:
 
     def _refresh_available_jobs(self):
         """Refresh available jobs from registry"""
-        # Get all jobs from ServiceRegistry
         all_jobs = ServiceRegistry.get_all_jobs()
 
-        # Add new jobs to available_jobs
         for job_name, job in all_jobs.items():
             if job_name not in self.available_jobs:
                 self.available_jobs[job_name] = job
 
-        # Create service instances for service-based jobs
         for service_name, service_class in ServiceRegistry._services.items():
             if service_name not in self.service_instances:
                 instance = ServiceRegistry.get_service_instance(service_name)
@@ -216,4 +236,4 @@ class Employer:
             func_name = func.__name__.replace("_", " ").lower()
 
             if normalized_input == func_name:
-                return func()
+                return func

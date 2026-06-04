@@ -5,7 +5,7 @@ from helpers.cache import Cache
 from helpers.registry import register_job
 
 
-@register_job
+@register_job(module_name="system")
 def close_computer() -> None:
     """
     [SYSTEM CONTROL JOB] Immediately shuts down the entire computer system.
@@ -27,6 +27,11 @@ def close_computer() -> None:
     Returns:
         None: System will shut down immediately after execution.
     """
+    confirmation = input("Shut down the computer? Type 'yes' to confirm: ").strip().lower()
+    if confirmation != "yes":
+        print("Shutdown cancelled.")
+        return
+
     audio = Cache.get_audio()
     if audio:
         Audio.text_to_speech("Closing computer. o7")

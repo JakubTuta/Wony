@@ -7,6 +7,7 @@ from helpers.audio import Audio
 from helpers.cache import Cache
 from helpers.decorators import capture_response
 from helpers.registry import ServiceRegistry, register_job
+from helpers.requirements import Requirement
 from helpers.screenReader import ScreenReader
 
 SCREENSHOTS_DIR = os.path.join(
@@ -14,7 +15,13 @@ SCREENSHOTS_DIR = os.path.join(
 )
 
 
-@register_job
+_SCREEN_REQ = Requirement(
+    pip_modules=["mss"],
+    setup_hint="pip install -r requirements/screen.txt",
+)
+
+
+@register_job(module_name="screen", requires=_SCREEN_REQ)
 def save_screenshot() -> None:
     """
     [SCREEN CAPTURE JOB] Captures and saves a screenshot of the current active screen to disk.
@@ -52,7 +59,7 @@ def save_screenshot() -> None:
     image.save(file_path)
 
 
-@register_job
+@register_job(module_name="screen", requires=_SCREEN_REQ)
 @capture_response
 def explain_screenshot(user_input: str) -> str:
     """

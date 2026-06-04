@@ -1,0 +1,62 @@
+# config.example.yaml — copy to config.yaml and edit.
+# Secrets (API keys) go in .env, not here.
+# config.yaml is gitignored; this file is the reference template.
+# Run `python assistant.py --doctor` to validate your full setup.
+
+assistant:
+  name: "Wony"
+  owner_name: "User"
+  # Free-form text injected into AI system prompts.
+  personality: "Friendly and concise."
+  # Language for AI responses and TTS. Use BCP-47 codes, e.g. "en", "pl".
+  language: "en"
+
+voice:
+  # Set to true to default to voice mode (same as --audio flag).
+  enabled: false
+  # pyttsx3 voice index. 0 = first installed voice (usually English),
+  # 1 = second (often Polish on Windows). Run `python -m pyttsx3` to list.
+  tts_voice_index: 1
+  rate: 150
+  volume: 0.6
+
+ai:
+  # Which AI provider to use. Options: anthropic | gemini | ollama | null (auto-detect from keys).
+  provider: null
+  # Set Anthropic model, leave null for newest
+  anthropic_model: null
+  # Set Gemini model, leave null for newest
+  gemini_model: null
+  # Ollama model name; also readable from AI_MODEL env var as fallback.
+  ollama_model: "llama3.1"
+
+# Only modules listed here will load. A module still won't run if its
+# credentials/deps are missing — it will show as misconfigured/unavailable.
+# Run "check setup" to see what each broken module needs.
+enabled_modules:
+  - ai       # always-on; listed for clarity
+  - status   # always-on; shows module health
+  - weather
+  - spotify
+  - system
+  - screen
+  - clock
+  - timer
+  # Uncomment to enable:
+  # - gmail
+  # - league
+  # - shelly
+
+# Per-module non-secret settings.
+modules:
+  shelly:
+    # IP or hostname of your Shelly device on the local network.
+    base_url: "http://192.168.18.53"
+  system:
+    # Safety gate — set to true to allow "close computer" to actually shut down.
+    allow_shutdown: false
+  weather:
+    default_units: "metric"
+  gmail:
+    # How often (minutes) to check for new emails when background polling is active.
+    poll_interval_minutes: 15

@@ -3,19 +3,18 @@ import os
 import time
 import typing
 
-import keyboard
-
-from helpers.audio import Audio
 from helpers.cache import Cache
+from helpers.config import Config
 from helpers.logger import logger
-from modules.employer import Employer
 
 
 def get_config() -> typing.Dict[str, typing.Any]:
     """
     Parses command-line arguments and environment variables to configure the application.
-    Environment variables have higher priority than command-line arguments.
+    Defaults come from config.yaml; CLI flags and env vars take precedence.
     """
+    Config._ensure_loaded()
+
     parser = argparse.ArgumentParser(description="AI Assistant")
     parser.add_argument(
         "--audio",
@@ -29,18 +28,24 @@ def get_config() -> typing.Dict[str, typing.Any]:
         action="store_true",
         help="Use local AI model with Ollama instead of remote API",
     )
+    parser.add_argument(
+        "--doctor",
+        "-d",
+        action="store_true",
+        help="Run setup diagnostics and exit",
+    )
     args = parser.parse_args()
 
     config = {
-        "audio": args.audio,
-        "local": args.local,
+        "audio": args.audio or Config.get("voice.enabled", False),
+        "local": args.local or (Config.get("ai.provider") == "ollama"),
+        "doctor": args.doctor,
     }
 
-    # Override with environment variables if they exist
+    # Environment variables override config and CLI args
     config["audio"] = os.environ.get("AI_ASSISTANT_AUDIO", config["audio"])
     config["local"] = os.environ.get("AI_ASSISTANT_LOCAL", config["local"])
 
-    # Ensure boolean values for env vars
     for key in ["audio", "local"]:
         if isinstance(config[key], str):
             config[key] = config[key].lower() in ("true", "1", "t")
@@ -48,10 +53,11 @@ def get_config() -> typing.Dict[str, typing.Any]:
     return config
 
 
-def speech_to_text(employer: Employer) -> None:
-    """
-    Handles speech-to-text input loop.
-    """
+def speech_to_text(employer) -> None:
+    """Handles speech-to-text input loop."""
+    import keyboard
+    from helpers.audio import Audio
+
     Audio.play_audio_from_file("voice/bot/ready.wav")
     print("\nListening for key combination (Ctrl + L)...")
     keyboard.add_hotkey(
@@ -66,10 +72,8 @@ def speech_to_text(employer: Employer) -> None:
             break
 
 
-def text_to_text(employer: Employer) -> None:
-    """
-    Handles text-based input loop.
-    """
+def text_to_text(employer) -> None:
+    """Handles text-based input loop."""
     print("Listening for text input...")
     while True:
         try:
@@ -85,23 +89,41 @@ def text_to_text(employer: Employer) -> None:
 
 
 def main() -> None:
-    """
-    Main function to run the AI assistant.
-    """
+    """Main function to run the AI assistant."""
     print("\nStarting program...")
 
-    # Log system startup
-    logger.log_system_event("application_startup", "AI Assistant starting up")
+    # Config must load BEFORE modules are imported (module decorators read it at registration time)
+    Config.load()
 
     config = get_config()
+
+    # --doctor: run diagnostics and exit without starting the assistant
+    if config.get("doctor"):
+        Cache.load_values()
+        Cache.set_audio(config["audio"])
+        Cache.set_local(config["local"])
+        from modules.doctor import run_doctor
+        print(run_doctor(voice_mode=bool(config["audio"])))
+        return
+
+    logger.log_system_event("application_startup", "AI Assistant starting up")
     logger.log_system_event("configuration_loaded", f"Config: {config}")
 
     Cache.load_values()
     Cache.set_audio(config["audio"])
     Cache.set_local(config["local"])
 
+    # Import Employer here (after Config.load) so discover_services() runs with config ready
+    from modules.employer import Employer
+
     employer = Employer()
     logger.log_system_event("employer_initialized", "Employer instance created")
+
+    # Print startup health summary after modules are loaded
+    print()
+    from helpers.health import print_startup_summary
+    print_startup_summary(voice_mode=bool(config["audio"]))
+    print()
 
     if config["audio"]:
         logger.log_system_event("mode_selected", "Speech-to-text mode enabled")

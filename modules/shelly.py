@@ -4,12 +4,23 @@ from helpers.audio import Audio
 from helpers.cache import Cache
 from helpers.decorators import capture_response
 from helpers.registry import register_job
-
-# Shelly device configuration
-SHELLY_BASE_URL = "http://192.168.18.53"
+from helpers.requirements import Requirement
 
 
-@register_job
+def _base_url() -> str:
+    from helpers.config import Config
+
+    return Config.module_settings("shelly").get("base_url", "http://192.168.18.53")
+
+
+def _shelly_requirement() -> Requirement:
+    return Requirement(
+        check=lambda: bool(_base_url()),
+        setup_hint="Set modules.shelly.base_url in config.yaml to your Shelly device's IP address.",
+    )
+
+
+@register_job(module_name="shelly", requires=_shelly_requirement())
 @capture_response
 def turn_light_on() -> str:
     """
@@ -35,7 +46,7 @@ def turn_light_on() -> str:
     print("Turning light on...")
 
     try:
-        response = requests.get(f"{SHELLY_BASE_URL}/light/0/?turn=on")
+        response = requests.get(f"{_base_url()}/light/0/?turn=on")
 
         if response.status_code == 200:
             return "Light turned on successfully."
@@ -49,7 +60,7 @@ def turn_light_on() -> str:
         return "Error: Could not connect to Shelly device to turn on the light."
 
 
-@register_job
+@register_job(module_name="shelly", requires=_shelly_requirement())
 @capture_response
 def turn_light_off() -> str:
     """
@@ -76,7 +87,7 @@ def turn_light_off() -> str:
     print("Turning light off...")
 
     try:
-        response = requests.get(f"{SHELLY_BASE_URL}/light/0/?turn=off")
+        response = requests.get(f"{_base_url()}/light/0/?turn=off")
 
         if response.status_code == 200:
             return "Light turned off successfully."
@@ -90,7 +101,7 @@ def turn_light_off() -> str:
         return "Error: Could not connect to Shelly device to turn off the light."
 
 
-@register_job
+@register_job(module_name="shelly", requires=_shelly_requirement())
 @capture_response
 def toggle_light() -> str:
     """
@@ -116,8 +127,7 @@ def toggle_light() -> str:
     print("Toggling light...")
 
     try:
-        # First, get the current status
-        status_response = requests.get(f"{SHELLY_BASE_URL}/light/0")
+        status_response = requests.get(f"{_base_url()}/light/0")
 
         if status_response.status_code != 200:
             return f"Error: Failed to get light status. Status code: {status_response.status_code}"
@@ -125,9 +135,8 @@ def toggle_light() -> str:
         status_data = status_response.json()
         current_state = status_data.get("ison", False)
 
-        # Toggle to opposite state
         new_state = "off" if current_state else "on"
-        toggle_response = requests.get(f"{SHELLY_BASE_URL}/light/0/?turn={new_state}")
+        toggle_response = requests.get(f"{_base_url()}/light/0/?turn={new_state}")
 
         if toggle_response.status_code == 200:
             return f"Light toggled successfully. Light is now {'on' if new_state == 'on' else 'off'}."

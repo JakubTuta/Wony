@@ -1,16 +1,24 @@
 import os
 import typing
 
-import geocoder
-import requests
-
 from helpers.audio import Audio
 from helpers.cache import Cache
 from helpers.decorators import capture_response
 from helpers.registry import register_job
+from helpers.requirements import Requirement
 
 
-@register_job
+@register_job(
+    module_name="weather",
+    requires=Requirement(
+        env_vars=["WEATHER_API_KEY"],
+        pip_modules=["geocoder", "requests"],
+        setup_hint=(
+            "Add WEATHER_API_KEY to .env (free key at openweathermap.org/api). "
+            "pip install -r requirements/weather.txt"
+        ),
+    ),
+)
 @capture_response
 def weather(city: str) -> str:
     """
@@ -35,6 +43,8 @@ def weather(city: str) -> str:
     Returns:
         str: Complete weather report with city, conditions, and temperature information.
     """
+    import geocoder
+
     api_key = os.environ.get("WEATHER_API_KEY")
     if not api_key:
         return "Error: Weather API key not configured."
@@ -66,6 +76,8 @@ def _get_coordinates_for_city_name(
     city_name: str, api_key: str
 ) -> typing.Tuple[typing.Optional[float], typing.Optional[float]]:
     """Get coordinates for a city name."""
+    import requests
+
     try:
         response = requests.get(
             f"http://api.openweathermap.org/geo/1.0/direct?q={city_name}&appid={api_key}&limit=1"
@@ -87,6 +99,8 @@ def _get_weather_for_coordinates(
     lat: float, lon: float, api_key: str
 ) -> typing.Optional[typing.Dict[str, typing.Any]]:
     """Get weather data for coordinates."""
+    import requests
+
     try:
         response = requests.get(
             f"https://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={api_key}&units=metric&lang=en"

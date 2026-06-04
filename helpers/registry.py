@@ -7,42 +7,114 @@ dotenv.load_dotenv()
 T = typing.TypeVar("T")
 
 
+class ModuleStatus:
+    ENABLED = "enabled"
+    DISABLED = "disabled"
+    MISCONFIGURED = "misconfigured"
+    UNAVAILABLE = "unavailable"
+    ERROR = "error"
+
+
 class ServiceRegistry:
-    """Simplified registry for managing jobs and services."""
+    """Registry for managing jobs and services with module-level gating."""
 
     _jobs: typing.Dict[str, typing.Callable] = {}
     _services: typing.Dict[str, typing.Any] = {}
     _service_instances: typing.Dict[str, typing.Any] = {}
+    _module_status: typing.Dict[str, typing.Tuple[str, str]] = {}
+    _module_hints: typing.Dict[str, str] = {}
+    _job_modules: typing.Dict[str, str] = {}
+    _job_summaries: typing.Dict[str, str] = {}
 
     @classmethod
     def get_all_jobs(cls) -> typing.Dict[str, typing.Callable]:
-        """Get all registered jobs."""
         return cls._jobs.copy()
 
     @classmethod
     def get_service_instance(cls, service_name: str) -> typing.Any:
-        """Get instance of a registered service."""
         return cls._service_instances.get(service_name)
 
     @classmethod
+    def get_module_status(cls) -> typing.Dict[str, typing.Tuple[str, str]]:
+        return cls._module_status.copy()
+
+    @classmethod
+    def get_module_hints(cls) -> typing.Dict[str, str]:
+        return cls._module_hints.copy()
+
+    @classmethod
+    def get_job_modules(cls) -> typing.Dict[str, str]:
+        return cls._job_modules.copy()
+
+    @classmethod
+    def get_job_summaries(cls) -> typing.Dict[str, str]:
+        return cls._job_summaries.copy()
+
+    @classmethod
+    def _check_module_enabled(
+        cls, module_name: typing.Optional[str]
+    ) -> typing.Tuple[bool, str]:
+        if module_name is None:
+            return True, ""
+        try:
+            from helpers.config import Config
+
+            if not Config.is_module_enabled(module_name):
+                return False, "not in enabled_modules"
+        except Exception:
+            pass
+        return True, ""
+
+    @classmethod
+    def _check_requirements(cls, requires: typing.Any) -> typing.Tuple[bool, str]:
+        if requires is None:
+            return True, ""
+        try:
+            from helpers.requirements import evaluate
+
+            return evaluate(requires)
+        except Exception as e:
+            return False, str(e)
+
+    @classmethod
+    def _status_for_reason(cls, reason: str) -> str:
+        if "pip module" in reason:
+            return ModuleStatus.UNAVAILABLE
+        return ModuleStatus.MISCONFIGURED
+
+    @classmethod
+    def _extract_summary(cls, func: typing.Callable) -> str:
+        """Extract first meaningful line from a docstring, stripping [... JOB] tags."""
+        doc = func.__doc__ or ""
+        for line in doc.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            # Strip [... JOB] / [... METHOD] style tags
+            if line.startswith("[") and "]" in line:
+                line = line[line.index("]") + 1:].strip()
+            if line:
+                return line[:80]
+        return ""
+
+    @classmethod
     def register_job(
-        cls, name_or_func: typing.Union[str, typing.Callable, None] = None
+        cls,
+        name_or_func: typing.Union[str, typing.Callable, None] = None,
+        *,
+        module_name: typing.Optional[str] = None,
+        requires: typing.Any = None,
+        summary: str = "",
     ):
         """
         Decorator to register a standalone job function.
 
         Usage:
-            @ServiceRegistry.register_job()
-            def my_job():
-                '''Job description here'''
-                pass
+            @register_job
+            def my_job(): ...
 
-            or
-
-            @ServiceRegistry.register_job
-            def my_job():
-                '''Job description here'''
-                pass
+            @register_job(module_name="weather", requires=Requirement(...))
+            def weather(city): ...
         """
 
         def decorator(func):
@@ -51,83 +123,114 @@ class ServiceRegistry:
             if not func.__doc__:
                 raise ValueError(f"Job '{job_name}' must have documentation")
 
+            enabled, reason = cls._check_module_enabled(module_name)
+            if not enabled:
+                if module_name:
+                    cls._module_status[module_name] = (ModuleStatus.DISABLED, reason)
+                return func
+
+            ready, reason = cls._check_requirements(requires)
+            if not ready:
+                if module_name:
+                    cls._module_status[module_name] = (
+                        cls._status_for_reason(reason),
+                        reason,
+                    )
+                    if requires and getattr(requires, "setup_hint", ""):
+                        cls._module_hints[module_name] = requires.setup_hint
+                return func
+
             cls._jobs[job_name] = func
+            cls._job_modules[job_name] = module_name or ""
+            cls._job_summaries[job_name] = summary or cls._extract_summary(func)
+            if module_name and module_name not in cls._module_status:
+                cls._module_status[module_name] = (ModuleStatus.ENABLED, "")
             return func
 
         if callable(name_or_func):
-            # Used as @register_job without parentheses
             return decorator(name_or_func)
 
         return decorator
 
     @classmethod
     def register_service(
-        cls, service_class: type, env_vars: typing.Optional[typing.List[str]] = None
+        cls,
+        service_class: typing.Optional[type] = None,
+        *,
+        module_name: typing.Optional[str] = None,
+        requires: typing.Any = None,
     ):
         """
-        Register a service class with optional environment variable checks.
+        Register a service class with optional module gating and requirement checks.
 
-        Args:
-            service_class: The service class to register
-            env_vars: List of required environment variables
+        Usage:
+            @register_service
+            class MyService: ...
+
+            @register_service(module_name="spotify", requires=Requirement(...))
+            class Spotify: ...
         """
-        service_name = service_class.__name__.lower()
 
-        # Check environment variables if specified
-        if env_vars:
-            missing_vars = [var for var in env_vars if not os.getenv(var)]
-            if missing_vars:
-                print(f"\n{'='*60}")
-                print(f"{service_class.__name__.upper()} CREDENTIALS NOT SET UP")
-                print("=" * 60)
-                print(f"Missing environment variables: {', '.join(missing_vars)}")
-                print(f"{service_class.__name__} services will not be available.")
-                print("=" * 60 + "\n")
-                return service_class
+        def do_register(svc_class: type) -> type:
+            svc_module_name = module_name or svc_class.__name__.lower()
 
-        # Store service class
-        cls._services[service_name] = service_class
+            enabled, reason = cls._check_module_enabled(svc_module_name)
+            if not enabled:
+                cls._module_status[svc_module_name] = (ModuleStatus.DISABLED, reason)
+                return svc_class
 
-        # Create instance and register methods
-        try:
-            instance = service_class()
-            cls._service_instances[service_name] = instance
+            ready, reason = cls._check_requirements(requires)
+            if not ready:
+                cls._module_status[svc_module_name] = (
+                    cls._status_for_reason(reason),
+                    reason,
+                )
+                if requires and getattr(requires, "setup_hint", ""):
+                    cls._module_hints[svc_module_name] = requires.setup_hint
+                return svc_class
 
-            # Register all methods marked with @method_job
-            for attr_name in dir(instance):
-                attr = getattr(instance, attr_name)
-                if hasattr(attr, "_is_job_method"):
-                    job_name = getattr(attr, "_job_name", attr_name)
-                    cls._jobs[job_name] = attr
+            cls._services[svc_module_name] = svc_class
 
-        except Exception as e:
-            print(f"Failed to initialize {service_class.__name__}: {e}")
-            # Clean up partial registration
-            cls._services.pop(service_name, None)
-            cls._service_instances.pop(service_name, None)
+            try:
+                instance = svc_class()
+                cls._service_instances[svc_module_name] = instance
 
-        return service_class
+                for attr_name in dir(instance):
+                    attr = getattr(instance, attr_name)
+                    if hasattr(attr, "_is_job_method"):
+                        job_name = getattr(attr, "_job_name", attr_name)
+                        cls._jobs[job_name] = attr
+                        cls._job_modules[job_name] = svc_module_name
+                        explicit_summary = getattr(attr, "_job_summary", "")
+                        cls._job_summaries[job_name] = (
+                            explicit_summary or cls._extract_summary(attr)
+                        )
+
+                cls._module_status[svc_module_name] = (ModuleStatus.ENABLED, "")
+
+            except Exception as e:
+                print(f"Failed to initialize {svc_class.__name__}: {e}")
+                cls._services.pop(svc_module_name, None)
+                cls._service_instances.pop(svc_module_name, None)
+                cls._module_status[svc_module_name] = (ModuleStatus.ERROR, str(e))
+
+            return svc_class
+
+        if service_class is not None:
+            return do_register(service_class)
+        return do_register
 
     @classmethod
     def method_job(
-        cls, name_or_method: typing.Union[str, typing.Callable, None] = None
+        cls, name_or_method: typing.Union[str, typing.Callable, None] = None, *, summary: str = ""
     ):
         """
         Decorator to mark service methods as jobs.
 
         Usage:
             class MyService:
-                @ServiceRegistry.method_job()
-                def my_method(self):
-                    '''Method description here'''
-                    pass
-
-                or
-
-                @ServiceRegistry.method_job
-                def my_method(self):
-                    '''Method description here'''
-                    pass
+                @method_job
+                def my_method(self): ...
         """
 
         def decorator(method):
@@ -140,10 +243,10 @@ class ServiceRegistry:
 
             method._is_job_method = True
             method._job_name = method_name
+            method._job_summary = summary
             return method
 
         if callable(name_or_method):
-            # Used as @method_job without parentheses
             return decorator(name_or_method)
 
         return decorator
@@ -151,31 +254,27 @@ class ServiceRegistry:
 
 def service_with_env_check(*env_vars: str):
     """
-    Decorator to register a service class with environment variable checks.
-
-    Usage:
-        @service_with_env_check('API_KEY', 'SECRET_KEY')
-        class MyService:
-            pass
+    Backward-compat shim. Registers a service with env var requirement checks.
+    Module name is derived from the class name.
     """
+    from helpers.requirements import Requirement
 
     def decorator(service_class):
-        return ServiceRegistry.register_service(service_class, list(env_vars))
+        req = Requirement(env_vars=list(env_vars)) if env_vars else None
+        return ServiceRegistry.register_service(
+            service_class,
+            module_name=service_class.__name__.lower(),
+            requires=req,
+        )
 
     return decorator
 
 
 def simple_service(service_class):
-    """
-    Decorator to register a service class without environment checks.
-
-    Usage:
-        @simple_service
-        class MyService:
-            pass
-    """
+    """Register a service class without requirement checks (always-on)."""
     return ServiceRegistry.register_service(service_class)
 
 
 register_job = ServiceRegistry.register_job
 method_job = ServiceRegistry.method_job
+register_service = ServiceRegistry.register_service

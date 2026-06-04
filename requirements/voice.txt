@@ -1,0 +1,12 @@
+# Voice input/output dependencies.
+# Required for --audio mode (speech recognition + text-to-speech).
+pyttsx3
+SpeechRecognition
+pyaudio
+playsound==1.2.2
+keyboard
+faster-whisper
+
+# GPU (optional, NVIDIA only) — uncomment for CUDA acceleration:
+# nvidia-cublas-cu12
+# nvidia-cudnn-cu12

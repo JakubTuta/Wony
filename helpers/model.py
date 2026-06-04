@@ -13,6 +13,45 @@ from helpers.cache import Cache
 
 available_models = ["gemini", "sonnet", "ollama"]
 
+_FALLBACK_GEMINI_MODEL = "gemini-2.0-flash"
+_FALLBACK_ANTHROPIC_MODEL = "claude-sonnet-4-6"
+
+
+def _get_gemini_model(client: "genai.Client") -> str:
+    from helpers.config import Config
+
+    if user_model := Config.get("ai.gemini_model"):
+        return user_model
+    try:
+        models = list(client.models.list())
+        candidates = [
+            m.name
+            for m in models
+            if "generateContent" in (getattr(m, "supported_actions", None) or [])
+            and "gemini" in m.name
+        ]
+        if candidates:
+            candidates.sort(reverse=True)
+            return candidates[0].removeprefix("models/")
+    except Exception:
+        pass
+    return _FALLBACK_GEMINI_MODEL
+
+
+def _get_anthropic_model(client: "anthropic.Anthropic") -> str:
+    from helpers.config import Config
+
+    if user_model := Config.get("ai.anthropic_model"):
+        return user_model
+    try:
+        models = client.models.list()
+        if models.data:
+            sorted_models = sorted(models.data, key=lambda m: m.created_at, reverse=True)
+            return sorted_models[0].id
+    except Exception:
+        pass
+    return _FALLBACK_ANTHROPIC_MODEL
+
 
 def get_model() -> typing.Optional[
     typing.List[
@@ -27,16 +66,28 @@ def get_model() -> typing.Optional[
         ]
     ]
 ]:
+    from helpers.config import Config
+
     local = Cache.get_local()
     if local:
+        return ["ollama", None]
+
+    # Honor explicit provider from config
+    configured_provider = Config.get("ai.provider")
+    if configured_provider == "ollama":
         return ["ollama", None]
 
     gemini_key = os.environ.get("GEMINI_API_KEY")
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
 
+    if configured_provider == "gemini" and gemini_key:
+        return ["gemini", gemini_key]
+    if configured_provider == "anthropic" and anthropic_key:
+        return ["sonnet", anthropic_key]
+
+    # Auto-detect from available keys
     if gemini_key:
         return ["gemini", gemini_key]
-
     if anthropic_key:
         return ["sonnet", anthropic_key]
 
@@ -53,7 +104,10 @@ def send_message(
     genai_types.GenerateContentResponse, anthropic.types.Message, ollama.ChatResponse
 ]:
     if client is None:
-        raise Exception("Client is not initialized.")
+        raise Exception(
+            "AI client not initialized. Add ANTHROPIC_API_KEY or GEMINI_API_KEY to .env, "
+            "or set ai.provider: ollama in config.yaml and run `ollama serve`."
+        )
 
     parsed_tools = None
     if available_tools:
@@ -94,7 +148,7 @@ def send_message(
             ]
 
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
+            model=_get_gemini_model(client),
             contents=content,
             config=config,
         )
@@ -117,7 +171,7 @@ def send_message(
             ]
 
         response = client.messages.create(
-            model="claude-3-7-sonnet-20250219",
+            model=_get_anthropic_model(client),
             max_tokens=1024,
             messages=[{"role": "user", "content": messages_content}],
             system=(
@@ -145,8 +199,13 @@ def send_message(
                 *messages,
             ]
 
-        if (model := os.getenv("AI_MODEL", None)) is None:
-            raise Exception("AI_MODEL environment variable is not set.")
+        from helpers.config import Config
+
+        model = Config.get("ai.ollama_model") or os.getenv("AI_MODEL")
+        if not model:
+            raise Exception(
+                "Ollama model not configured. Set ai.ollama_model in config.yaml or AI_MODEL env var."
+            )
 
         response = client.chat(
             model=model,
@@ -228,3 +287,37 @@ def get_function_from_response(
                 "name": function_name,
                 "args": function_args,
             }
+
+
+def describe_readiness() -> typing.Tuple[bool, str]:
+    """Returns (ok, message) describing AI provider availability."""
+    from helpers.config import Config
+
+    local = Cache.get_local()
+    if local:
+        return True, "Using local Ollama model."
+
+    configured_provider = Config.get("ai.provider")
+    gemini_key = os.environ.get("GEMINI_API_KEY")
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
+
+    if configured_provider == "ollama":
+        return True, "Using local Ollama model (ai.provider: ollama)."
+    if configured_provider == "gemini" and gemini_key:
+        return True, "Gemini AI configured."
+    if configured_provider == "anthropic" and anthropic_key:
+        return True, "Anthropic AI configured."
+    if configured_provider in ("gemini", "anthropic") and not gemini_key and not anthropic_key:
+        return False, (
+            f"ai.provider is '{configured_provider}' but no API key found. "
+            f"Add {'GEMINI_API_KEY' if configured_provider == 'gemini' else 'ANTHROPIC_API_KEY'} to .env."
+        )
+    if gemini_key:
+        return True, "Gemini AI configured (auto-detected)."
+    if anthropic_key:
+        return True, "Anthropic AI configured (auto-detected)."
+
+    return False, (
+        "No AI configured. Add ANTHROPIC_API_KEY or GEMINI_API_KEY to .env, "
+        "or set ai.provider: ollama in config.yaml and run `ollama serve`."
+    )

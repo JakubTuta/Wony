@@ -2,33 +2,31 @@ import math
 import time
 import typing
 
-import pyautogui
-import pynput
 
-
-class MouseController(pynput.mouse.Controller):
+class MouseController:
     def __init__(self) -> None:
-        super().__init__()
+        from pynput.mouse import Button, Controller
+
+        self._controller = Controller()
+        self._Button = Button
 
     @staticmethod
     def idle_mouse() -> None:
         """
-        Simulates mouse idle activity by using the MouseController class to move the mouse.
-        This function creates an instance of the MouseController class and calls its idle_mouse method to simulate mouse movement.
+        Simulates mouse idle activity by moving the mouse in a circle.
 
         Returns:
             None
         """
-
         print("Idling mouse...")
-
         mouse_controller = MouseController()
         mouse_controller.func_idle_mouse()
 
     def func_idle_mouse(self, minutes: int = 1) -> None:
+        import pyautogui
+
         screen_width, screen_height = pyautogui.size()
         screen_center = (screen_width // 2, screen_height // 2)
-
         circle_delimiter = min(screen_width, screen_height) // 4
 
         interval = 1
@@ -38,9 +36,7 @@ class MouseController(pynput.mouse.Controller):
             for angle in range(0, 360, 5):
                 x = screen_center[0] + circle_delimiter * math.cos(math.radians(angle))
                 y = screen_center[1] + circle_delimiter * math.sin(math.radians(angle))
-
-                self.position = (int(x), int(y))
-
+                self._controller.position = (int(x), int(y))
                 time.sleep(interval)
 
     def go_to_center_of_bbox(
@@ -54,14 +50,12 @@ class MouseController(pynput.mouse.Controller):
             "bottom_right": (x2, y2),
         }
         """
-
         center = (
             (bbox["top_left"][0] + bbox["bottom_right"][0]) // 2,
             (bbox["top_left"][1] + bbox["bottom_right"][1]) // 2,
         )
-
-        self.position = center
+        self._controller.position = center
 
     def click_left_button(self) -> None:
-        self.press(pynput.mouse.Button.left)
-        self.release(pynput.mouse.Button.left)
+        self._controller.press(self._Button.left)
+        self._controller.release(self._Button.left)

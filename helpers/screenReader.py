@@ -1,22 +1,30 @@
 import typing
 
-import mss
 import numpy as np
-import pyautogui
 from PIL import Image
 
 from helpers import model as helper_model
-from modules.ai import AI
 
 
 class ScreenReader:
-    _reader = None
-    _model = helper_model.get_model()
+    _reader: typing.Any = None
 
-    if _model is None or (isinstance(_model, (list, tuple)) and _model[0] != "gemini"):
-        import easyocr
+    @staticmethod
+    def _get_reader() -> typing.Any:
+        if ScreenReader._reader is None:
+            import easyocr
 
-        _reader = easyocr.Reader(["en"])
+            ScreenReader._reader = easyocr.Reader(["en"])
+        return ScreenReader._reader
+
+    @staticmethod
+    def _use_gemini() -> bool:
+        model = helper_model.get_model()
+        return (
+            model is not None
+            and isinstance(model, (list, tuple))
+            and model[0] == "gemini"
+        )
 
     @staticmethod
     def take_screenshot(
@@ -34,28 +42,33 @@ class ScreenReader:
         Returns:
             Screenshot as numpy array
         """
+        import mss
 
         if target not in ["main", "active", "all"]:
             raise ValueError("target must be one of: 'main', 'active', or 'all'")
 
         with mss.mss() as sct:
             if target == "all":
-                monitor = sct.monitors[0]  # All monitors combined
+                monitor = sct.monitors[0]
 
             elif target == "active":
-                # Get monitor containing the mouse cursor
-                x, y = pyautogui.position()
-                monitor = sct.monitors[1]  # Default to first monitor
-                for mon in sct.monitors[1:]:
-                    if (
-                        mon["left"] <= x < mon["left"] + mon["width"]
-                        and mon["top"] <= y < mon["top"] + mon["height"]
-                    ):
-                        monitor = mon
-                        break
+                try:
+                    import pyautogui
 
-            else:  # target == "main"
-                monitor = sct.monitors[1]  # Primary monitor
+                    x, y = pyautogui.position()
+                    monitor = sct.monitors[1]
+                    for mon in sct.monitors[1:]:
+                        if (
+                            mon["left"] <= x < mon["left"] + mon["width"]
+                            and mon["top"] <= y < mon["top"] + mon["height"]
+                        ):
+                            monitor = mon
+                            break
+                except ImportError:
+                    monitor = sct.monitors[1]
+
+            else:
+                monitor = sct.monitors[1]
 
             screenshot = sct.grab(monitor)
             screenshot = Image.frombytes(
@@ -69,11 +82,9 @@ class ScreenReader:
 
     @staticmethod
     def find_text_in_screenshot(screenshot: np.ndarray, text: str):
-        if (
-            ScreenReader._model is not None
-            and isinstance(ScreenReader._model, (list, tuple))
-            and ScreenReader._model[0] == "gemini"
-        ):
+        if ScreenReader._use_gemini():
+            from modules.ai import AI
+
             ai_model = AI()
 
             try:
@@ -88,26 +99,22 @@ class ScreenReader:
                     for i, coord in enumerate(response)
                 ]
 
-                result = {
+                return {
                     "top_left": (xmin, ymin),
                     "top_right": (xmax, ymin),
                     "bottom_left": (xmin, ymax),
                     "bottom_right": (xmax, ymax),
                 }
 
-                return result
-
             except Exception as e:
                 print(f"Error finding text with AI: {e}")
                 return None
 
-        elif ScreenReader._reader is None:
-            raise RuntimeError("EasyOCR reader is not initialized.")
-
-        result = ScreenReader._reader.readtext(screenshot)
+        reader = ScreenReader._get_reader()
+        result = reader.readtext(screenshot)
 
         text_object = next(
-            (detection for detection in result if detection[1].lower() == text.lower()),  # type: ignore
+            (detection for detection in result if detection[1].lower() == text.lower()),
             None,
         )
 

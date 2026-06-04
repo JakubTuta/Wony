@@ -13,7 +13,8 @@ import requests
 from helpers.audio import Audio
 from helpers.cache import Cache
 from helpers.decorators import capture_exception, retry_on_unauthorized
-from helpers.registry import method_job, service_with_env_check
+from helpers.registry import method_job, register_service
+from helpers.requirements import Requirement
 
 auth_code = None
 
@@ -47,7 +48,16 @@ class AuthHandler(http.server.SimpleHTTPRequestHandler):
             )
 
 
-@service_with_env_check("SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET")
+@register_service(
+    module_name="spotify",
+    requires=Requirement(
+        env_vars=["SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET"],
+        setup_hint=(
+            "Create an app at developer.spotify.com/dashboard, add SPOTIFY_CLIENT_ID "
+            "and SPOTIFY_CLIENT_SECRET to .env, set Redirect URI to http://127.0.0.1:8888/callback"
+        ),
+    ),
+)
 class Spotify:
     """Spotify service for music playback control."""
 
@@ -67,22 +77,6 @@ class Spotify:
 
         self.client_id = os.getenv(self.ENV_SPOTIFY_CLIENT_ID)
         self.client_secret = os.getenv(self.ENV_SPOTIFY_CLIENT_SECRET)
-
-        if not self.client_id or not self.client_secret:
-            print("\n" + "=" * 60)
-            print("SPOTIFY CREDENTIALS NOT SET UP")
-            print("=" * 60)
-            print("Spotify credentials are not properly configured.")
-            print("Please set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET")
-            print("environment variables with your Spotify app credentials.")
-            print("\nSpotify services will not be available unless the")
-            print("Spotify credentials are created.")
-            print("=" * 60 + "\n")
-            self._spotify_available = False
-            return
-
-        # Set availability to True since we have credentials
-        self._spotify_available = True
 
         self.access_token, self.refresh_token = self._get_tokens_from_cache()
 
@@ -280,7 +274,7 @@ class Spotify:
 
     @retry_on_unauthorized("_refresh_access_token")
     @method_job
-    def next_song(self) -> None:
+    def skip_song(self) -> None:
         """
         [SPOTIFY SERVICE METHOD] Advances to the next track in the current Spotify playlist or queue.
         This service method skips the currently playing song and moves forward to the next
@@ -429,6 +423,38 @@ class Spotify:
 
         self._make_spotify_request("put", url)
         print(f"Volume set to {volume}%")
+
+    @retry_on_unauthorized("_refresh_access_token")
+    @method_job
+    def get_current_track(self) -> str:
+        """
+        [SPOTIFY SERVICE METHOD] Announces the currently playing track and artist on Spotify.
+
+        Use this method when the user wants to:
+        - Know what song is currently playing
+        - Find out the artist of the current track
+        - Check what's on
+
+        Keywords: what's playing, now playing, current song, current track, what song,
+                 playing now, what music, song name, track name, who's playing
+
+        Args:
+            None
+
+        Returns:
+            str: Track and artist name, or a message if nothing is playing.
+        """
+        state = self._get_playback_state()
+        if not state or "item" not in state or state.get("item") is None:
+            result = "Nothing is currently playing on Spotify."
+        else:
+            item = state["item"]
+            name = item.get("name", "Unknown")
+            artists = ", ".join(a["name"] for a in item.get("artists", []))
+            result = f"Now playing: {name}" + (f" by {artists}" if artists else "") + "."
+
+        self._announce_action(result)
+        return result
 
     @retry_on_unauthorized("_refresh_access_token")
     def toggle_shuffle(self, **kwargs) -> None:
