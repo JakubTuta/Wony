@@ -113,6 +113,17 @@ def main() -> None:
     Cache.set_audio(config["audio"])
     Cache.set_local(config["local"])
 
+    # Load .env before any module imports so env vars are available for preflight
+    import dotenv
+    dotenv.load_dotenv()
+
+    # Preflight: verify AI provider is configured before loading all modules
+    from helpers.model import describe_readiness
+    ai_ok, ai_msg = describe_readiness()
+    if not ai_ok:
+        print(f"\nCannot start: AI provider not ready.\n{ai_msg}\n")
+        return
+
     # Import Employer here (after Config.load) so discover_services() runs with config ready
     from modules.employer import Employer
 

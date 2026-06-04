@@ -1,15 +1,16 @@
 import os
 import typing
 
+from helpers.agent import run_agent
 from helpers.audio import Audio
 from helpers.cache import Cache
 from helpers.conversation import Conversation
-from helpers.decorators import capture_response
+from helpers.decorators import capture_response, set_agent_active
 from helpers.jobs import BackgroundJobs
 from helpers.logger import logger
 from helpers.recognizer import Recognizer
 from helpers.registry import ServiceRegistry, register_job
-from modules.ai import AI
+from modules.ai import AI, build_agent_system_prompt
 
 
 class Employer:
@@ -38,6 +39,7 @@ class Employer:
     def job_on_command(self, user_input: str) -> None:
         self._refresh_available_jobs()
 
+        # Fast path: exact command match (e.g. "help", "exit")
         if (function := self._check_if_user_input_is_command(user_input)) is not None:
             function_name = (
                 function.__name__
@@ -52,36 +54,33 @@ class Employer:
             Conversation.record_turn(user_input, str(result) if result else "")
             return
 
-        if (
-            bot_response := self.ai_model.get_function_to_call(
-                user_input, self.available_functions
-            )
-        ) is None:
-            error_msg = "Error: Could not determine function to call."
-            print(error_msg)
-            logger.log_error(error_msg, "job_on_command")
-            return
+        from helpers.config import Config
+        max_steps = int(Config.get("ai.agent.max_steps", 5))
+        system_prompt = build_agent_system_prompt()
 
-        function_name = bot_response["name"]
-        function_args = bot_response["args"]
-
-        if function_name in self.available_jobs:
-            logger.log_function_call(function_name, user_input, function_args)
-            try:
-                result = self.available_jobs[function_name](**function_args)
-                logger.log_function_response(
-                    function_name, str(result) if result else "No response", user_input
-                )
-                Conversation.record_turn(user_input, str(result) if result else "")
-            except Exception as e:
-                logger.log_error(
-                    f"Function {function_name} failed: {str(e)}", "job_on_command"
-                )
-        else:
-            logger.log_error(
-                f"Function {function_name} not found in available jobs",
-                "job_on_command",
+        # Suppress per-tool print/TTS while the agent loop runs
+        set_agent_active(True)
+        try:
+            agent_result = run_agent(
+                client=self.ai_model.client,
+                user_input=user_input,
+                available_jobs=self.available_jobs,
+                system_instructions=system_prompt,
+                history=Conversation.get_messages(),
+                max_steps=max_steps,
             )
+        finally:
+            set_agent_active(False)
+
+        text = agent_result.text
+        if text:
+            audio = Cache.get_audio()
+            if audio:
+                Audio.text_to_speech(text)
+            else:
+                print(text)
+
+        Conversation.record_turn(user_input, text)
 
     @register_job
     @capture_response

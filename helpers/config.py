@@ -16,13 +16,18 @@ DEFAULTS: typing.Dict[str, typing.Any] = {
     },
     "ai": {
         "provider": None,
-        "anthropic_model": "claude-3-7-sonnet-20250219",
-        "gemini_model": "gemini-2.0-flash",
+        "anthropic_model": None,
+        "gemini_model": None,
         "ollama_model": "llama3.1",
+        "max_tokens": 2048,
         "history": {
             "enabled": True,
             "max_turns": 5,
             "idle_timeout_minutes": 10,
+        },
+        "agent": {
+            "max_steps": 5,
+            "narrate": True,
         },
     },
     "enabled_modules": ["ai", "status", "weather", "spotify", "system", "screen"],
@@ -30,7 +35,24 @@ DEFAULTS: typing.Dict[str, typing.Any] = {
         "shelly": {"base_url": "http://192.168.18.53"},
         "system": {"allow_shutdown": False},
         "weather": {"default_units": "metric"},
-        "gmail": {"poll_interval_minutes": 15},
+        "gmail": {
+            "poll_interval_minutes": 15,
+            "max_results": 20,
+            "max_body_chars": 1500,
+            "allow_send": False,
+            "use_ai": False,
+            "ai_summary_max_emails": 30,
+        },
+        "calendar": {
+            "poll_interval_minutes": 15,
+            "lookahead_hours": 24,
+            "max_results": 10,
+            "search_days_back": 30,
+            "search_days_ahead": 90,
+            "work_start_hour": 9,
+            "work_end_hour": 18,
+            "allow_write": False,
+        },
     },
 }
 

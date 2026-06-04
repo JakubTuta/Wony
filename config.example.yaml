@@ -28,31 +28,42 @@ ai:
   # Set Gemini model, leave null for newest
   gemini_model: null
   # Ollama model name; also readable from AI_MODEL env var as fallback.
+  # REQUIRED when provider is 'ollama' — app will not start without this set.
   ollama_model: "llama3.1"
+  # Max tokens in a single AI response (applies to Anthropic; Gemini/Ollama use their defaults).
+  max_tokens: 2048
   history:
-    # Enable conversation history (multi-turn memory).
+    # Enable conversation history (multi-turn memory within a session).
     enabled: true
-    # Number of past exchanges (user+assistant pairs) to keep in context.
+    # Number of past exchanges (user+assistant pairs) to keep in context (~10 messages).
     max_turns: 5
     # Auto-clear history after this many minutes of inactivity.
     idle_timeout_minutes: 10
+  agent:
+    # Maximum tool round-trips the agent may take for a single user request.
+    max_steps: 5
+    # If true, the agent writes a concise final answer from tool results instead of
+    # printing raw tool output. Set to false to see raw tool output (useful for debugging).
+    narrate: true
 
 # Only modules listed here will load. A module still won't run if its
 # credentials/deps are missing — it will show as misconfigured/unavailable.
 # Run "check setup" to see what each broken module needs.
 enabled_modules:
-  - ai       # always-on; listed for clarity
-  - status   # always-on; shows module health
-  - weather
-  - spotify
-  - system
-  - screen
-  - clock
-  - timer
+  - ai             # always-on: conversation, history, AI provider routing
+  - status         # always-on: module health and setup diagnostics
+  - weather        # current weather and forecasts by city
+  - spotify        # playback control (play, pause, skip, search, volume)
+  - system         # OS-level actions: shutdown, lock, sleep
+  - screen         # screenshot capture and OCR text extraction
+  - clock          # current time and date
+  - timer          # countdown timers and stopwatch
   # Uncomment to enable:
-  # - gmail
-  # - league
-  # - shelly
+  # - gmail          # read, search, and monitor Gmail (requires Google OAuth)
+  # - calendar       # read Google Calendar events and check availability (requires Google OAuth)
+  # - google_accounts  # manage multiple Google accounts (add, remove, set primary)
+  # - league         # League of Legends player stats and match history
+  # - shelly         # Shelly smart home device control (requires local device)
 
 # Per-module non-secret settings.
 modules:
@@ -67,3 +78,30 @@ modules:
   gmail:
     # How often (minutes) to check for new emails when background polling is active.
     poll_interval_minutes: 15
+    # Max emails returned per query.
+    max_results: 20
+    # Max characters of email body to speak in audio (TTS) mode.
+    max_body_chars: 1500
+    # Safety gate — set to true to allow sending emails (send_email, reply_to_email).
+    allow_send: false
+    # Set to true to have AI summarize email lists instead of returning raw data.
+    # Note: sends email content (sender, subject, body) to your configured AI provider.
+    use_ai: false
+    # Max emails fed to AI per summarize call (bounds token usage).
+    ai_summary_max_emails: 30
+  calendar:
+    # How often (minutes) to check for new events when background polling is active.
+    poll_interval_minutes: 15
+    # How far ahead (hours) to look for upcoming events.
+    lookahead_hours: 24
+    # Max number of events to return per query.
+    max_results: 10
+    # Search window for search_events job.
+    search_days_back: 30
+    search_days_ahead: 90
+    # Working hours for find_free_slots.
+    work_start_hour: 9
+    work_end_hour: 18
+    # Safety gate — set to true to allow creating, editing, and deleting events.
+    # Note: also requires re-authentication after upgrading from the old readonly scope.
+    allow_write: false

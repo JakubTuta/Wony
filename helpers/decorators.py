@@ -4,6 +4,19 @@ import typing
 
 T = typing.TypeVar("T")
 
+# Set to True by the agent loop while executing tools so capture_response
+# suppresses per-tool print/TTS output. The final narrated answer is output once.
+_agent_active: bool = False
+
+
+def set_agent_active(value: bool) -> None:
+    global _agent_active
+    _agent_active = value
+
+
+def is_agent_active() -> bool:
+    return _agent_active
+
 
 def capture_response(
     func: typing.Callable[..., typing.Any],
@@ -44,13 +57,15 @@ def capture_response(
 
         str_response = str(response) if response is not None else ""
 
-        # Handle audio output
-        if Cache and Audio:
-            audio = Cache.get_audio()
-            if audio:
-                Audio.text_to_speech(str_response)
+        # Suppress per-tool output while the agent loop is running;
+        # the agent will narrate the final answer once.
+        if not _agent_active:
+            if Cache and Audio:
+                audio = Cache.get_audio()
+                if audio:
+                    Audio.text_to_speech(str_response)
+            print(str_response)
 
-        print(str_response)
         return str_response
 
     return wrapper

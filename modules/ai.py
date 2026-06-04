@@ -15,16 +15,46 @@ from helpers.registry import method_job, register_job, simple_service
 
 
 def _persona() -> str:
-    """Build persona preamble from config."""
+    """Build persona preamble from config + persistent profile."""
     from helpers.config import Config
+    from helpers.profile import Profile
 
     name = Config.get("assistant.name", "Wony")
     owner = Config.get("assistant.owner_name", "User")
     personality = Config.get("assistant.personality", "Friendly and concise.")
     language = Config.get("assistant.language", "en")
-    return (
+    base = (
         f"You are {name}, a personal AI assistant for {owner}. "
         f"{personality} Respond in {language}."
+    )
+    profile_text = Profile.as_text()
+    if profile_text:
+        base += f" {profile_text}"
+    return base
+
+
+def build_agent_system_prompt() -> str:
+    """System prompt for the multi-step agent loop."""
+    return (
+        _persona()
+        + "\n\nYou are an intelligent agent. For each user request:"
+        "\n1. Use the available tools to fulfil the request. Chain tools when needed"
+        " (e.g. read an email then create a calendar event from its content)."
+        "\n2. Use conversation history and stored facts to fill in missing details"
+        " before deciding a parameter is truly unknown."
+        "\n3. If a REQUIRED parameter is genuinely missing and cannot be inferred,"
+        " ask ONE short clarifying question in plain text and stop — no tool call."
+        " Keep it direct: 'Which account?' / 'Which date?' / 'Inbox or sent?'"
+        " Never ask about optional parameters that have sensible defaults."
+        "\n4. When you are done with all tool calls, write a concise final answer"
+        " in plain prose summarising what you did and what you found."
+        " Do not dump raw tool output — narrate it naturally."
+        "\n5. If the user states a preference or personal fact, call `remember` to"
+        " store it for future sessions."
+        "\n6. For follow-up questions about something already in the conversation"
+        " ('what was it about', 'when is that'), answer directly from history"
+        " without calling a tool."
+        "\nReply in plain prose. No bullet points unless listing multiple items."
     )
 
 
@@ -136,6 +166,109 @@ class AI:
         Conversation.clear()
         return "Conversation history cleared."
 
+    @register_job
+    @capture_response
+    @staticmethod
+    def remember(fact: str = "") -> str:
+        """
+        [AI SERVICE JOB] Saves a personal fact or preference to persistent memory.
+        Use this when the user tells you to remember something about themselves,
+        their preferences, or any fact that should be recalled in future sessions.
+
+        Use this job when the user wants to:
+        - Store a personal preference ("remember I prefer metric units")
+        - Save a fact ("remember my boss is Anna")
+        - Set a default ("remember my default account is work")
+
+        Keywords: remember, save fact, store preference, keep in mind, note that,
+                 don't forget, memorize
+
+        Args:
+            fact (str): The fact or preference to remember, as stated by the user.
+
+        Returns:
+            str: Confirmation that the fact was saved.
+        """
+        from helpers.profile import Profile
+
+        if not fact:
+            return "Error: No fact provided to remember."
+
+        # Derive a short key from the fact text
+        import re
+        key = re.sub(r"[^a-z0-9_]", "_", fact.lower().strip())[:40].strip("_")
+        if not key:
+            key = "note"
+        Profile.set(key, fact)
+        return f"Remembered: {fact}"
+
+    @register_job
+    @capture_response
+    @staticmethod
+    def forget(key: str = "") -> str:
+        """
+        [AI SERVICE JOB] Removes a previously remembered fact from persistent memory.
+        Use this when the user wants to delete a stored preference or fact.
+
+        Use this job when the user wants to:
+        - Delete a remembered fact ("forget my preferred units")
+        - Remove a stored preference
+        - Clear a specific memory entry
+
+        Keywords: forget, remove fact, delete preference, stop remembering, clear memory entry
+
+        Args:
+            key (str): The key or description of the fact to forget.
+
+        Returns:
+            str: Confirmation that the fact was removed, or notice that it was not found.
+        """
+        from helpers.profile import Profile
+
+        if not key:
+            return "Error: No key provided."
+
+        removed = Profile.remove(key)
+        if removed:
+            return f"Forgotten: {key}"
+        # Try partial match
+        all_facts = Profile.all()
+        matches = [k for k in all_facts if key.lower() in k.lower()]
+        if matches:
+            for m in matches:
+                Profile.remove(m)
+            return f"Forgotten: {', '.join(matches)}"
+        return f"No memory found matching: {key}"
+
+    @register_job
+    @capture_response
+    @staticmethod
+    def list_memory() -> str:
+        """
+        [AI SERVICE JOB] Lists all facts and preferences stored in persistent memory.
+
+        Use this job when the user wants to:
+        - See what the assistant remembers about them
+        - Review stored preferences
+        - Check what facts are saved
+
+        Keywords: list memory, show memory, what do you remember, my facts,
+                 stored preferences, show facts, memory
+
+        Args:
+            None
+
+        Returns:
+            str: All stored facts and preferences.
+        """
+        from helpers.profile import Profile
+
+        facts = Profile.all()
+        if not facts:
+            return "No facts stored in memory."
+        lines = [f"  {k}: {v}" for k, v in sorted(facts.items())]
+        return "Stored memory:\n" + "\n".join(lines)
+
     def get_function_to_call(
         self,
         user_input: str,
@@ -152,21 +285,7 @@ class AI:
             "",
         )
 
-        assistant_instructions = (
-            _persona()
-            + " Your ONLY task is to select and call the correct function — you must ALWAYS call a function."
-            " Never reply with plain text. Never refuse to call a function."
-            "\n\nRouting rules (apply in order):"
-            "\n1. If the input requests a SPECIFIC ACTION (play music, set timer, check weather, control lights,"
-            " open app, send email, skip song, etc.) — call the matching action function."
-            "\n2. If the input is a QUESTION, a request for information, general knowledge, a follow-up"
-            " to a previous message, or anything that does not map to a specific action — call 'ask_question'."
-            "\n3. If you are uncertain — call 'ask_question'. It is always safe and correct as a fallback."
-            "\n\nExamples that must use 'ask_question':"
-            " 'who is Einstein', 'when was he born', 'what year did WW2 end', 'explain quantum physics',"
-            " 'what does this mean', 'tell me more', follow-up pronouns like 'he/she/it/they'."
-            "\n\nYou MUST call a function on every single input. Calling no function is never correct."
-        )
+        assistant_instructions = build_agent_system_prompt()
 
         response = helpers_model.send_message(
             client=self.client,
@@ -186,12 +305,24 @@ class AI:
                 function_to_call.get("name", "unknown"),
                 str(function_to_call.get("args", {})),
             )
-        else:
-            logger.log_error(
-                "AI could not determine function to call", "get_function_to_call"
-            )
+            return function_to_call
 
-        return function_to_call
+        # No tool selected — router replied with plain text (clarification or direct answer)
+        text = helpers_model.get_text_from_response(response)
+        if text:
+            logger.log_custom(
+                "ai_text_response",
+                f"AI replied with text: {text[:80]}",
+                user_input,
+                "text_response",
+                "",
+            )
+            return {"name": "__text__", "args": {}, "text": text}
+
+        logger.log_error(
+            "AI could not determine function to call", "get_function_to_call"
+        )
+        return None
 
     def explain_screenshot(
         self,

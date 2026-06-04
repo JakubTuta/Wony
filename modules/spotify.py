@@ -69,7 +69,7 @@ class Spotify:
 
     PORT = 8888
     REDIRECT_URI = f"http://127.0.0.1:{PORT}/callback"
-    SCOPE = "user-read-playback-state user-modify-playback-state"
+    SCOPE = "user-read-playback-state user-modify-playback-state playlist-read-private playlist-read-collaborative user-library-modify user-library-read"
 
     @capture_exception
     def __init__(self):
@@ -461,6 +461,173 @@ class Spotify:
         return result
 
     @retry_on_unauthorized("_refresh_access_token")
+    @method_job
+    def like_current_track(self) -> typing.Optional[str]:
+        """
+        [SPOTIFY SERVICE METHOD] Saves the currently playing track to the user's Liked Songs.
+
+        Use this method when the user wants to:
+        - Like the current song
+        - Save the current track
+        - Add the current song to liked songs
+
+        Keywords: like, love, save, heart, favorite, current song, this song, liked songs
+
+        Args:
+            None
+
+        Returns:
+            str: Confirmation message or error if nothing is playing.
+        """
+        track_id = self._get_current_track_id()
+        if not track_id:
+            msg = "Nothing is currently playing"
+            self._announce_action(msg)
+            return msg
+
+        self._make_spotify_request(
+            "put",
+            f"https://api.spotify.com/v1/me/tracks?ids={track_id}",
+        )
+        state = self._get_playback_state()
+        name = state["item"]["name"] if state and state.get("item") else "Track"
+        msg = f"Liked {name}"
+        self._announce_action(msg)
+        return msg
+
+    @retry_on_unauthorized("_refresh_access_token")
+    @method_job
+    def unlike_current_track(self) -> typing.Optional[str]:
+        """
+        [SPOTIFY SERVICE METHOD] Removes the currently playing track from the user's Liked Songs.
+
+        Use this method when the user wants to:
+        - Unlike the current song
+        - Remove the current track from liked songs
+        - Dislike this song
+
+        Keywords: unlike, dislike, remove, unsave, unheart, current song, this song, liked songs
+
+        Args:
+            None
+
+        Returns:
+            str: Confirmation message or error if nothing is playing.
+        """
+        track_id = self._get_current_track_id()
+        if not track_id:
+            msg = "Nothing is currently playing"
+            self._announce_action(msg)
+            return msg
+
+        self._make_spotify_request(
+            "delete",
+            f"https://api.spotify.com/v1/me/tracks?ids={track_id}",
+        )
+        state = self._get_playback_state()
+        name = state["item"]["name"] if state and state.get("item") else "Track"
+        msg = f"Removed {name} from liked songs"
+        self._announce_action(msg)
+        return msg
+
+    @retry_on_unauthorized("_refresh_access_token")
+    @method_job
+    def toggle_like_current_track(self) -> typing.Optional[str]:
+        """
+        [SPOTIFY SERVICE METHOD] Toggles like/unlike on the currently playing track.
+
+        Use this method when the user wants to:
+        - Toggle like on the current song
+        - Switch like state of the current track
+
+        Keywords: toggle like, toggle heart, like toggle, current song
+
+        Args:
+            None
+
+        Returns:
+            str: Confirmation of new like state.
+        """
+        track_id = self._get_current_track_id()
+        if not track_id:
+            msg = "Nothing is currently playing"
+            self._announce_action(msg)
+            return msg
+
+        response = self._make_spotify_request(
+            "get",
+            f"https://api.spotify.com/v1/me/tracks/contains?ids={track_id}",
+        )
+        is_liked = response.json()[0]
+
+        if is_liked:
+            return self.unlike_current_track()
+        else:
+            return self.like_current_track()
+
+    @retry_on_unauthorized("_refresh_access_token")
+    @method_job
+    def get_playlists(self) -> typing.List[typing.Dict[str, str]]:
+        """
+        [SPOTIFY SERVICE METHOD] Lists all playlists owned or followed by the current user.
+
+        Use this method when the user wants to:
+        - See their playlists
+        - Browse available playlists
+        - List Spotify playlists
+
+        Keywords: list playlists, show playlists, my playlists, what playlists, browse playlists
+
+        Args:
+            None
+
+        Returns:
+            list: Playlist dicts with 'name', 'id', and 'uri'.
+        """
+        playlists = self._get_user_playlists()
+        names = ", ".join(p["name"] for p in playlists) if playlists else "No playlists found"
+        self._announce_action(names)
+        return playlists
+
+    @retry_on_unauthorized("_refresh_access_token")
+    @method_job
+    def play_playlist(self, name: str) -> typing.Optional[str]:
+        """
+        [SPOTIFY SERVICE METHOD] Finds a user playlist by name and starts playback.
+
+        Use this method when the user wants to:
+        - Play a specific playlist by name
+        - Start a named playlist
+        - Listen to one of their playlists
+
+        Keywords: play playlist, start playlist, listen to playlist, put on playlist
+
+        Args:
+            name (str): Full or partial name of the playlist to play.
+
+        Returns:
+            str: Success or error message.
+        """
+        playlists = self._get_user_playlists()
+        name_lower = name.lower()
+
+        match = next(
+            (p for p in playlists if name_lower in p["name"].lower()),
+            None,
+        )
+
+        if not match:
+            msg = f"Playlist '{name}' not found"
+            self._announce_action(msg)
+            return msg
+
+        url = self._build_url_with_device("https://api.spotify.com/v1/me/player/play")
+        self._make_spotify_request("put", url, json={"context_uri": match["uri"]})
+        msg = f"Playing playlist {match['name']}"
+        self._announce_action(msg)
+        return msg
+
+    @retry_on_unauthorized("_refresh_access_token")
     def toggle_shuffle(self, **kwargs) -> None:
         """
         Toggles shuffle mode on or off for Spotify playback.
@@ -487,6 +654,23 @@ class Spotify:
         url = self._build_url_with_device(base_url, "&")
 
         self._make_spotify_request("put", url)
+
+    def _get_current_track_id(self) -> typing.Optional[str]:
+        state = self._get_playback_state()
+        if state and state.get("item"):
+            return state["item"]["id"]
+        return None
+
+    def _get_user_playlists(self) -> typing.List[typing.Dict[str, str]]:
+        playlists = []
+        url = "https://api.spotify.com/v1/me/playlists?limit=50"
+        while url:
+            response = self._make_spotify_request("get", url)
+            data = response.json()
+            for item in data.get("items", []):
+                playlists.append({"name": item["name"], "id": item["id"], "uri": item["uri"]})
+            url = data.get("next")
+        return playlists
 
     def _get_auth_headers(self) -> typing.Dict[str, str]:
         """Get authorization headers for API requests"""
