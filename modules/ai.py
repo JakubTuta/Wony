@@ -8,9 +8,10 @@ from google import genai
 import helpers.model as helpers_model
 from helpers.audio import Audio
 from helpers.cache import Cache
+from helpers.conversation import Conversation
 from helpers.decorators import capture_response
 from helpers.logger import logger
-from helpers.registry import method_job, simple_service
+from helpers.registry import method_job, register_job, simple_service
 
 
 def _persona() -> str:
@@ -82,12 +83,24 @@ class AI:
             Audio.text_to_speech(f"Asking {question}...")
         print(f"Asking {question}...")
 
-        assistant_instructions = _persona() + " Answer the question as if you are a human. Keep the answer short and simple."
+        assistant_instructions = (
+            _persona()
+            + " You are a knowledgeable, factual assistant."
+            " Answer every question using your general knowledge: dates, names, facts, definitions, history, science, culture."
+            " Always resolve pronouns and references (e.g. 'he', 'she', 'it', 'they', 'that one') using"
+            " prior messages in the conversation history before answering."
+            " Never refuse to answer a factual question — if you know the answer, state it directly."
+            " Never describe people or objects visually (appearance, clothing, hair) unless the user"
+            " explicitly asks about appearance or looks."
+            " Reply in plain prose. No bullet points unless listing multiple distinct items."
+            " Keep answers concise: 1-3 sentences for simple facts, more only if the question requires it."
+        )
 
         response = helpers_model.send_message(
             client=self.client,
             message=question,
             system_instructions=assistant_instructions,
+            history=Conversation.get_messages(),
         )
 
         answer = helpers_model.get_text_from_response(response)
@@ -96,6 +109,32 @@ class AI:
             return "Error: Could not retrieve an answer."
 
         return answer
+
+    @register_job
+    @capture_response
+    @staticmethod
+    def clear_conversation() -> str:
+        """
+        [AI SERVICE JOB] Clears the conversation history so the assistant starts fresh.
+        Useful when switching topics or wanting a clean slate.
+
+        Use this job when the user wants to:
+        - Start a new conversation
+        - Reset memory
+        - Forget previous messages
+        - Clear chat history
+
+        Keywords: forget, new conversation, clear chat, start over, reset memory,
+                 clear history, fresh start, wipe memory, reset chat
+
+        Args:
+            None
+
+        Returns:
+            str: Confirmation that history was cleared.
+        """
+        Conversation.clear()
+        return "Conversation history cleared."
 
     def get_function_to_call(
         self,
@@ -115,9 +154,18 @@ class AI:
 
         assistant_instructions = (
             _persona()
-            + " You are tasked with determining the function to call based on the user's input."
-            " Make use of the keywords in the input to identify the appropriate function."
-            " If no function is applicable, return 'ask_question' as the default function."
+            + " Your ONLY task is to select and call the correct function — you must ALWAYS call a function."
+            " Never reply with plain text. Never refuse to call a function."
+            "\n\nRouting rules (apply in order):"
+            "\n1. If the input requests a SPECIFIC ACTION (play music, set timer, check weather, control lights,"
+            " open app, send email, skip song, etc.) — call the matching action function."
+            "\n2. If the input is a QUESTION, a request for information, general knowledge, a follow-up"
+            " to a previous message, or anything that does not map to a specific action — call 'ask_question'."
+            "\n3. If you are uncertain — call 'ask_question'. It is always safe and correct as a fallback."
+            "\n\nExamples that must use 'ask_question':"
+            " 'who is Einstein', 'when was he born', 'what year did WW2 end', 'explain quantum physics',"
+            " 'what does this mean', 'tell me more', follow-up pronouns like 'he/she/it/they'."
+            "\n\nYou MUST call a function on every single input. Calling no function is never correct."
         )
 
         response = helpers_model.send_message(
@@ -125,6 +173,7 @@ class AI:
             message=user_input,
             available_tools=available_tools,
             system_instructions=assistant_instructions,
+            history=Conversation.get_messages(),
         )
 
         function_to_call = helpers_model.get_function_from_response(response)
@@ -151,9 +200,11 @@ class AI:
     ) -> str:
         assistant_instructions = (
             _persona()
-            + " You are tasked with explaining the contents of the screenshot."
-            " If there is highlighted text, focus on that and provide a concise explanation."
-            " Keep the answer short and simple."
+            + " You are tasked with explaining what is shown in the screenshot."
+            " If there is highlighted or selected text, focus on that text and explain its meaning or context."
+            " If there is no highlighted text, describe what the screenshot shows: the application, content, and any"
+            " notable elements visible."
+            " Reply in plain prose, 1-3 sentences. Be direct and specific — avoid vague descriptions."
         )
 
         try:
@@ -180,8 +231,11 @@ class AI:
     ) -> typing.Optional[typing.List[float]]:
         assistant_instructions = (
             _persona()
-            + " You are tasked with finding the text specified by user in the screenshot."
-            " Provide the bounding box coordinates in the format [ymin, xmin, ymax, xmax] normalized to 0-1000."
+            + " Your only task is to locate the specified text in the screenshot and return its bounding box."
+            " Output ONLY a JSON array in the format [ymin, xmin, ymax, xmax] with values normalized to 0-1000."
+            " Example: [120, 340, 180, 620]"
+            " Do not include any explanation, label, or extra text — just the array."
+            " If the text is not visible in the screenshot, output exactly: [0, 0, 0, 0]"
         )
 
         try:

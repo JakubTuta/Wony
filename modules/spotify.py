@@ -95,7 +95,7 @@ class Spotify:
 
     @retry_on_unauthorized("_refresh_access_token")
     @method_job
-    def play_songs(self, title: str, artist: str) -> typing.Optional[str]:
+    def play_songs(self, title: str, artist: str, content_type: str = "") -> typing.Optional[str]:
         """
         [SPOTIFY SERVICE METHOD] Searches and plays music on Spotify by title and/or artist.
         This service method integrates with Spotify API to find and start playbook of songs,
@@ -113,6 +113,10 @@ class Spotify:
         Args:
             title (str): Title of the song or an album to play, or name of the artist if no album/song is specified
             artist (str): Artist of the song to play, if not specified by user then set to empty string ("")
+            content_type (str): Type of content to play - "track" for a single song, "album" for a full album,
+                               "artist" for all music by an artist. Leave empty to use first found result.
+                               Infer from user intent: "play song X" → "track", "play album X" → "album",
+                               "play all music by X" / "play everything by X" → "artist"
 
         Returns:
             str: Success message with track/album details or error message if not found.
@@ -122,7 +126,7 @@ class Spotify:
             self.start_playback()
             return
 
-        search_response = self._search(query=title, artist=artist)
+        search_response = self._search(query=title, artist=artist, content_type=content_type)
 
         if not search_response:
             self._handle_search_not_found(title, artist)
@@ -666,54 +670,70 @@ class Spotify:
 
     @retry_on_unauthorized("_refresh_access_token")
     def _search(
-        self, query: str, artist: str = ""
+        self, query: str, artist: str = "", content_type: str = ""
     ) -> typing.Optional[typing.Dict[str, typing.Any]]:
         final_query = query or artist
 
-        url = f"https://api.spotify.com/v1/search?q={final_query}&limit=10&type=album%2Ctrack%2Cartist"
+        # Map user-facing type to Spotify API type param and search order
+        TYPE_MAP = {
+            "track": ("track", ["tracks"]),
+            "album": ("album", ["albums"]),
+            "artist": ("artist", ["artists"]),
+        }
+        if content_type in TYPE_MAP:
+            api_type, search_order = TYPE_MAP[content_type]
+        else:
+            api_type = "album,track,artist"
+            search_order = ["albums", "tracks", "artists"]
+
+        url = f"https://api.spotify.com/v1/search?q={urllib.parse.quote(final_query)}&limit=10&type={urllib.parse.quote(api_type)}"
         response = self._make_spotify_request("get", url)
         response_data = response.json()
 
-        for content_type in ["albums", "tracks"]:
-            if content_type not in response_data:
-                continue
-
-            items = response_data[content_type]["items"]
-            if not items:
-                continue
-
-            if artist:
-                for item in items:
-                    if any(
-                        a["name"].lower() == artist.lower() for a in item["artists"]
-                    ):
-                        found_item = item
-                        break
-                else:
+        for result_type in search_order:
+            if result_type in ("albums", "tracks"):
+                if result_type not in response_data:
                     continue
-            else:
-                found_item = items[0]
 
-            return {
-                "uri": found_item["uri"],
-                "name": found_item["name"],
-                "artist": artist or found_item["artists"][0]["name"],
-                "type": content_type,
-            }
+                items = response_data[result_type]["items"]
+                if not items:
+                    continue
 
-        # Artist
+                if artist:
+                    for item in items:
+                        if any(
+                            a["name"].lower() == artist.lower() for a in item["artists"]
+                        ):
+                            found_item = item
+                            break
+                    else:
+                        continue
+                else:
+                    found_item = items[0]
 
-        if "artists" not in response_data:
-            return None
+                return {
+                    "uri": found_item["uri"],
+                    "name": found_item["name"],
+                    "artist": artist or found_item["artists"][0]["name"],
+                    "type": result_type,
+                }
 
-        items = response_data["artists"]["items"]
-        if not len(items):
-            return None
+            elif result_type == "artists":
+                if "artists" not in response_data:
+                    return None
 
-        return {
-            "uri": items[0]["name"],
-            "type": "artists",
-        }
+                items = response_data["artists"]["items"]
+                if not items:
+                    return None
+
+                return {
+                    "uri": items[0]["uri"],
+                    "id": items[0]["id"],
+                    "name": items[0]["name"],
+                    "type": "artists",
+                }
+
+        return None
 
     def _get_tracks_from_album(self, album_id: str) -> typing.List[str]:
         url = f"https://api.spotify.com/v1/albums/{album_id}"

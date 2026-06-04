@@ -100,6 +100,7 @@ def send_message(
     system_instructions: typing.Optional[str] = None,
     available_tools: typing.Optional[typing.List[typing.Callable]] = None,
     image: typing.Optional[np.ndarray] = None,
+    history: typing.Optional[typing.List[typing.Dict[str, str]]] = None,
 ) -> typing.Union[
     genai_types.GenerateContentResponse, anthropic.types.Message, ollama.ChatResponse
 ]:
@@ -138,25 +139,41 @@ def send_message(
                 ),
             )
 
-        content = message
+        current_parts: typing.List[typing.Any] = []
         if base64_image is not None:
-            content = [
+            current_parts.append(
                 genai_types.Part.from_bytes(
                     data=base64.b64decode(base64_image), mime_type="image/jpeg"
-                ),
-                message,
-            ]
+                )
+            )
+        current_parts.append(genai_types.Part.from_text(text=message))
+
+        if history:
+            contents: typing.List[typing.Any] = []
+            for msg in history:
+                role = "model" if msg["role"] == "assistant" else "user"
+                contents.append(
+                    genai_types.Content(
+                        role=role,
+                        parts=[genai_types.Part.from_text(text=msg["content"])],
+                    )
+                )
+            contents.append(
+                genai_types.Content(role="user", parts=current_parts)
+            )
+        else:
+            contents = current_parts if len(current_parts) > 1 else current_parts[0]
 
         response = client.models.generate_content(
             model=_get_gemini_model(client),
-            contents=content,
+            contents=contents,
             config=config,
         )
 
         return response
 
     elif isinstance(client, anthropic.Anthropic):
-        messages_content = message
+        messages_content: typing.Any = message
         if base64_image is not None:
             messages_content = [
                 {"type": "text", "text": message},
@@ -170,10 +187,13 @@ def send_message(
                 },
             ]
 
+        anthropic_messages = list(history) if history else []
+        anthropic_messages.append({"role": "user", "content": messages_content})
+
         response = client.messages.create(
             model=_get_anthropic_model(client),
             max_tokens=1024,
-            messages=[{"role": "user", "content": messages_content}],
+            messages=anthropic_messages,
             system=(
                 system_instructions if system_instructions else anthropic.NOT_GIVEN
             ),
@@ -183,21 +203,17 @@ def send_message(
         return response
 
     elif isinstance(client, ollama.Client):
-        messages = [
-            {
-                "role": "user",
-                "content": message,
-            }
-        ]
+        ollama_messages: typing.List[typing.Dict[str, str]] = []
 
         if system_instructions:
-            messages = [
-                {
-                    "role": "assistant",
-                    "content": system_instructions,
-                },
-                *messages,
-            ]
+            ollama_messages.append({"role": "assistant", "content": system_instructions})
+
+        if history:
+            ollama_messages.extend(history)
+
+        ollama_messages.append({"role": "user", "content": message})
+
+        messages = ollama_messages
 
         from helpers.config import Config
 

@@ -3,6 +3,7 @@ import typing
 
 from helpers.audio import Audio
 from helpers.cache import Cache
+from helpers.conversation import Conversation
 from helpers.decorators import capture_response
 from helpers.jobs import BackgroundJobs
 from helpers.logger import logger
@@ -48,6 +49,7 @@ class Employer:
             logger.log_function_response(
                 function_name, str(result) if result else "No response", user_input
             )
+            Conversation.record_turn(user_input, str(result) if result else "")
             return
 
         if (
@@ -70,6 +72,7 @@ class Employer:
                 logger.log_function_response(
                     function_name, str(result) if result else "No response", user_input
                 )
+                Conversation.record_turn(user_input, str(result) if result else "")
             except Exception as e:
                 logger.log_error(
                     f"Function {function_name} failed: {str(e)}", "job_on_command"

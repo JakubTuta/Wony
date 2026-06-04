@@ -29,6 +29,13 @@ ai:
   gemini_model: null
   # Ollama model name; also readable from AI_MODEL env var as fallback.
   ollama_model: "llama3.1"
+  history:
+    # Enable conversation history (multi-turn memory).
+    enabled: true
+    # Number of past exchanges (user+assistant pairs) to keep in context.
+    max_turns: 5
+    # Auto-clear history after this many minutes of inactivity.
+    idle_timeout_minutes: 10
 
 # Only modules listed here will load. A module still won't run if its
 # credentials/deps are missing — it will show as misconfigured/unavailable.

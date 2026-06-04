@@ -19,6 +19,11 @@ DEFAULTS: typing.Dict[str, typing.Any] = {
         "anthropic_model": "claude-3-7-sonnet-20250219",
         "gemini_model": "gemini-2.0-flash",
         "ollama_model": "llama3.1",
+        "history": {
+            "enabled": True,
+            "max_turns": 5,
+            "idle_timeout_minutes": 10,
+        },
     },
     "enabled_modules": ["ai", "status", "weather", "spotify", "system", "screen"],
     "modules": {
