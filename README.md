@@ -8,7 +8,6 @@ A versatile personal assistant powered by AI that accepts both text and voice co
   - Voice commands (with speech recognition)
   - Text commands
 - **Integrations**
-
   - Weather information for any location
   - Gmail account management
   - Spotify music control (play songs, albums, artists)
@@ -164,10 +163,3 @@ Logs are stored in the `logs/` directory in both human-readable `.log` format an
 - **Voice Recognition Issues**: Ensure your microphone is set as the default input device
 - **Ollama Connection Errors**: Verify Ollama is running on the expected port (11434)
 - **Spotify Authentication Failures**: Double-check that your redirect URI matches exactly
-
-## Ports
-
-- PC button server: 5001
-- PC API server: 5002
-- Raspberry Pi button server: 5003
-- Raspberry Pi API server: 5004

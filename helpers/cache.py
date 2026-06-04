@@ -56,11 +56,3 @@ class Cache:
     @staticmethod
     def get_local() -> bool:
         return Cache.get_value("local", default=False)
-
-    @staticmethod
-    def set_server(value: bool) -> None:
-        Cache.set_value("server", value)
-
-    @staticmethod
-    def get_server() -> bool:
-        return Cache.get_value("server", default=False)
