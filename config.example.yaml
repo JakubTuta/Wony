@@ -54,8 +54,8 @@ enabled_modules:
   - status         # always-on: module health and setup diagnostics
   - basics         # time, date, timers, shutdown, daily briefing (no setup needed)
   - weather        # current weather and forecasts by city
-  - spotify        # playback control (play, pause, skip, search, volume)
-  - screen         # screenshot capture and OCR text extraction
+  # - spotify        # playback control (play, pause, skip, search, volume)
+  # - screen         # screenshot capture and OCR text extraction
   # Uncomment to enable:
   # - gmail          # read, search, and monitor Gmail (requires Google OAuth)
   # - calendar       # read Google Calendar events and check availability (requires Google OAuth)
@@ -121,3 +121,21 @@ modules:
   memory:
     # How many days of conversation history to keep in the database.
     max_history_days: 90
+
+server:
+  # Host and port for the web server (python web_server.py).
+  host: "127.0.0.1"
+  port: 8000
+  # Jobs that show a confirm dialog in the web UI before executing.
+  # Defaults to the list below if not set.
+  # destructive_jobs:
+  #   - exit
+  #   - close_computer
+  #   - stop_active_jobs
+  #   - cancel_timers
+  #   - send_email
+  #   - reply_to_email
+  #   - mark_as_read
+  #   - create_event
+  #   - edit_event
+  #   - delete_event

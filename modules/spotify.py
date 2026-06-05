@@ -584,7 +584,7 @@ class Spotify:
             list: Playlist dicts with 'name', 'id', and 'uri'.
         """
         playlists = self._get_user_playlists()
-        names = ", ".join(p["name"] for p in playlists) if playlists else "No playlists found"
+        names = "\n".join(p["name"] for p in playlists) if playlists else "No playlists found"
         self._announce_action(names)
         return playlists
 

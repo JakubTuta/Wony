@@ -299,8 +299,7 @@ def _email_line() -> typing.Optional[str]:
         )
         date_str = cutoff.strftime("%Y/%m/%d")
 
-        client = gmail._client("")
-        msgs = client.get_messages(query=f"in:inbox is:unread after:{date_str}")
+        msgs = gmail._search(f"is:unread after:{date_str}")
 
         if not msgs:
             return "You have no new unread emails since yesterday."

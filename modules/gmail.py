@@ -1,10 +1,11 @@
+import base64
+import dataclasses
+import email.message
 import re
 import typing
 from datetime import datetime
 
 import simplegmail
-import simplegmail.query
-from simplegmail.message import Message
 
 from helpers.accounts import GoogleAccounts
 from helpers.audio import Audio
@@ -14,6 +15,126 @@ from helpers.decorators import capture_response
 from helpers.jobs import BackgroundJobs
 from helpers.registry import method_job, register_service
 from helpers.requirements import Requirement
+
+
+_METADATA_HEADERS = ["From", "To", "Cc", "Bcc", "Subject", "Date"]
+
+
+@dataclasses.dataclass
+class Msg:
+    id: str = ""
+    thread_id: str = ""
+    sender: str = ""
+    recipient: str = ""
+    cc: typing.List[str] = dataclasses.field(default_factory=list)
+    bcc: typing.List[str] = dataclasses.field(default_factory=list)
+    subject: str = ""
+    date: str = ""
+    snippet: str = ""
+    plain: str = ""
+    html: str = ""
+    label_names: typing.List[str] = dataclasses.field(default_factory=list)
+    attachments: typing.List[str] = dataclasses.field(default_factory=list)
+
+
+def _walk_parts(payload: dict) -> typing.Tuple[str, str, typing.List[str]]:
+    """Walk MIME payload tree, return (plain_text, html_text, attachment_filenames)."""
+    plain_parts: typing.List[str] = []
+    html_parts: typing.List[str] = []
+    attachments: typing.List[str] = []
+
+    def _walk(part: dict) -> None:
+        mime = part.get("mimeType", "")
+        body = part.get("body", {})
+        filename = part.get("filename", "")
+
+        if filename:
+            attachments.append(filename)
+            return
+
+        if "parts" in part:
+            for sub in part["parts"]:
+                _walk(sub)
+            return
+
+        data = body.get("data", "")
+        if not data:
+            return
+
+        try:
+            text = base64.urlsafe_b64decode(data + "==").decode("utf-8", errors="replace")
+        except Exception:
+            return
+
+        if mime == "text/plain":
+            plain_parts.append(text)
+        elif mime == "text/html":
+            html_parts.append(text)
+
+    _walk(payload)
+    return "".join(plain_parts), "".join(html_parts), attachments
+
+
+def _parse_raw(raw: dict, label_map: typing.Dict[str, str]) -> Msg:
+    """Parse a raw Gmail API message dict into a Msg."""
+    from email.utils import parsedate_to_datetime
+
+    msg = Msg(
+        id=raw.get("id", ""),
+        thread_id=raw.get("threadId", ""),
+        snippet=raw.get("snippet", ""),
+    )
+
+    payload = raw.get("payload", {})
+    for h in payload.get("headers", []):
+        name = h.get("name", "").lower()
+        value = h.get("value", "")
+        if name == "from":
+            msg.sender = value
+        elif name == "to":
+            msg.recipient = value
+        elif name == "cc":
+            msg.cc = [x.strip() for x in value.split(",") if x.strip()]
+        elif name == "bcc":
+            msg.bcc = [x.strip() for x in value.split(",") if x.strip()]
+        elif name == "subject":
+            msg.subject = value
+        elif name == "date":
+            try:
+                dt = parsedate_to_datetime(value)
+                msg.date = dt.isoformat()
+            except Exception:
+                msg.date = value
+
+    msg.label_names = [label_map.get(lid, lid) for lid in raw.get("labelIds", [])]
+
+    if payload:
+        plain, html, atts = _walk_parts(payload)
+        msg.plain = plain
+        msg.html = html
+        msg.attachments = atts
+
+    return msg
+
+
+def _build_mime_raw(
+    sender: str,
+    to: str,
+    subject: str,
+    body: str,
+    thread_id: typing.Optional[str] = None,
+) -> dict:
+    """Return a raw base64url MIME message dict for the Gmail API send/draft endpoints."""
+    mime = email.message.EmailMessage()
+    mime["To"] = to
+    mime["From"] = sender
+    mime["Subject"] = subject
+    mime.set_content(body)
+    raw = base64.urlsafe_b64encode(mime.as_bytes()).decode()
+    result: typing.Dict[str, str] = {"raw": raw}
+    if thread_id:
+        result["threadId"] = thread_id
+    return result
 
 
 def _gmail_job_name(account_name: str) -> str:
@@ -37,9 +158,10 @@ class Gmail:
 
     def __init__(self):
         self._clients: typing.Dict[str, simplegmail.Gmail] = {}
+        self._label_maps: typing.Dict[str, typing.Dict[str, str]] = {}
 
     # ------------------------------------------------------------------
-    # Internal helpers
+    # Auth
     # ------------------------------------------------------------------
 
     def _client(self, account: str) -> simplegmail.Gmail:
@@ -51,6 +173,14 @@ class Gmail:
                 creds_file=rec["gmail_token"],
             )
         return self._clients[name]
+
+    def _svc(self, account: str):
+        """Auto-refreshing raw googleapiclient Gmail resource."""
+        return self._client(account).service
+
+    # ------------------------------------------------------------------
+    # Config
+    # ------------------------------------------------------------------
 
     def _default_max(self) -> int:
         return int(Config.module_settings("gmail").get("max_results", 20))
@@ -64,68 +194,174 @@ class Gmail:
     def _ai_summary_max_emails(self) -> int:
         return int(Config.module_settings("gmail").get("ai_summary_max_emails", 30))
 
-    def _folder_query(self, folder: str) -> str:
-        """Return a raw Gmail search token for the given folder, or empty string."""
+    # ------------------------------------------------------------------
+    # Raw API helpers
+    # ------------------------------------------------------------------
+
+    def _label_map(self, account: str) -> typing.Dict[str, str]:
+        """Cached {label_id: label_name} per account. Fetched once."""
+        name = GoogleAccounts.resolve(account or None)
+        if name not in self._label_maps:
+            res = self._svc(account).users().labels().list(userId="me").execute()
+            self._label_maps[name] = {
+                lbl["id"]: lbl["name"] for lbl in res.get("labels", [])
+            }
+        return self._label_maps[name]
+
+    def _scope(self, query: str, folder: str = "", no_inbox_prefix: bool = False) -> str:
+        """Build a scoped Gmail query. Default scope is inbox; always strips spam/trash."""
         folder = (folder or "").strip().lower()
-        mapping = {
+        folder_map = {
             "sent": "in:sent",
             "inbox": "in:inbox",
-            "trash": "in:trash",
-            "spam": "in:spam",
             "starred": "is:starred",
             "important": "is:important",
             "drafts": "in:drafts",
-            "all": "",
         }
-        return mapping.get(folder, "")
+        if no_inbox_prefix:
+            prefix = ""
+        elif folder:
+            prefix = folder_map.get(folder, "in:inbox")
+        else:
+            prefix = "in:inbox"
+        parts = [p for p in [prefix, query, "-in:spam -in:trash"] if p]
+        return " ".join(parts)
 
-    def _sort_desc(self, messages: typing.List[Message]) -> typing.List[Message]:
-        """Sort messages newest-first by date."""
-        def _parse(m: Message) -> datetime:
-            try:
-                dt = datetime.fromisoformat(m.date.strip()) if m.date else datetime.min
-                return dt.replace(tzinfo=None) if dt.tzinfo is not None else dt
-            except (ValueError, AttributeError):
-                return datetime.min
-        return sorted(messages, key=_parse, reverse=True)
+    def _list_ids(self, svc, query: str, cap: int) -> typing.List[dict]:
+        """Fetch up to cap message refs ({id, threadId}) without downloading bodies."""
+        refs: typing.List[dict] = []
+        kwargs: typing.Dict[str, typing.Any] = {
+            "userId": "me",
+            "q": query,
+            "maxResults": min(cap, 500),
+        }
+        while len(refs) < cap:
+            resp = svc.users().messages().list(**kwargs).execute()
+            batch = resp.get("messages", [])
+            refs.extend(batch)
+            if not batch or len(refs) >= cap or "nextPageToken" not in resp:
+                break
+            kwargs["pageToken"] = resp["nextPageToken"]
+            kwargs["maxResults"] = min(cap - len(refs), 500)
+        return refs[:cap]
 
-    def _fetch(
-        self, query_params: dict, max_results: int, account: str
-    ) -> typing.List[Message]:
+    def _batch_get(
+        self,
+        svc,
+        refs: typing.List[dict],
+        fmt: str,
+        label_map: typing.Dict[str, str],
+    ) -> typing.List[Msg]:
+        """Fetch and parse messages in batches of 100 via HTTP batch requests."""
+        if not refs:
+            return []
+
+        results: typing.List[typing.Optional[Msg]] = [None] * len(refs)
+
+        def _make_cb(idx: int):
+            def cb(request_id, response, exception):
+                if exception is None and response:
+                    results[idx] = _parse_raw(response, label_map)
+            return cb
+
+        for start in range(0, len(refs), 100):
+            chunk = refs[start:start + 100]
+            batch_req = svc.new_batch_http_request()
+            for j, ref in enumerate(chunk):
+                req_kwargs: typing.Dict[str, typing.Any] = {
+                    "userId": "me",
+                    "id": ref["id"],
+                    "format": fmt,
+                }
+                if fmt == "metadata":
+                    req_kwargs["metadataHeaders"] = _METADATA_HEADERS
+                batch_req.add(
+                    svc.users().messages().get(**req_kwargs),
+                    callback=_make_cb(start + j),
+                )
+            batch_req.execute()
+
+        return [m for m in results if m is not None]
+
+    def _count(self, svc, query: str) -> int:
+        """Approximate message count via resultSizeEstimate (1 API call, no bodies)."""
+        resp = svc.users().messages().list(
+            userId="me", q=query, maxResults=1
+        ).execute()
+        return resp.get("resultSizeEstimate", len(resp.get("messages", [])))
+
+    def _label_counts(self, svc, label_id: str) -> dict:
+        """Return label stats dict (messagesUnread, messagesTotal) — 1 API call."""
+        return svc.users().labels().get(userId="me", id=label_id).execute()
+
+    def _batch_modify(
+        self,
+        svc,
+        ids: typing.List[str],
+        add_labels: typing.List[str],
+        remove_labels: typing.List[str],
+    ) -> int:
+        """Batch modify labels on messages. Returns count of successfully modified."""
+        if not ids:
+            return 0
+
+        count = 0
+
+        def _cb(request_id, response, exception):
+            nonlocal count
+            if exception is None:
+                count += 1
+
+        for start in range(0, len(ids), 100):
+            chunk = ids[start:start + 100]
+            batch_req = svc.new_batch_http_request()
+            for mid in chunk:
+                batch_req.add(
+                    svc.users().messages().modify(
+                        userId="me",
+                        id=mid,
+                        body={"addLabelIds": add_labels, "removeLabelIds": remove_labels},
+                    ),
+                    callback=_cb,
+                )
+            batch_req.execute()
+
+        return count
+
+    def _save_draft(
+        self,
+        account: str,
+        to: str,
+        subject: str,
+        body: str,
+        thread_id: typing.Optional[str] = None,
+    ) -> str:
+        """Save a draft via the Gmail API. Returns draft ID."""
+        sender_email = GoogleAccounts.record(GoogleAccounts.resolve(account or None)).get("email", "")
+        svc = self._svc(account)
+        msg_dict = _build_mime_raw(sender_email, to, subject, body, thread_id)
+        draft = svc.users().drafts().create(
+            userId="me", body={"message": msg_dict}
+        ).execute()
+        return draft.get("id", "unknown")
+
+    # ------------------------------------------------------------------
+    # Formatting
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_date(m: Msg) -> datetime:
         try:
-            max_results = int(max_results)
-        except (TypeError, ValueError):
-            max_results = 0
-        if max_results <= 0:
-            max_results = self._default_max()
-        client = self._client(account)
-        msgs = client.get_messages(
-            query=simplegmail.query.construct_query(query_params)
-        )
-        return msgs[:max_results]
+            dt = datetime.fromisoformat(m.date.strip()) if m.date else datetime.min
+            return dt.replace(tzinfo=None) if dt.tzinfo is not None else dt
+        except (ValueError, AttributeError):
+            return datetime.min
 
-    def _get_new_messages(self, account: str) -> typing.List[Message]:
-        name = GoogleAccounts.resolve(account or None)
-        cache_key = f"last_email_date_{name}"
-        newer_than_days = self._get_newer_than_days(cache_key)
-        client = self._client(account)
-        return client.get_messages(
-            query=simplegmail.query.construct_query({
-                "newer_than": (newer_than_days, "day"),
-                "unread": True,
-            })
-        )
-
-    def _get_newer_than_days(self, cache_key: str) -> int:
-        last_email_date: typing.Optional[str] = Cache.get_value(cache_key)
-        if last_email_date is None:
-            last_email_date = datetime.now().isoformat()
-        Cache.set_value(cache_key, datetime.now().isoformat())
-        newer_than_date = datetime.fromisoformat(last_email_date)
-        return (datetime.now() - newer_than_date).days + 1
+    def _sort_desc(self, messages: typing.List[Msg]) -> typing.List[Msg]:
+        return sorted(messages, key=Gmail._parse_date, reverse=True)
 
     def _format_message(
-        self, message: Message, verbose: bool = False, max_body: int = 0
+        self, message: Msg, verbose: bool = False, max_body: int = 0
     ) -> str:
         sender = self._format_sender(message.sender.strip()) if message.sender else "Unknown"
         date = self._format_time(message.date.strip()) if message.date else "Unknown date"
@@ -138,21 +374,16 @@ class Gmail:
         ]
 
         if verbose:
-            recipient = getattr(message, "recipient", "") or ""
-            if recipient:
-                parts.append(f"To: {recipient.strip()}")
+            if message.recipient:
+                parts.append(f"To: {message.recipient.strip()}")
 
-            cc = getattr(message, "cc", None)
-            if cc:
-                cc_str = ", ".join(cc) if isinstance(cc, list) else str(cc)
-                parts.append(f"CC: {cc_str.strip()}")
+            if message.cc:
+                parts.append(f"CC: {', '.join(message.cc)}")
 
-            bcc = getattr(message, "bcc", None)
-            if bcc:
-                bcc_str = ", ".join(bcc) if isinstance(bcc, list) else str(bcc)
-                parts.append(f"BCC: {bcc_str.strip()}")
+            if message.bcc:
+                parts.append(f"BCC: {', '.join(message.bcc)}")
 
-            labels = [str(l) for l in (getattr(message, "label_ids", []) or [])]
+            labels = message.label_names or []
             readable_labels = [
                 lbl for lbl in labels
                 if lbl not in ("UNREAD", "CATEGORY_PERSONAL", "CATEGORY_PROMOTIONS",
@@ -161,16 +392,10 @@ class Gmail:
             if readable_labels:
                 parts.append(f"Labels: {', '.join(readable_labels)}")
 
-            is_unread = "UNREAD" in labels
-            parts.append(f"Read: {'No' if is_unread else 'Yes'}")
+            parts.append(f"Read: {'No' if 'UNREAD' in labels else 'Yes'}")
 
-            attachments = getattr(message, "attachments", []) or []
-            if attachments:
-                att_names = [
-                    getattr(a, "filename", None) or getattr(a, "name", "unnamed")
-                    for a in attachments
-                ]
-                parts.append(f"Attachments: {', '.join(att_names)}")
+            if message.attachments:
+                parts.append(f"Attachments: {', '.join(message.attachments)}")
 
             body = ""
             if message.plain:
@@ -205,7 +430,7 @@ class Gmail:
 
     def _render_messages(
         self,
-        messages: typing.List[Message],
+        messages: typing.List[Msg],
         header: str,
         audio: bool,
         count_template: str,
@@ -245,7 +470,38 @@ class Gmail:
         return f"{header}\n{count_msg}\n\n{result}"
 
     # ------------------------------------------------------------------
-    # Jobs
+    # Internal fetch helpers
+    # ------------------------------------------------------------------
+
+    def _get_new_messages(self, account: str) -> typing.List[Msg]:
+        name = GoogleAccounts.resolve(account or None)
+        cache_key = f"last_email_date_{name}"
+        newer_than_days = self._get_newer_than_days(cache_key)
+        svc = self._svc(account)
+        label_map = self._label_map(account)
+        query = self._scope(f"is:unread newer_than:{newer_than_days}d")
+        refs = self._list_ids(svc, query, self._default_max())
+        return self._batch_get(svc, refs, "metadata", label_map)
+
+    def _get_newer_than_days(self, cache_key: str) -> int:
+        last_email_date: typing.Optional[str] = Cache.get_value(cache_key)
+        if last_email_date is None:
+            last_email_date = datetime.now().isoformat()
+        Cache.set_value(cache_key, datetime.now().isoformat())
+        newer_than_date = datetime.fromisoformat(last_email_date)
+        return max(1, (datetime.now() - newer_than_date).days + 1)
+
+    def _search(self, query: str, max_results: int = 0, account: str = "") -> typing.List[Msg]:
+        """Public search helper returning Msg list (for external callers)."""
+        if max_results <= 0:
+            max_results = self._default_max()
+        svc = self._svc(account)
+        label_map = self._label_map(account)
+        refs = self._list_ids(svc, self._scope(query), max_results)
+        return self._batch_get(svc, refs, "metadata", label_map)
+
+    # ------------------------------------------------------------------
+    # Jobs — read
     # ------------------------------------------------------------------
 
     @capture_response
@@ -297,25 +553,26 @@ class Gmail:
         Args:
             days_back (int): How many days back to search (default 7).
             max_results (int): Maximum emails to return (default from config).
-            folder (str): Folder to search: inbox, sent, all (default: all).
+            folder (str): Folder to search: inbox, sent (default: inbox).
             account (str): Google account to use (default: primary).
 
         Returns:
             str: All emails with full details.
         """
         days_back = int(days_back) if days_back else 7
-        audio = Cache.get_audio()
-        base_q = simplegmail.query.construct_query({"newer_than": (days_back, "day")})
-        folder_q = self._folder_query(folder)
-        raw_query = f"{folder_q} {base_q}".strip() if folder_q else base_q
         try:
             max_r = int(max_results) if max_results else 0
         except (TypeError, ValueError):
             max_r = 0
         if max_r <= 0:
             max_r = self._default_max()
-        client = self._client(account)
-        messages = self._sort_desc(client.get_messages(query=raw_query)[:max_r])
+
+        audio = Cache.get_audio()
+        svc = self._svc(account)
+        label_map = self._label_map(account)
+        query = self._scope(f"newer_than:{days_back}d", folder=folder)
+        refs = self._list_ids(svc, query, max_r)
+        messages = self._sort_desc(self._batch_get(svc, refs, "metadata", label_map))
         folder_label = f" ({folder})" if folder else ""
         return self._render_messages(
             messages,
@@ -349,8 +606,10 @@ class Gmail:
         audio = Cache.get_audio()
         if not max_results or max_results <= 0:
             max_results = self._default_max()
-        client = self._client(account)
-        messages = self._sort_desc(client.get_messages(query=query)[:max_results])
+        svc = self._svc(account)
+        label_map = self._label_map(account)
+        refs = self._list_ids(svc, self._scope(query), max_results)
+        messages = self._sort_desc(self._batch_get(svc, refs, "metadata", label_map))
         return self._render_messages(
             messages,
             header=f"Searching emails: {query}",
@@ -382,14 +641,470 @@ class Gmail:
         """
         if not sender:
             return "Please provide a sender name or address."
+        try:
+            max_results = int(max_results)
+        except (TypeError, ValueError):
+            max_results = 0
+        if max_results <= 0:
+            max_results = self._default_max()
+
         audio = Cache.get_audio()
-        messages = self._sort_desc(self._fetch({"sender": sender}, max_results, account))
+        svc = self._svc(account)
+        label_map = self._label_map(account)
+        refs = self._list_ids(svc, self._scope(f"from:{sender}"), max_results)
+        messages = self._sort_desc(self._batch_get(svc, refs, "metadata", label_map))
         return self._render_messages(
             messages,
             header=f"Emails from: {sender}",
             audio=audio,
             count_template=f"Found {{count}} email(s) from {sender}.",
         )
+
+    @capture_response
+    @method_job
+    def get_latest_email(self, folder: str = "inbox", sender: str = "", subject: str = "", account: str = "") -> str:
+        """
+        [EMAIL MANAGEMENT JOB] Retrieves the single most recent email, optionally filtered
+        by folder (inbox/sent), sender, or subject. Returns full details including body.
+
+        Use this job when the user wants to:
+        - Read the most recent or last email
+        - Get the latest message from a specific person
+        - See the last sent email
+        - View the newest email in inbox or sent folder
+
+        Keywords: last email, latest email, most recent email, newest email, last sent email,
+                 latest sent email, my last message, most recent message, last inbox email,
+                 last message from, newest message, what was my last email, get my last sent
+
+        Args:
+            folder (str): Folder to look in: inbox, sent (default: inbox).
+            sender (str): Optional filter by sender name or address.
+            subject (str): Optional filter by subject keywords.
+            account (str): Google account to use (default: primary).
+
+        Returns:
+            str: Full details of the most recent matching email.
+        """
+        audio = Cache.get_audio()
+        svc = self._svc(account)
+        label_map = self._label_map(account)
+
+        parts = []
+        if sender:
+            parts.append(f"from:{sender}")
+        if subject:
+            parts.append(f"subject:{subject}")
+        query = self._scope(" ".join(parts), folder=folder)
+
+        refs = self._list_ids(svc, query, 10)
+        if not refs:
+            return "No matching email found."
+
+        messages = self._sort_desc(self._batch_get(svc, refs, "full", label_map))
+        if not messages:
+            return "No matching email found."
+
+        max_body = self._max_body_chars() if audio else 0
+        folder_label = f" ({folder})" if folder else ""
+        return f"Latest email{folder_label}:\n" + self._format_message(messages[0], verbose=True, max_body=max_body)
+
+    @capture_response
+    @method_job
+    def read_email(self, query: str = "", sender: str = "", subject: str = "", folder: str = "", account: str = "") -> str:
+        """
+        [EMAIL MANAGEMENT JOB] Finds the most recent matching email and reads its full body.
+
+        Use this job when the user wants to:
+        - Read the content of a specific email
+        - Open and view an email message
+        - Hear or see what an email says
+
+        Keywords: read email, open email, what does the email say, read the message,
+                 read email from, show email content, read me the email, view email,
+                 what did they write, read message from
+
+        Args:
+            query (str): Free-form Gmail search query to find the email.
+            sender (str): Filter by sender name or address.
+            subject (str): Filter by subject keywords.
+            folder (str): Folder to search: inbox, sent (default: inbox).
+            account (str): Google account to use (default: primary).
+
+        Returns:
+            str: Full email body and headers.
+        """
+        audio = Cache.get_audio()
+        svc = self._svc(account)
+        label_map = self._label_map(account)
+
+        if query:
+            scoped = self._scope(query, folder=folder)
+        else:
+            parts = []
+            if sender:
+                parts.append(f"from:{sender}")
+            if subject:
+                parts.append(f"subject:{subject}")
+            scoped = self._scope(" ".join(parts), folder=folder)
+
+        refs = self._list_ids(svc, scoped, 10)
+        if not refs:
+            return "No matching email found."
+
+        messages = self._sort_desc(self._batch_get(svc, refs, "full", label_map))
+        if not messages:
+            return "No matching email found."
+
+        max_body = self._max_body_chars() if audio else 0
+        return self._format_message(messages[0], verbose=True, max_body=max_body)
+
+    @capture_response
+    @method_job
+    def get_unread_count(self, account: str = "") -> str:
+        """
+        [EMAIL MANAGEMENT JOB] Returns the count of unread emails in the inbox.
+
+        Use this job when the user wants to:
+        - Know how many unread emails they have
+        - Check if there is new mail
+        - Get a quick inbox status
+
+        Keywords: how many unread, unread count, unread emails, do I have new mail,
+                 how many emails, new email count, unread messages, inbox count
+
+        Args:
+            account (str): Google account to use (default: primary).
+
+        Returns:
+            str: Number of unread emails.
+        """
+        stats = self._label_counts(self._svc(account), "INBOX")
+        return f"You have {stats.get('messagesUnread', 0)} unread email(s)."
+
+    @capture_response
+    @method_job
+    def list_labels(self, account: str = "") -> str:
+        """
+        [EMAIL MANAGEMENT JOB] Lists all Gmail labels and folders.
+
+        Use this job when the user wants to:
+        - See all Gmail labels or categories
+        - Browse email folders
+        - Check what labels exist in their mailbox
+
+        Keywords: gmail labels, list labels, email folders, email categories,
+                 my labels, show labels, inbox folders, gmail folders
+
+        Args:
+            account (str): Google account to use (default: primary).
+
+        Returns:
+            str: All label names.
+        """
+        audio = Cache.get_audio()
+        all_names = list(self._label_map(account).values())
+
+        user_labels = [
+            n for n in all_names
+            if not n.startswith("CATEGORY_") and n not in (
+                "INBOX", "SENT", "TRASH", "SPAM", "STARRED", "IMPORTANT",
+                "UNREAD", "DRAFT", "CHAT",
+            )
+        ]
+        system_labels = [
+            n for n in all_names
+            if n in ("INBOX", "SENT", "TRASH", "SPAM", "STARRED", "IMPORTANT", "DRAFT")
+        ]
+
+        if audio:
+            return (
+                f"You have {len(user_labels)} custom label(s): "
+                + (", ".join(user_labels) if user_labels else "none") + "."
+            )
+        lines = [f"System labels: {', '.join(system_labels)}"]
+        if user_labels:
+            lines.append(f"Custom labels ({len(user_labels)}):")
+            for name in sorted(user_labels):
+                lines.append(f"  {name}")
+        else:
+            lines.append("No custom labels.")
+        return "\n".join(lines)
+
+    @capture_response
+    @method_job
+    def get_emails_by_label(self, label: str, max_results: int = 0, account: str = "") -> str:
+        """
+        [EMAIL MANAGEMENT JOB] Retrieves emails with a specific Gmail label applied.
+
+        Use this job when the user wants to:
+        - See emails under a particular label or folder
+        - Browse a specific Gmail category
+        - Find labeled or tagged messages
+
+        Keywords: emails labeled, in folder, under label, category emails, label emails,
+                 emails with label, show label, tagged emails, gmail label
+
+        Args:
+            label (str): The label name to filter by. (required)
+            max_results (int): Maximum emails to return (default from config).
+            account (str): Google account to use (default: primary).
+
+        Returns:
+            str: Emails with that label.
+        """
+        if not label:
+            return "Please specify a label name."
+        try:
+            max_results = int(max_results)
+        except (TypeError, ValueError):
+            max_results = 0
+        if max_results <= 0:
+            max_results = self._default_max()
+
+        audio = Cache.get_audio()
+        svc = self._svc(account)
+        label_map = self._label_map(account)
+        label_q = f'label:"{label}"' if " " in label else f"label:{label}"
+        query = self._scope(label_q, no_inbox_prefix=True)
+        refs = self._list_ids(svc, query, max_results)
+        messages = self._sort_desc(self._batch_get(svc, refs, "metadata", label_map))
+        return self._render_messages(
+            messages,
+            header=f"Emails with label '{label}':",
+            audio=audio,
+            count_template=f"Found {{count}} email(s) with label '{label}'.",
+        )
+
+    @capture_response
+    @method_job
+    def get_emails_with_attachments(self, days_back: int = 30, max_results: int = 0, account: str = "") -> str:
+        """
+        [EMAIL MANAGEMENT JOB] Retrieves recent emails that have file attachments.
+
+        Use this job when the user wants to:
+        - Find emails with attached files
+        - See what documents or files were sent to them
+        - Review emails containing attachments
+
+        Keywords: emails with attachments, files sent to me, documents in email,
+                 email attachments, emails with files, find attachment, messages with files,
+                 email with pdf, email with document
+
+        Args:
+            days_back (int): How many days back to search (default 30).
+            max_results (int): Maximum emails to return (default from config).
+            account (str): Google account to use (default: primary).
+
+        Returns:
+            str: Emails with attachment filenames listed.
+        """
+        days_back = int(days_back) if days_back else 30
+        try:
+            max_results = int(max_results)
+        except (TypeError, ValueError):
+            max_results = 0
+        if max_results <= 0:
+            max_results = self._default_max()
+
+        audio = Cache.get_audio()
+        svc = self._svc(account)
+        label_map = self._label_map(account)
+        query = self._scope(f"has:attachment newer_than:{days_back}d")
+        refs = self._list_ids(svc, query, max_results)
+        messages = self._sort_desc(self._batch_get(svc, refs, "metadata", label_map))
+        return self._render_messages(
+            messages,
+            header=f"Emails with attachments (past {days_back} days):",
+            audio=audio,
+            count_template="Found {count} email(s) with attachments.",
+        )
+
+    @capture_response
+    @method_job
+    def get_starred_emails(self, max_results: int = 0, account: str = "") -> str:
+        """
+        [EMAIL MANAGEMENT JOB] Retrieves starred (bookmarked) emails.
+
+        Use this job when the user wants to:
+        - See their starred or bookmarked emails
+        - Review important flagged messages
+        - Browse starred inbox items
+
+        Keywords: starred emails, starred messages, flagged emails, bookmarked emails,
+                 show starred, my starred, starred mail
+
+        Args:
+            max_results (int): Maximum emails to return (default from config).
+            account (str): Google account to use (default: primary).
+
+        Returns:
+            str: Starred emails with full details.
+        """
+        try:
+            max_results = int(max_results)
+        except (TypeError, ValueError):
+            max_results = 0
+        if max_results <= 0:
+            max_results = self._default_max()
+
+        audio = Cache.get_audio()
+        svc = self._svc(account)
+        label_map = self._label_map(account)
+        query = self._scope("is:starred", no_inbox_prefix=True)
+        refs = self._list_ids(svc, query, max_results)
+        messages = self._sort_desc(self._batch_get(svc, refs, "metadata", label_map))
+        return self._render_messages(
+            messages,
+            header="Starred emails:",
+            audio=audio,
+            count_template="Found {count} starred email(s).",
+        )
+
+    @capture_response
+    @method_job
+    def get_important_emails(self, max_results: int = 0, account: str = "") -> str:
+        """
+        [EMAIL MANAGEMENT JOB] Retrieves emails marked as important by Gmail.
+
+        Use this job when the user wants to:
+        - See high-priority or important emails
+        - Review the priority inbox
+        - Browse important flagged messages
+
+        Keywords: important emails, priority inbox, important messages, high priority email,
+                 show important, marked important, priority emails
+
+        Args:
+            max_results (int): Maximum emails to return (default from config).
+            account (str): Google account to use (default: primary).
+
+        Returns:
+            str: Important emails with full details.
+        """
+        try:
+            max_results = int(max_results)
+        except (TypeError, ValueError):
+            max_results = 0
+        if max_results <= 0:
+            max_results = self._default_max()
+
+        audio = Cache.get_audio()
+        svc = self._svc(account)
+        label_map = self._label_map(account)
+        query = self._scope("is:important", no_inbox_prefix=True)
+        refs = self._list_ids(svc, query, max_results)
+        messages = self._sort_desc(self._batch_get(svc, refs, "metadata", label_map))
+        return self._render_messages(
+            messages,
+            header="Important emails:",
+            audio=audio,
+            count_template="Found {count} important email(s).",
+        )
+
+    @capture_response
+    @method_job
+    def get_email_thread(self, query: str = "", subject: str = "", account: str = "") -> str:
+        """
+        [EMAIL MANAGEMENT JOB] Retrieves and displays a full email conversation thread.
+
+        Use this job when the user wants to:
+        - Read an entire email conversation
+        - See all replies in an email thread
+        - Review the full exchange of messages
+
+        Keywords: email thread, email conversation, full exchange, email replies,
+                 read thread, show conversation, email chain, all replies, thread
+
+        Args:
+            query (str): Search query to find the thread (sender, subject, keywords).
+            subject (str): Subject of the thread to find.
+            account (str): Google account to use (default: primary).
+
+        Returns:
+            str: Full thread oldest to newest.
+        """
+        if not query and not subject:
+            return "Please provide a query or subject to find the thread."
+
+        audio = Cache.get_audio()
+        svc = self._svc(account)
+        label_map = self._label_map(account)
+
+        search_q = query if query else f"subject:{subject}"
+        refs = self._list_ids(svc, self._scope(search_q), 1)
+        if not refs:
+            return "No matching email found."
+
+        thread_id = refs[0].get("threadId", "")
+        if not thread_id:
+            return "No matching email found."
+
+        thread_raw = svc.users().threads().get(
+            userId="me", id=thread_id, format="full"
+        ).execute()
+
+        thread_msgs = [
+            _parse_raw(raw_msg, label_map)
+            for raw_msg in thread_raw.get("messages", [])
+        ]
+        thread_msgs.sort(key=Gmail._parse_date)
+
+        seed_subject = thread_msgs[0].subject if thread_msgs else (subject or "")
+        max_body = self._max_body_chars() if audio else 0
+        lines = [f"Thread: '{seed_subject}' — {len(thread_msgs)} message(s)"]
+        for i, message in enumerate(thread_msgs, 1):
+            lines.append(f"\n--- Message {i} ---")
+            lines.append(self._format_message(message, verbose=True, max_body=max_body))
+        return "\n".join(lines)
+
+    @capture_response
+    @method_job
+    def summarize_inbox(self, account: str = "") -> str:
+        """
+        [EMAIL MANAGEMENT JOB] Provides a summary overview of the inbox status.
+
+        Use this job when the user wants to:
+        - Get a quick overview of their inbox
+        - See inbox statistics at a glance
+        - Know who is sending the most emails
+
+        Keywords: inbox summary, inbox overview, email summary, what is in my inbox,
+                 inbox status, email stats, how is my inbox, inbox report
+
+        Args:
+            account (str): Google account to use (default: primary).
+
+        Returns:
+            str: Inbox summary including unread count, attachments, top senders.
+        """
+        svc = self._svc(account)
+        label_map = self._label_map(account)
+
+        unread_count = self._label_counts(svc, "INBOX").get("messagesUnread", 0)
+        att_count = self._count(svc, self._scope(f"has:attachment newer_than:7d"))
+
+        unread_refs = self._list_ids(svc, self._scope("is:unread"), 50)
+        unread_msgs = self._batch_get(svc, unread_refs, "metadata", label_map)
+
+        sender_counts: typing.Dict[str, int] = {}
+        for m in unread_msgs:
+            s = self._format_sender(m.sender or "Unknown")
+            sender_counts[s] = sender_counts.get(s, 0) + 1
+        top_senders = sorted(sender_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+
+        lines = [
+            "Inbox summary:",
+            f"Unread emails: {unread_count}",
+            f"Emails with attachments (last 7 days): {att_count}",
+        ]
+        if top_senders:
+            lines.append(f"Top senders (unread): {', '.join(f'{s} ({c})' for s, c in top_senders)}")
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # Jobs — background polling
+    # ------------------------------------------------------------------
 
     @capture_response
     @method_job
@@ -474,454 +1189,9 @@ class Gmail:
         stopped_any = any(BackgroundJobs.stop(j) for j in gmail_jobs)
         return "Email polling stopped." if stopped_any else "Email polling was not running."
 
-    @capture_response
-    @method_job
-    def get_latest_email(self, folder: str = "inbox", sender: str = "", subject: str = "", account: str = "") -> str:
-        """
-        [EMAIL MANAGEMENT JOB] Retrieves the single most recent email, optionally filtered
-        by folder (inbox/sent/all), sender, or subject. Returns full details including body.
-
-        Use this job when the user wants to:
-        - Read the most recent or last email
-        - Get the latest message from a specific person
-        - See the last sent email
-        - View the newest email in inbox or sent folder
-
-        Keywords: last email, latest email, most recent email, newest email, last sent email,
-                 latest sent email, my last message, most recent message, last inbox email,
-                 last message from, newest message, what was my last email, get my last sent
-
-        Args:
-            folder (str): Folder to look in: inbox, sent, all (default: inbox).
-            sender (str): Optional filter by sender name or address.
-            subject (str): Optional filter by subject keywords.
-            account (str): Google account to use (default: primary).
-
-        Returns:
-            str: Full details of the most recent matching email.
-        """
-        audio = Cache.get_audio()
-        parts = []
-        folder_q = self._folder_query(folder)
-        if folder_q:
-            parts.append(folder_q)
-        if sender:
-            parts.append(simplegmail.query.construct_query({"sender": sender}))
-        if subject:
-            parts.append(simplegmail.query.construct_query({"subject": subject}))
-        raw_query = " ".join(parts) if parts else "in:inbox"
-
-        client = self._client(account)
-        messages = client.get_messages(query=raw_query)
-
-        if not messages:
-            return "No matching email found."
-
-        messages = self._sort_desc(messages)
-        message = messages[0]
-        max_body = self._max_body_chars() if audio else 0
-        folder_label = f" ({folder})" if folder else ""
-        return f"Latest email{folder_label}:\n" + self._format_message(message, verbose=True, max_body=max_body)
-
-    @capture_response
-    @method_job
-    def read_email(self, query: str = "", sender: str = "", subject: str = "", folder: str = "", account: str = "") -> str:
-        """
-        [EMAIL MANAGEMENT JOB] Finds the most recent matching email and reads its full body.
-
-        Use this job when the user wants to:
-        - Read the content of a specific email
-        - Open and view an email message
-        - Hear or see what an email says
-
-        Keywords: read email, open email, what does the email say, read the message,
-                 read email from, show email content, read me the email, view email,
-                 what did they write, read message from
-
-        Args:
-            query (str): Free-form Gmail search query to find the email.
-            sender (str): Filter by sender name or address.
-            subject (str): Filter by subject keywords.
-            folder (str): Folder to search: inbox, sent, all (default: all).
-            account (str): Google account to use (default: primary).
-
-        Returns:
-            str: Full email body and headers.
-        """
-        audio = Cache.get_audio()
-        client = self._client(account)
-
-        if query:
-            messages = client.get_messages(query=query)
-        else:
-            parts = []
-            folder_q = self._folder_query(folder)
-            if folder_q:
-                parts.append(folder_q)
-            if sender:
-                parts.append(simplegmail.query.construct_query({"sender": sender}))
-            if subject:
-                parts.append(simplegmail.query.construct_query({"subject": subject}))
-            raw_query = " ".join(parts) if parts else "in:inbox"
-            messages = client.get_messages(query=raw_query)
-
-        if not messages:
-            return "No matching email found."
-
-        messages = self._sort_desc(messages)
-        message = messages[0]
-        max_body = self._max_body_chars() if audio else 0
-        return self._format_message(message, verbose=True, max_body=max_body)
-
-    @capture_response
-    @method_job
-    def get_unread_count(self, account: str = "") -> str:
-        """
-        [EMAIL MANAGEMENT JOB] Returns the count of unread emails in the inbox.
-
-        Use this job when the user wants to:
-        - Know how many unread emails they have
-        - Check if there is new mail
-        - Get a quick inbox status
-
-        Keywords: how many unread, unread count, unread emails, do I have new mail,
-                 how many emails, new email count, unread messages, inbox count
-
-        Args:
-            account (str): Google account to use (default: primary).
-
-        Returns:
-            str: Number of unread emails.
-        """
-        client = self._client(account)
-        messages = client.get_messages(
-            query=simplegmail.query.construct_query({"unread": True})
-        )
-        return f"You have {len(messages)} unread email(s)."
-
-    @capture_response
-    @method_job
-    def list_labels(self, account: str = "") -> str:
-        """
-        [EMAIL MANAGEMENT JOB] Lists all Gmail labels and folders.
-
-        Use this job when the user wants to:
-        - See all Gmail labels or categories
-        - Browse email folders
-        - Check what labels exist in their mailbox
-
-        Keywords: gmail labels, list labels, email folders, email categories,
-                 my labels, show labels, inbox folders, gmail folders
-
-        Args:
-            account (str): Google account to use (default: primary).
-
-        Returns:
-            str: All label names.
-        """
-        audio = Cache.get_audio()
-        client = self._client(account)
-        labels = client.list_labels()
-        user_labels = [
-            lbl.name for lbl in labels
-            if not lbl.name.startswith("CATEGORY_") and lbl.name not in (
-                "INBOX", "SENT", "TRASH", "SPAM", "STARRED", "IMPORTANT",
-                "UNREAD", "DRAFT", "CHAT",
-            )
-        ]
-        system_labels = [
-            lbl.name for lbl in labels
-            if lbl.name in ("INBOX", "SENT", "TRASH", "SPAM", "STARRED", "IMPORTANT", "DRAFT")
-        ]
-
-        if audio:
-            return (
-                f"You have {len(user_labels)} custom label(s): "
-                + (", ".join(user_labels) if user_labels else "none") + "."
-            )
-        lines = [f"System labels: {', '.join(system_labels)}"]
-        if user_labels:
-            lines.append(f"Custom labels ({len(user_labels)}):")
-            for name in sorted(user_labels):
-                lines.append(f"  {name}")
-        else:
-            lines.append("No custom labels.")
-        return "\n".join(lines)
-
-    @capture_response
-    @method_job
-    def get_emails_by_label(self, label: str, max_results: int = 0, account: str = "") -> str:
-        """
-        [EMAIL MANAGEMENT JOB] Retrieves emails with a specific Gmail label applied.
-
-        Use this job when the user wants to:
-        - See emails under a particular label or folder
-        - Browse a specific Gmail category
-        - Find labeled or tagged messages
-
-        Keywords: emails labeled, in folder, under label, category emails, label emails,
-                 emails with label, show label, tagged emails, gmail label
-
-        Args:
-            label (str): The label name to filter by. (required)
-            max_results (int): Maximum emails to return (default from config).
-            account (str): Google account to use (default: primary).
-
-        Returns:
-            str: Emails with that label.
-        """
-        if not label:
-            return "Please specify a label name."
-        audio = Cache.get_audio()
-        messages = self._sort_desc(self._fetch({"labels": [[label]]}, max_results, account))
-        return self._render_messages(
-            messages,
-            header=f"Emails with label '{label}':",
-            audio=audio,
-            count_template=f"Found {{count}} email(s) with label '{label}'.",
-        )
-
-    @capture_response
-    @method_job
-    def get_emails_with_attachments(self, days_back: int = 30, max_results: int = 0, account: str = "") -> str:
-        """
-        [EMAIL MANAGEMENT JOB] Retrieves recent emails that have file attachments.
-
-        Use this job when the user wants to:
-        - Find emails with attached files
-        - See what documents or files were sent to them
-        - Review emails containing attachments
-
-        Keywords: emails with attachments, files sent to me, documents in email,
-                 email attachments, emails with files, find attachment, messages with files,
-                 email with pdf, email with document
-
-        Args:
-            days_back (int): How many days back to search (default 30).
-            max_results (int): Maximum emails to return (default from config).
-            account (str): Google account to use (default: primary).
-
-        Returns:
-            str: Emails with attachment filenames listed.
-        """
-        days_back = int(days_back) if days_back else 30
-        audio = Cache.get_audio()
-        messages = self._sort_desc(self._fetch(
-            {"attachment": True, "newer_than": (days_back, "day")},
-            max_results,
-            account,
-        ))
-        return self._render_messages(
-            messages,
-            header=f"Emails with attachments (past {days_back} days):",
-            audio=audio,
-            count_template="Found {count} email(s) with attachments.",
-        )
-
-    @capture_response
-    @method_job
-    def get_starred_emails(self, max_results: int = 0, account: str = "") -> str:
-        """
-        [EMAIL MANAGEMENT JOB] Retrieves starred (bookmarked) emails.
-
-        Use this job when the user wants to:
-        - See their starred or bookmarked emails
-        - Review important flagged messages
-        - Browse starred inbox items
-
-        Keywords: starred emails, starred messages, flagged emails, bookmarked emails,
-                 show starred, my starred, starred mail
-
-        Args:
-            max_results (int): Maximum emails to return (default from config).
-            account (str): Google account to use (default: primary).
-
-        Returns:
-            str: Starred emails with full details.
-        """
-        audio = Cache.get_audio()
-        messages = self._sort_desc(self._fetch({"starred": True}, max_results, account))
-        return self._render_messages(
-            messages,
-            header="Starred emails:",
-            audio=audio,
-            count_template="Found {count} starred email(s).",
-        )
-
-    @capture_response
-    @method_job
-    def get_important_emails(self, max_results: int = 0, account: str = "") -> str:
-        """
-        [EMAIL MANAGEMENT JOB] Retrieves emails marked as important by Gmail.
-
-        Use this job when the user wants to:
-        - See high-priority or important emails
-        - Review the priority inbox
-        - Browse important flagged messages
-
-        Keywords: important emails, priority inbox, important messages, high priority email,
-                 show important, marked important, priority emails
-
-        Args:
-            max_results (int): Maximum emails to return (default from config).
-            account (str): Google account to use (default: primary).
-
-        Returns:
-            str: Important emails with full details.
-        """
-        audio = Cache.get_audio()
-        messages = self._sort_desc(self._fetch({"important": True}, max_results, account))
-        return self._render_messages(
-            messages,
-            header="Important emails:",
-            audio=audio,
-            count_template="Found {count} important email(s).",
-        )
-
-    @capture_response
-    @method_job
-    def get_email_thread(self, query: str = "", subject: str = "", account: str = "") -> str:
-        """
-        [EMAIL MANAGEMENT JOB] Retrieves and displays a full email conversation thread.
-
-        Use this job when the user wants to:
-        - Read an entire email conversation
-        - See all replies in an email thread
-        - Review the full exchange of messages
-
-        Keywords: email thread, email conversation, full exchange, email replies,
-                 read thread, show conversation, email chain, all replies, thread
-
-        Args:
-            query (str): Search query to find the thread (sender, subject, keywords).
-            subject (str): Subject of the thread to find.
-            account (str): Google account to use (default: primary).
-
-        Returns:
-            str: Full thread oldest to newest.
-        """
-        audio = Cache.get_audio()
-        client = self._client(account)
-
-        if query:
-            seed_msgs = client.get_messages(query=query)
-        elif subject:
-            seed_msgs = client.get_messages(
-                query=simplegmail.query.construct_query({"subject": subject})
-            )
-        else:
-            return "Please provide a query or subject to find the thread."
-
-        if not seed_msgs:
-            return "No matching email found."
-
-        seed = seed_msgs[0]
-        thread_id = seed.thread_id
-        seed_subject = seed.subject or ""
-
-        if seed_subject:
-            all_msgs = client.get_messages(
-                query=simplegmail.query.construct_query({"subject": seed_subject})
-            )
-            thread_msgs = [m for m in all_msgs if m.thread_id == thread_id]
-        else:
-            thread_msgs = [seed]
-
-        def _parse_date(m: Message) -> datetime:
-            try:
-                dt = datetime.fromisoformat(m.date.strip()) if m.date else datetime.min
-                return dt.replace(tzinfo=None) if dt.tzinfo is not None else dt
-            except (ValueError, AttributeError):
-                return datetime.min
-
-        thread_msgs.sort(key=_parse_date)
-
-        max_body = self._max_body_chars() if audio else 0
-        lines = [f"Thread: '{seed_subject}' — {len(thread_msgs)} message(s)"]
-        for i, message in enumerate(thread_msgs, 1):
-            lines.append(f"\n--- Message {i} ---")
-            lines.append(self._format_message(message, verbose=True, max_body=max_body))
-        return "\n".join(lines)
-
-    @capture_response
-    @method_job
-    def summarize_inbox(self, account: str = "") -> str:
-        """
-        [EMAIL MANAGEMENT JOB] Provides a summary overview of the inbox status.
-
-        Use this job when the user wants to:
-        - Get a quick overview of their inbox
-        - See inbox statistics at a glance
-        - Know who is sending the most emails
-
-        Keywords: inbox summary, inbox overview, email summary, what is in my inbox,
-                 inbox status, email stats, how is my inbox, inbox report
-
-        Args:
-            account (str): Google account to use (default: primary).
-
-        Returns:
-            str: Inbox summary including unread count, attachments, top senders.
-        """
-        client = self._client(account)
-
-        unread_msgs = client.get_messages(
-            query=simplegmail.query.construct_query({"unread": True})
-        )
-        attachment_msgs = client.get_messages(
-            query=simplegmail.query.construct_query({
-                "attachment": True,
-                "newer_than": (7, "day"),
-            })
-        )
-
-        sender_counts: typing.Dict[str, int] = {}
-        for m in unread_msgs[:50]:
-            s = self._format_sender(m.sender or "Unknown")
-            sender_counts[s] = sender_counts.get(s, 0) + 1
-        top_senders = sorted(sender_counts.items(), key=lambda x: x[1], reverse=True)[:5]
-
-        lines = [
-            "Inbox summary:",
-            f"Unread emails: {len(unread_msgs)}",
-            f"Emails with attachments (last 7 days): {len(attachment_msgs)}",
-        ]
-        if top_senders:
-            top_str = ", ".join(f"{s} ({c})" for s, c in top_senders)
-            lines.append(f"Top senders (unread): {top_str}")
-        return "\n".join(lines)
-
     # ------------------------------------------------------------------
-    # Write operations
+    # Jobs — write
     # ------------------------------------------------------------------
-
-    def _save_draft(
-        self,
-        client: "simplegmail.Gmail",
-        sender: str,
-        to: str,
-        subject: str,
-        body: str,
-        thread_id: typing.Optional[str] = None,
-    ) -> str:
-        """Save a draft via the underlying Gmail API service."""
-        import base64
-        import email.message
-
-        mime = email.message.EmailMessage()
-        mime["To"] = to
-        mime["From"] = sender
-        mime["Subject"] = subject
-        mime.set_content(body)
-        raw = base64.urlsafe_b64encode(mime.as_bytes()).decode()
-
-        draft_body: typing.Dict[str, typing.Any] = {"message": {"raw": raw}}
-        if thread_id:
-            draft_body["message"]["threadId"] = thread_id
-
-        service = client.gmail_service
-        draft = service.users().drafts().create(userId="me", body=draft_body).execute()
-        return draft.get("id", "unknown")
 
     @capture_response
     @method_job
@@ -957,32 +1227,30 @@ class Gmail:
         if not subject and not body:
             return "Error: Email must have a subject or body."
 
-        client = self._client(account)
-        sender_email = GoogleAccounts.record(GoogleAccounts.resolve(account or None)).get("email", "")
         cfg = Config.module_settings("gmail")
+        subj = subject or "(no subject)"
 
         if not cfg.get("allow_send", False):
             try:
-                self._save_draft(client, sender_email, to, subject or "(no subject)", body)
+                self._save_draft(account, to, subj, body or "")
             except Exception as e:
                 return f"Sending disabled; also failed to save draft: {e}"
             return (
                 f"Sending is disabled (allow_send: false). "
-                f"Email saved as draft in Gmail — To: {to}, Subject: '{subject or '(no subject)'}'.\n"
+                f"Email saved as draft in Gmail — To: {to}, Subject: '{subj}'.\n"
                 "To send directly, set modules.gmail.allow_send: true in config.yaml."
             )
 
         try:
-            client.send_message(
-                sender=sender_email,
-                to=to,
-                subject=subject or "(no subject)",
-                msg_plain=body,
-                msg_html=None,
-            )
+            sender_email = GoogleAccounts.record(GoogleAccounts.resolve(account or None)).get("email", "")
+            svc = self._svc(account)
+            svc.users().messages().send(
+                userId="me",
+                body=_build_mime_raw(sender_email, to, subj, body or ""),
+            ).execute()
         except Exception as e:
             return f"Failed to send email: {e}"
-        return f"Email sent to {to} with subject '{subject}'."
+        return f"Email sent to {to} with subject '{subj}'."
 
     @capture_response
     @method_job
@@ -1018,7 +1286,9 @@ class Gmail:
         if not reply_body:
             return "Error: reply_body is required."
 
-        client = self._client(account)
+        svc = self._svc(account)
+        label_map = self._label_map(account)
+
         q_parts = []
         if query:
             q_parts.append(query)
@@ -1026,27 +1296,27 @@ class Gmail:
             q_parts.append(f"from:{sender}")
         if subject:
             q_parts.append(f"subject:{subject}")
-        search_q = " ".join(q_parts) if q_parts else "in:inbox"
+        search_q = self._scope(" ".join(q_parts))
 
         try:
-            messages = client.get_messages(query=search_q)
+            refs = self._list_ids(svc, search_q, 10)
         except Exception as e:
             return f"Error searching for message: {e}"
 
-        if not messages:
+        if not refs:
             return "No matching email found to reply to."
 
-        msg = sorted(messages, key=lambda m: getattr(m, "date", ""), reverse=True)[0]
-        sender_email = GoogleAccounts.record(GoogleAccounts.resolve(account or None)).get("email", "")
-        reply_subject = str(msg.subject) if str(msg.subject).startswith("Re:") else f"Re: {msg.subject}"
+        msgs = self._sort_desc(self._batch_get(svc, refs, "metadata", label_map))
+        if not msgs:
+            return "No matching email found to reply to."
+
+        msg = msgs[0]
+        reply_subject = msg.subject if msg.subject.startswith("Re:") else f"Re: {msg.subject}"
         cfg = Config.module_settings("gmail")
 
         if not cfg.get("allow_send", False):
             try:
-                self._save_draft(
-                    client, sender_email, msg.sender, reply_subject, reply_body,
-                    thread_id=msg.thread_id,
-                )
+                self._save_draft(account, msg.sender, reply_subject, reply_body, thread_id=msg.thread_id)
             except Exception as e:
                 return f"Sending disabled; also failed to save draft: {e}"
             return (
@@ -1056,14 +1326,11 @@ class Gmail:
             )
 
         try:
-            client.send_message(
-                sender=sender_email,
-                to=msg.sender,
-                subject=reply_subject,
-                msg_plain=reply_body,
-                msg_html=None,
-                thread_id=msg.thread_id,
-            )
+            sender_email = GoogleAccounts.record(GoogleAccounts.resolve(account or None)).get("email", "")
+            svc.users().messages().send(
+                userId="me",
+                body=_build_mime_raw(sender_email, msg.sender, reply_subject, reply_body, msg.thread_id),
+            ).execute()
         except Exception as e:
             return f"Failed to send reply: {e}"
         return f"Reply sent to {msg.sender} in thread '{reply_subject}'."
@@ -1096,7 +1363,8 @@ class Gmail:
         Returns:
             str: Confirmation with count of messages marked as read.
         """
-        client = self._client(account)
+        svc = self._svc(account)
+
         q_parts = ["is:unread"]
         if query:
             q_parts.append(query)
@@ -1104,21 +1372,14 @@ class Gmail:
             q_parts.append(f"from:{sender}")
         if subject:
             q_parts.append(f"subject:{subject}")
-        search_q = " ".join(q_parts)
 
         try:
-            messages = client.get_messages(query=search_q)
+            refs = self._list_ids(svc, self._scope(" ".join(q_parts)), 500)
         except Exception as e:
             return f"Error searching for messages: {e}"
 
-        if not messages:
+        if not refs:
             return "No unread messages matched."
 
-        count = 0
-        for msg in messages:
-            try:
-                msg.mark_as_read()
-                count += 1
-            except Exception:
-                pass
+        count = self._batch_modify(svc, [r["id"] for r in refs], add_labels=[], remove_labels=["UNREAD"])
         return f"Marked {count} message(s) as read."
