@@ -61,7 +61,7 @@ class GoogleAccountsService:
             print(f"Google accounts ({len(accounts)}):\n" + "\n".join(lines))
 
     @method_job
-    def add_google_account(self, name: str = "") -> str:
+    def add_google_account(self, name: str) -> str:
         """
         [GOOGLE ACCOUNTS JOB] Adds a new Google account for Gmail and Calendar access.
         Opens browser for OAuth consent. The first account added becomes the primary.
@@ -77,7 +77,7 @@ class GoogleAccountsService:
                  new google account
 
         Args:
-            name (str): A short label for the account (e.g. 'work', 'personal').
+            name (str): A short label for the account (e.g. 'work', 'personal'). (required)
 
         Returns:
             str: Confirmation that the account was added.
@@ -130,7 +130,7 @@ class GoogleAccountsService:
         return result
 
     @method_job
-    def remove_google_account(self, name: str = "") -> str:
+    def remove_google_account(self, name: str) -> str:
         """
         [GOOGLE ACCOUNTS JOB] Removes a configured Google account and deletes its tokens.
 
@@ -144,7 +144,7 @@ class GoogleAccountsService:
                  delete google account
 
         Args:
-            name (str): The account name to remove (e.g. 'work').
+            name (str): The account name to remove (e.g. 'work'). (required)
 
         Returns:
             str: Confirmation that the account was removed.
@@ -171,7 +171,7 @@ class GoogleAccountsService:
         return result
 
     @method_job
-    def set_primary_account(self, name: str = "") -> str:
+    def set_primary_account(self, name: str) -> str:
         """
         [GOOGLE ACCOUNTS JOB] Sets the primary (default) Google account used when
         no specific account is mentioned.
@@ -186,7 +186,7 @@ class GoogleAccountsService:
                  set default account
 
         Args:
-            name (str): The account name to make primary.
+            name (str): The account name to make primary. (required)
 
         Returns:
             str: Confirmation that the primary account was updated.

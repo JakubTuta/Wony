@@ -30,10 +30,9 @@ DEFAULTS: typing.Dict[str, typing.Any] = {
             "narrate": True,
         },
     },
-    "enabled_modules": ["ai", "status", "weather", "spotify", "system", "screen"],
+    "enabled_modules": ["ai", "status", "basics", "weather", "spotify", "screen"],
     "modules": {
         "shelly": {"base_url": "http://192.168.18.53"},
-        "system": {"allow_shutdown": False},
         "weather": {"default_units": "metric"},
         "gmail": {
             "poll_interval_minutes": 15,

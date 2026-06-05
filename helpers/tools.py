@@ -10,6 +10,10 @@ from PIL import Image
 import helpers.model as helpers_model
 
 
+def _desc_marks_required(desc: str) -> bool:
+    return "(required)" in desc.lower()
+
+
 def function_to_schema(func: typing.Callable) -> typing.Dict[str, typing.Any]:
     """
     Converts a function's docstring into a structured JSON schema object.
@@ -110,6 +114,8 @@ def function_to_schema_ollama(func: typing.Callable) -> typing.Dict[str, typing.
 
         # If not a kwarg and not "kwargs" itself, mark as required
         if not is_kwarg and param_name != "kwargs" and not param_name.startswith("*"):
+            required.append(param_name)
+        elif param_name not in required and _desc_marks_required(param_desc):
             required.append(param_name)
 
     # Handle  case separately by checking the function signature
@@ -220,6 +226,8 @@ def function_to_schema_gemini(func: typing.Callable) -> typing.Dict[str, typing.
         # If not a kwarg and not "kwargs" itself, mark as required
         if not is_kwarg and param_name != "kwargs" and not param_name.startswith("*"):
             required.append(param_name)
+        elif param_name not in required and _desc_marks_required(param_desc):
+            required.append(param_name)
 
     # Handle  case separately by checking the function signature
     sig = inspect.signature(func)
@@ -319,6 +327,8 @@ def function_to_schema_anthropic(func: typing.Callable) -> typing.Dict[str, typi
 
         # If not a kwarg and not "kwargs" itself, mark as required
         if not is_kwarg and param_name != "kwargs" and not param_name.startswith("*"):
+            required.append(param_name)
+        elif param_name not in required and _desc_marks_required(param_desc):
             required.append(param_name)
 
     # Handle  case separately by checking the function signature

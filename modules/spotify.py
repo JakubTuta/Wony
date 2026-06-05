@@ -12,7 +12,7 @@ import requests
 
 from helpers.audio import Audio
 from helpers.cache import Cache
-from helpers.decorators import capture_exception, retry_on_unauthorized
+from helpers.decorators import retry_on_unauthorized
 from helpers.registry import method_job, register_service
 from helpers.requirements import Requirement
 
@@ -71,7 +71,6 @@ class Spotify:
     REDIRECT_URI = f"http://127.0.0.1:{PORT}/callback"
     SCOPE = "user-read-playback-state user-modify-playback-state playlist-read-private playlist-read-collaborative user-library-modify user-library-read"
 
-    @capture_exception
     def __init__(self):
         self.albums = {}
 
@@ -111,8 +110,8 @@ class Spotify:
                  start music, play spotify, listen to, put on music
 
         Args:
-            title (str): Title of the song or an album to play, or name of the artist if no album/song is specified
-            artist (str): Artist of the song to play, if not specified by user then set to empty string ("")
+            title (str): Title of the song or an album to play, or name of the artist if no album/song is specified. (required)
+            artist (str): Artist of the song to play, if not specified by user then set to empty string (""). (required)
             content_type (str): Type of content to play - "track" for a single song, "album" for a full album,
                                "artist" for all music by an artist. Leave empty to use first found result.
                                Infer from user intent: "play song X" → "track", "play album X" → "album",
@@ -162,8 +161,8 @@ class Spotify:
                  add song, queue music, add track, queue this, add to playlist
 
         Args:
-            title (str): Title of the song or an album to add, or name of the artist if no album/song is specified
-            artist (str): Artist of the song to add, if not specified by user then set to empty string ("")
+            title (str): Title of the song or an album to add, or name of the artist if no album/song is specified. (required)
+            artist (str): Artist of the song to add, if not specified by user then set to empty string (""). (required)
 
         Returns:
             None: Specified music will be added to the Spotify queue.
@@ -406,7 +405,7 @@ class Spotify:
         Keywords: set volume, adjust volume, change volume, spotify, sound
 
         Args:
-            volume (int): Volume level between 0 and 100
+            volume (int): Volume level between 0 and 100. (required)
 
         Returns:
             None
@@ -603,7 +602,7 @@ class Spotify:
         Keywords: play playlist, start playlist, listen to playlist, put on playlist
 
         Args:
-            name (str): Full or partial name of the playlist to play.
+            name (str): Full or partial name of the playlist to play. (required)
 
         Returns:
             str: Success or error message.

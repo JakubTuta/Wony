@@ -360,7 +360,7 @@ class Gmail:
 
     @capture_response
     @method_job
-    def get_emails_from_sender(self, sender: str = "", max_results: int = 0, account: str = "") -> str:
+    def get_emails_from_sender(self, sender: str, max_results: int = 0, account: str = "") -> str:
         """
         [EMAIL MANAGEMENT JOB] Retrieves all emails from a specific sender.
 
@@ -373,7 +373,7 @@ class Gmail:
                  correspondence with, messages from sender, all emails from
 
         Args:
-            sender (str): Email address or name to filter by.
+            sender (str): Email address or name to filter by. (required)
             max_results (int): Maximum emails to return (default from config).
             account (str): Google account to use (default: primary).
 
@@ -650,7 +650,7 @@ class Gmail:
 
     @capture_response
     @method_job
-    def get_emails_by_label(self, label: str = "", max_results: int = 0, account: str = "") -> str:
+    def get_emails_by_label(self, label: str, max_results: int = 0, account: str = "") -> str:
         """
         [EMAIL MANAGEMENT JOB] Retrieves emails with a specific Gmail label applied.
 
@@ -663,7 +663,7 @@ class Gmail:
                  emails with label, show label, tagged emails, gmail label
 
         Args:
-            label (str): The label name to filter by.
+            label (str): The label name to filter by. (required)
             max_results (int): Maximum emails to return (default from config).
             account (str): Google account to use (default: primary).
 
@@ -927,7 +927,7 @@ class Gmail:
     @method_job
     def send_email(
         self,
-        to: str = "",
+        to: str,
         subject: str = "",
         body: str = "",
         account: str = "",
@@ -944,9 +944,9 @@ class Gmail:
         Keywords: send email, send message, compose email, email to, write email, draft and send
 
         Args:
-            to (str): Recipient email address.
-            subject (str): Email subject line.
-            body (str): Plain text body of the email.
+            to (str): Recipient email address. (required)
+            subject (str): Email subject line (provide subject or body or both).
+            body (str): Plain text body of the email (provide subject or body or both).
             account (str): Google account to send from (default: primary).
 
         Returns:
@@ -1009,7 +1009,7 @@ class Gmail:
             query (str): Gmail search query to find the email to reply to.
             sender (str): Filter by sender address or name to find the email.
             subject (str): Subject or partial subject to find the email.
-            reply_body (str): Text of the reply.
+            reply_body (str): Text of the reply. (required) Provide at least one of query/sender/subject to identify which email.
             account (str): Google account to use (default: primary).
 
         Returns:

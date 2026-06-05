@@ -52,12 +52,10 @@ ai:
 enabled_modules:
   - ai             # always-on: conversation, history, AI provider routing
   - status         # always-on: module health and setup diagnostics
+  - basics         # time, date, timers, shutdown, daily briefing (no setup needed)
   - weather        # current weather and forecasts by city
   - spotify        # playback control (play, pause, skip, search, volume)
-  - system         # OS-level actions: shutdown, lock, sleep
   - screen         # screenshot capture and OCR text extraction
-  - clock          # current time and date
-  - timer          # countdown timers and stopwatch
   # Uncomment to enable:
   # - gmail          # read, search, and monitor Gmail (requires Google OAuth)
   # - calendar       # read Google Calendar events and check availability (requires Google OAuth)
@@ -70,9 +68,6 @@ modules:
   shelly:
     # IP or hostname of your Shelly device on the local network.
     base_url: "http://192.168.18.53"
-  system:
-    # Safety gate — set to true to allow "close computer" to actually shut down.
-    allow_shutdown: false
   weather:
     default_units: "metric"
   gmail:

@@ -528,7 +528,7 @@ class Calendar:
 
     @capture_response
     @method_job
-    def search_events(self, query: str = "", days_back: int = 30, days_ahead: int = 90, account: str = "") -> str:
+    def search_events(self, query: str, days_back: int = 30, days_ahead: int = 90, account: str = "") -> str:
         """
         [CALENDAR JOB] Searches calendar events by free-text keywords.
 
@@ -542,7 +542,7 @@ class Calendar:
                  find event by name
 
         Args:
-            query (str): Free-text search term (event name, description, etc.).
+            query (str): Free-text search term (event name, description, etc.). (required)
             days_back (int): How many days back to search (default from config).
             days_ahead (int): How many days ahead to search (default from config).
             account (str): Google account to use (default: primary).
@@ -619,7 +619,7 @@ class Calendar:
 
     @capture_response
     @method_job
-    def get_events_from_calendar(self, calendar_name: str = "", hours_ahead: int = 0, account: str = "") -> str:
+    def get_events_from_calendar(self, calendar_name: str, hours_ahead: int = 0, account: str = "") -> str:
         """
         [CALENDAR JOB] Retrieves upcoming events from a specific named calendar.
 
@@ -633,7 +633,7 @@ class Calendar:
                  check specific calendar
 
         Args:
-            calendar_name (str): Name (or partial name) of the calendar to search.
+            calendar_name (str): Name (or partial name) of the calendar to search. (required)
             hours_ahead (int): Look-ahead window in hours (default from config).
             account (str): Google account to use (default: primary).
 
@@ -892,7 +892,7 @@ class Calendar:
     @method_job
     def create_event(
         self,
-        title: str = "",
+        title: str,
         date: str = "",
         start_time: str = "",
         end_time: str = "",
@@ -913,9 +913,9 @@ class Calendar:
                  new appointment, book meeting, add meeting, schedule appointment
 
         Args:
-            title (str): Event title or name.
-            date (str): Date of the event (e.g. 'today', 'tomorrow', '2025-03-15').
-            start_time (str): Start time (e.g. '2pm', '14:00', '9:30am').
+            title (str): Event title or name. (required)
+            date (str): Date of the event (e.g. 'today', 'tomorrow', '2025-03-15'). Provide date or start_time.
+            start_time (str): Start time (e.g. '2pm', '14:00', '9:30am'). Provide date or start_time.
             end_time (str): End time (e.g. '3pm', '15:00'). Defaults to 1 hour after start.
             description (str): Optional description or notes for the event.
             location (str): Optional location or meeting link.
@@ -1015,8 +1015,8 @@ class Calendar:
                  move event, update calendar, change appointment
 
         Args:
-            query (str): Search query or event title to find the event.
-            date (str): Date to search on (narrows the search).
+            query (str): Search query or event title to find the event. Provide query or date (at least one required).
+            date (str): Date to search on (narrows the search). Provide query or date (at least one required).
             new_title (str): New title for the event (leave empty to keep current).
             new_date (str): New date (leave empty to keep current).
             new_start_time (str): New start time (leave empty to keep current).
@@ -1130,8 +1130,8 @@ class Calendar:
                  cancel appointment, remove from calendar
 
         Args:
-            query (str): Event title or search query to find the event.
-            date (str): Date to search on (narrows the search).
+            query (str): Event title or search query to find the event. Provide query or date (at least one required).
+            date (str): Date to search on (narrows the search). Provide query or date (at least one required).
             account (str): Google account to use (default: primary).
 
         Returns:

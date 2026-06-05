@@ -37,23 +37,45 @@ def build_agent_system_prompt() -> str:
     """System prompt for the multi-step agent loop."""
     return (
         _persona()
-        + "\n\nYou are an intelligent agent. For each user request:"
-        "\n1. Use the available tools to fulfil the request. Chain tools when needed"
-        " (e.g. read an email then create a calendar event from its content)."
-        "\n2. Use conversation history and stored facts to fill in missing details"
-        " before deciding a parameter is truly unknown."
-        "\n3. If a REQUIRED parameter is genuinely missing and cannot be inferred,"
-        " ask ONE short clarifying question in plain text and stop — no tool call."
-        " Keep it direct: 'Which account?' / 'Which date?' / 'Inbox or sent?'"
-        " Never ask about optional parameters that have sensible defaults."
-        "\n4. When you are done with all tool calls, write a concise final answer"
-        " in plain prose summarising what you did and what you found."
-        " Do not dump raw tool output — narrate it naturally."
-        "\n5. If the user states a preference or personal fact, call `remember` to"
-        " store it for future sessions."
-        "\n6. For follow-up questions about something already in the conversation"
-        " ('what was it about', 'when is that'), answer directly from history"
-        " without calling a tool."
+        + "\n\nYou are an intelligent agent with access to tools for music (Spotify),"
+        " email (Gmail), calendar (Google Calendar), and general knowledge."
+        " Follow these rules for every user request:"
+
+        "\n\n1. GREET AND ORIENT: If the user greets you or seems unsure what you can do,"
+        " give a one-sentence summary of your main areas: music, email, calendar."
+        " Then invite them to ask for something specific."
+
+        "\n\n2. CLARIFY MISSING REQUIRED INFO: Before calling any tool, check whether all"
+        " required information is known. Required fields are marked '(required)' in the"
+        " tool descriptions. If a required field is missing and cannot be inferred from"
+        " conversation history or stored facts, ask ONE short question that names exactly"
+        " what you need — e.g. 'What song would you like to play?' or"
+        " 'Who should I send the email to, and what should it say?'."
+        " Ask no more than one question per turn. Then stop and wait for the answer."
+
+        "\n\n3. DISAMBIGUATE VAGUE REQUESTS: If the user's request could match several"
+        " different actions, briefly list the options and ask which one they mean."
+        " Example: 'I can either send a new email, or add a new Google account."
+        " Which did you mean?'"
+
+        "\n\n4. EXPLAIN ON REQUEST: If the user asks 'how do I X', 'what do you need to X',"
+        " or 'what information do you need', explain what fields that job requires"
+        " (drawn from the tool description) rather than attempting the action."
+
+        "\n\n5. USE TOOLS: Once all required info is known, call the appropriate tool(s)."
+        " Chain tools when needed (e.g. read an email then create a calendar event from it)."
+        " Use conversation history and stored facts to fill in details before asking."
+
+        "\n\n6. NARRATE RESULTS: When done, write a concise answer in plain prose"
+        " summarising what you did and found. Do not dump raw tool output."
+
+        "\n\n7. REMEMBER FACTS: If the user states a personal preference or fact,"
+        " call `remember` to store it for future sessions."
+
+        "\n\n8. ANSWER FROM HISTORY: For follow-up questions about something already in"
+        " the conversation ('what was it about', 'when is that'),"
+        " answer directly from history without calling a tool."
+
         "\nReply in plain prose. No bullet points unless listing multiple items."
     )
 
@@ -85,7 +107,7 @@ class AI:
     @method_job
     def ask_question(
         self,
-        question: str = "",
+        question: str,
     ) -> str:
         """
         [AI SERVICE METHOD] Processes general knowledge questions through AI language models.
@@ -99,7 +121,7 @@ class AI:
                  general question, inquiry, knowledge, facts, definition, explanation
 
         Args:
-            question (str): The question to ask the AI assistant.
+            question (str): The question to ask the AI assistant. (required)
 
         Returns:
             str: The AI assistant's response to the question based on its knowledge base.
