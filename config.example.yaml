@@ -31,7 +31,7 @@ ai:
   # REQUIRED when provider is 'ollama' — app will not start without this set.
   ollama_model: "llama3.1"
   # Max tokens in a single AI response (applies to Anthropic; Gemini/Ollama use their defaults).
-  max_tokens: 2048
+  max_tokens: 8192
   history:
     # Enable conversation history (multi-turn memory within a session).
     enabled: true
@@ -62,6 +62,9 @@ enabled_modules:
   # - google_accounts  # manage multiple Google accounts (add, remove, set primary)
   # - league         # League of Legends player stats and match history
   # - shelly         # Shelly smart home device control (requires local device)
+  # - scheduler      # Persistent reminders and recurring notifications (pip install -r requirements/scheduler.txt)
+  # - web            # Web search and URL fetch for live information (pip install -r requirements/web.txt)
+  # - desktop        # Desktop control: open apps, windows, clipboard, file search (pip install -r requirements/desktop.txt)
 
 # Per-module non-secret settings.
 modules:
@@ -100,3 +103,21 @@ modules:
     # Safety gate — set to true to allow creating, editing, and deleting events.
     # Note: also requires re-authentication after upgrading from the old readonly scope.
     allow_write: false
+  scheduler:
+    # Set to a time string (e.g. "07:30") to auto-run the daily greeting every morning.
+    # Leave null to disable the automatic briefing.
+    daily_briefing_time: null
+  web:
+    # Maximum characters of page content returned by fetch_url.
+    max_content_chars: 3000
+    # Optional: add TAVILY_API_KEY to .env for higher-quality search (free tier available).
+    # Without it, DuckDuckGo is used automatically — no key needed.
+  desktop:
+    # Safety gate — set to true to enable type/click/clipboard-write/file-open actions.
+    # list_windows, get_clipboard, and find_file are always available (read-only).
+    allow_actions: false
+    # Root directory for find_file searches. Defaults to home directory (~).
+    file_search_root: "~"
+  memory:
+    # How many days of conversation history to keep in the database.
+    max_history_days: 90

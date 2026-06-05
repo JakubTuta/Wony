@@ -10,7 +10,6 @@ from helpers.audio import Audio
 from helpers.cache import Cache
 from helpers.conversation import Conversation
 from helpers.decorators import capture_response
-from helpers.logger import logger
 from helpers.registry import method_job, register_job, simple_service
 
 
@@ -38,12 +37,15 @@ def build_agent_system_prompt() -> str:
     return (
         _persona()
         + "\n\nYou are an intelligent agent with access to tools for music (Spotify),"
-        " email (Gmail), calendar (Google Calendar), and general knowledge."
+        " email (Gmail), calendar (Google Calendar), web search, desktop control,"
+        " persistent memory, reminders, and general knowledge."
         " Follow these rules for every user request:"
 
-        "\n\n1. GREET AND ORIENT: If the user greets you or seems unsure what you can do,"
-        " give a one-sentence summary of your main areas: music, email, calendar."
-        " Then invite them to ask for something specific."
+        "\n\n1. GREET AND ORIENT: If the user greets you (hello, hi, hey, good morning,"
+        " good afternoon, good evening, greetings, what's up, morning briefing, daily briefing),"
+        " call the `greeting` tool immediately — do NOT generate your own greeting."
+        " The `greeting` tool returns real-time time, date, weather, unread emails, and today's meetings."
+        " After the tool returns, relay its output verbatim."
 
         "\n\n2. CLARIFY MISSING REQUIRED INFO: Before calling any tool, check whether all"
         " required information is known. Required fields are marked '(required)' in the"
@@ -63,7 +65,8 @@ def build_agent_system_prompt() -> str:
         " (drawn from the tool description) rather than attempting the action."
 
         "\n\n5. USE TOOLS: Once all required info is known, call the appropriate tool(s)."
-        " Chain tools when needed (e.g. read an email then create a calendar event from it)."
+        " Chain tools when needed (e.g. read an email then create a calendar event from it,"
+        " or web_search then fetch_url to read a specific article)."
         " Use conversation history and stored facts to fill in details before asking."
 
         "\n\n6. NARRATE RESULTS: When done, write a concise answer in plain prose"
@@ -75,6 +78,22 @@ def build_agent_system_prompt() -> str:
         "\n\n8. ANSWER FROM HISTORY: For follow-up questions about something already in"
         " the conversation ('what was it about', 'when is that'),"
         " answer directly from history without calling a tool."
+
+        "\n\n9. RECALL FROM PERSISTENT HISTORY: If the user asks about past conversations"
+        " across sessions ('what did we discuss last week', 'did I mention X before',"
+        " 'what did we talk about on Monday'), call `search_history` or `recall_on_date`"
+        " to query the persistent SQLite conversation database. Do NOT claim you cannot"
+        " remember past sessions — use these tools first."
+
+        "\n\n10. USE WEB FOR CURRENT INFO: If the user asks about recent events, current"
+        " news, live data, or anything that may have changed since your training cutoff,"
+        " call `web_search`. Do not fabricate current information — search for it."
+        " Chain `fetch_url` after a search to read the full content of a specific result."
+
+        "\n\n11. DESKTOP CONTROL: If the user asks to open an app, switch windows, read"
+        " the clipboard, find a file, or type/click on screen, use the desktop tools."
+        " Actions that modify state (type_text, click_at, set_clipboard, open_file) require"
+        " allow_actions to be enabled in config — if disabled, explain this to the user."
 
         "\nReply in plain prose. No bullet points unless listing multiple items."
     )
@@ -100,7 +119,7 @@ class AI:
         if model == "gemini":
             self.client = genai.Client(api_key=api_key)
 
-        elif model == "sonnet":
+        elif model == "anthropic":
             self.client = anthropic.Anthropic(api_key=api_key)
 
     @capture_response
@@ -291,60 +310,134 @@ class AI:
         lines = [f"  {k}: {v}" for k, v in sorted(facts.items())]
         return "Stored memory:\n" + "\n".join(lines)
 
-    def get_function_to_call(
-        self,
-        user_input: str,
-        available_tools: typing.List[typing.Callable],
-    ) -> typing.Optional[typing.Dict[str, typing.Any]]:
-        if not user_input or not available_tools:
-            return None
+    @register_job
+    @capture_response
+    @staticmethod
+    def search_history(keyword: str = "", days_back: int = 30, limit: int = 5) -> str:
+        """
+        [AI SERVICE JOB] Searches persistent conversation history for past exchanges matching a keyword.
+        Queries the local SQLite database of all past conversations that survive restarts.
 
-        logger.log_custom(
-            "ai_function_selection",
-            f"AI determining function for input: {user_input}",
-            user_input,
-            "",
-            "",
-        )
+        Use this job when the user wants to:
+        - Find what was discussed about a topic ("what did we say about the dentist")
+        - Recall a past conversation by keyword
+        - Look up something mentioned in a previous session
 
-        assistant_instructions = build_agent_system_prompt()
+        Keywords: what did we discuss, do you remember, look up history, past conversation,
+                 recall, find in history, search history, previous session
 
-        response = helpers_model.send_message(
-            client=self.client,
-            message=user_input,
-            available_tools=available_tools,
-            system_instructions=assistant_instructions,
-            history=Conversation.get_messages(),
-        )
+        Args:
+            keyword (str): Word or phrase to search for in past conversations. (required)
+            days_back (int): How many days back to search (default 30).
+            limit (int): Max number of results to return (default 5).
 
-        function_to_call = helpers_model.get_function_from_response(response)
+        Returns:
+            str: Matching past exchanges with timestamps, or a message if nothing found.
+        """
+        from helpers.memory_db import search_turns
 
-        if function_to_call:
-            logger.log_custom(
-                "ai_function_selected",
-                f"AI selected function: {function_to_call.get('name', 'unknown')}",
-                user_input,
-                function_to_call.get("name", "unknown"),
-                str(function_to_call.get("args", {})),
-            )
-            return function_to_call
+        if not keyword:
+            return "Error: No keyword provided."
 
-        # No tool selected — router replied with plain text (clarification or direct answer)
-        text = helpers_model.get_text_from_response(response)
-        if text:
-            logger.log_custom(
-                "ai_text_response",
-                f"AI replied with text: {text[:80]}",
-                user_input,
-                "text_response",
-                "",
-            )
-            return {"name": "__text__", "args": {}, "text": text}
+        results = search_turns(keyword, days_back=int(days_back), limit=int(limit))
+        if not results:
+            return f"No past conversations found matching '{keyword}' in the last {days_back} days."
 
-        logger.log_error(
-            "AI could not determine function to call", "get_function_to_call"
-        )
-        return None
+        lines = [f"Found {len(results)} past exchange(s) matching '{keyword}':"]
+        for r in results:
+            ts = r.get("ts", "")[:16].replace("T", " ")
+            lines.append(f"\n[{ts}]")
+            lines.append(f"  You: {r['user_text']}")
+            if r.get("assistant_text"):
+                preview = r["assistant_text"][:200]
+                if len(r["assistant_text"]) > 200:
+                    preview += "…"
+                lines.append(f"  Assistant: {preview}")
+        return "\n".join(lines)
+
+    @register_job
+    @capture_response
+    @staticmethod
+    def recall_on_date(date_str: str = "") -> str:
+        """
+        [AI SERVICE JOB] Retrieves all conversation exchanges from a specific date.
+        Queries the persistent SQLite conversation history.
+
+        Use this job when the user wants to:
+        - See what was discussed on a specific day ("what did we talk about Tuesday")
+        - Review a day's conversation history
+        - Look up exchanges from a date like "last Monday" or "2024-12-25"
+
+        Keywords: what did we talk about on, conversations from, history on, recall Tuesday,
+                 what happened on, exchanges on date
+
+        Args:
+            date_str (str): Date to retrieve history for, e.g. "yesterday", "last Monday",
+                           "2024-12-25". (required)
+
+        Returns:
+            str: All exchanges from that date, or a message if none found.
+        """
+        from helpers.memory_db import turns_on_date
+
+        if not date_str:
+            return "Error: No date provided."
+
+        results = turns_on_date(date_str)
+        if not results:
+            return f"No conversation history found for '{date_str}'."
+
+        lines = [f"Conversation history for '{date_str}' ({len(results)} exchange(s)):"]
+        for r in results:
+            ts = r.get("ts", "")[:16].replace("T", " ")
+            lines.append(f"\n[{ts}]")
+            lines.append(f"  You: {r['user_text']}")
+            if r.get("assistant_text"):
+                preview = r["assistant_text"][:200]
+                if len(r["assistant_text"]) > 200:
+                    preview += "…"
+                lines.append(f"  Assistant: {preview}")
+        return "\n".join(lines)
+
+    @register_job
+    @capture_response
+    @staticmethod
+    def recent_history(limit: int = 10) -> str:
+        """
+        [AI SERVICE JOB] Retrieves the most recent conversation exchanges from persistent history,
+        including exchanges from previous sessions that survive restarts.
+
+        Use this job when the user wants to:
+        - See the last N conversation exchanges across all sessions
+        - Review recent history beyond the current session window
+        - Check what was discussed recently
+
+        Keywords: recent history, last conversations, what did we talk about recently,
+                 show recent, last N exchanges, history
+
+        Args:
+            limit (int): Number of most recent exchanges to return (default 10).
+
+        Returns:
+            str: The most recent conversation exchanges with timestamps.
+        """
+        from helpers.memory_db import recent_turns
+
+        results = recent_turns(limit=int(limit))
+        if not results:
+            return "No conversation history found."
+
+        lines = [f"Most recent {len(results)} exchange(s):"]
+        for r in results:
+            ts = r.get("ts", "")[:16].replace("T", " ")
+            lines.append(f"\n[{ts}]")
+            lines.append(f"  You: {r['user_text']}")
+            if r.get("assistant_text"):
+                preview = r["assistant_text"][:200]
+                if len(r["assistant_text"]) > 200:
+                    preview += "…"
+                lines.append(f"  Assistant: {preview}")
+        return "\n".join(lines)
 
     def explain_screenshot(
         self,
@@ -367,8 +460,7 @@ class AI:
                 system_instructions=assistant_instructions,
                 image=screenshot,
             )
-
-        except:
+        except Exception:
             return "Error: Could not retrieve an answer."
 
         answer = helpers_model.get_text_from_response(response)
@@ -398,8 +490,7 @@ class AI:
                 system_instructions=assistant_instructions,
                 image=screenshot,
             )
-
-        except:
+        except Exception:
             return None
 
         answer = helpers_model.get_text_from_response(response)
@@ -408,7 +499,12 @@ class AI:
 
         try:
             import ast
-            clean = answer.strip().strip("```json").strip("```").strip()
+            clean = answer.strip()
+            if clean.startswith("```"):
+                clean = clean.split("\n", 1)[-1] if "\n" in clean else clean[3:]
+            if clean.endswith("```"):
+                clean = clean[:-3]
+            clean = clean.strip()
             coordinates = ast.literal_eval(clean)
 
             if not isinstance(coordinates, list) or len(coordinates) != 4:

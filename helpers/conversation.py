@@ -2,6 +2,14 @@ import time
 import typing
 
 
+def _try_persist(user_text: str, assistant_text: str) -> None:
+    try:
+        from helpers.memory_db import insert_turn
+        insert_turn(user_text, assistant_text)
+    except Exception:
+        pass
+
+
 class Conversation:
     _turns: typing.List[typing.Dict[str, str]] = []
     _last_activity: float = 0.0
@@ -50,6 +58,7 @@ class Conversation:
         if len(cls._turns) > max_turns:
             cls._turns = cls._turns[-max_turns:]
         cls._last_activity = time.time()
+        _try_persist(user_text, assistant_text or "")
 
     @classmethod
     def clear(cls) -> None:

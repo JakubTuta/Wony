@@ -297,10 +297,10 @@ def _email_line() -> typing.Optional[str]:
         cutoff = (datetime.now() - timedelta(days=1)).replace(
             hour=work_end, minute=0, second=0, microsecond=0
         )
-        epoch = int(cutoff.timestamp())
+        date_str = cutoff.strftime("%Y/%m/%d")
 
         client = gmail._client("")
-        msgs = client.get_messages(query=f"in:inbox is:unread after:{epoch}")
+        msgs = client.get_messages(query=f"in:inbox is:unread after:{date_str}")
 
         if not msgs:
             return "You have no new unread emails since yesterday."
@@ -309,7 +309,8 @@ def _email_line() -> typing.Optional[str]:
             gmail._format_sender(m.sender) for m in msgs if m.sender
         )
         return f"You have {len(msgs)} unread email(s) from: {', '.join(senders)}."
-    except Exception:
+    except Exception as e:
+        print(f"[greeting] email line failed: {e}")
         return None
 
 
@@ -332,5 +333,6 @@ def _calendar_line() -> typing.Optional[str]:
             when = cal._format_time(start_raw)
             lines.append(f"  - {title} at {when}")
         return "\n".join(lines)
-    except Exception:
+    except Exception as e:
+        print(f"[greeting] calendar line failed: {e}")
         return None

@@ -1,5 +1,6 @@
 import functools
 import os
+import sys
 import typing
 
 T = typing.TypeVar("T")
@@ -115,7 +116,7 @@ def exit_on_exception(func: typing.Callable[..., T]) -> typing.Callable[..., T]:
             )
             function_name = func.__name__ if hasattr(func, "__name__") else "Unknown"
             print(f"\n[{class_name} - {function_name}]: {e}")
-            os._exit(1)
+            sys.exit(1)
 
     return wrapper
 

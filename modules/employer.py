@@ -1,4 +1,5 @@
 import os
+import sys
 import typing
 
 from helpers.agent import run_agent
@@ -212,7 +213,7 @@ class Employer:
             Audio.text_to_speech("Exiting program. o7")
         print("Exiting program. o7")
 
-        os._exit(0)
+        sys.exit(0)
 
     def _refresh_available_jobs(self):
         """Refresh available jobs from registry"""

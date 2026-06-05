@@ -19,7 +19,7 @@ DEFAULTS: typing.Dict[str, typing.Any] = {
         "anthropic_model": None,
         "gemini_model": None,
         "ollama_model": "llama3.1",
-        "max_tokens": 2048,
+        "max_tokens": 8192,
         "history": {
             "enabled": True,
             "max_turns": 5,
@@ -51,6 +51,19 @@ DEFAULTS: typing.Dict[str, typing.Any] = {
             "work_start_hour": 9,
             "work_end_hour": 18,
             "allow_write": False,
+        },
+        "scheduler": {
+            "daily_briefing_time": None,
+        },
+        "web": {
+            "max_content_chars": 3000,
+        },
+        "desktop": {
+            "allow_actions": False,
+            "file_search_root": "~",
+        },
+        "memory": {
+            "max_history_days": 90,
         },
     },
 }

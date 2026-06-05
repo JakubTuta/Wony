@@ -1,5 +1,8 @@
 import argparse
+import atexit
 import os
+import signal
+import sys
 import time
 import typing
 
@@ -129,6 +132,38 @@ def main() -> None:
 
     employer = Employer()
     logger.log_system_event("employer_initialized", "Employer instance created")
+
+    def _shutdown() -> None:
+        try:
+            from helpers.jobs import BackgroundJobs
+            BackgroundJobs.stop_all()
+        except Exception:
+            pass
+        try:
+            from helpers.registry import ServiceRegistry
+            sched = ServiceRegistry.get_service_instance("scheduler")
+            if sched is not None and hasattr(sched, "_sched"):
+                sched._sched.shutdown(wait=False)
+        except Exception:
+            pass
+        # DB close is also registered via atexit in memory_db._get_conn; call
+        # explicitly here too so it runs before scheduler/jobs are torn down.
+        try:
+            from helpers.memory_db import close as db_close
+            db_close()
+        except Exception:
+            pass
+
+    atexit.register(_shutdown)
+
+    def _signal_handler(signum: int, frame: object) -> None:
+        print(f"\nReceived signal {signum}, shutting down...")
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, _signal_handler)
+    # SIGBREAK is Windows Ctrl+Break; ignore if unavailable on non-Windows.
+    if hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, _signal_handler)
 
     # Print startup health summary after modules are loaded
     print()

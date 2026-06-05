@@ -11,7 +11,7 @@ from google.genai import types as genai_types
 import helpers.tools as helpers_tools
 from helpers.cache import Cache
 
-available_models = ["gemini", "sonnet", "ollama"]
+available_models = ["gemini", "anthropic", "ollama"]
 
 _FALLBACK_GEMINI_MODEL = "gemini-2.0-flash"
 _FALLBACK_ANTHROPIC_MODEL = "claude-sonnet-4-6"
@@ -59,7 +59,7 @@ def get_model() -> typing.Optional[
             str,
             typing.Literal[
                 "gemini",
-                "sonnet",
+                "anthropic",
                 "ollama",
             ],
             None,
@@ -83,13 +83,13 @@ def get_model() -> typing.Optional[
     if configured_provider == "gemini" and gemini_key:
         return ["gemini", gemini_key]
     if configured_provider == "anthropic" and anthropic_key:
-        return ["sonnet", anthropic_key]
+        return ["anthropic", anthropic_key]
 
     # Auto-detect from available keys
     if gemini_key:
         return ["gemini", gemini_key]
     if anthropic_key:
-        return ["sonnet", anthropic_key]
+        return ["anthropic", anthropic_key]
 
 
 def send_message(
@@ -191,7 +191,7 @@ def send_message(
         anthropic_messages.append({"role": "user", "content": messages_content})
 
         from helpers.config import Config
-        max_tokens = int(Config.get("ai.max_tokens", 2048))
+        max_tokens = int(Config.get("ai.max_tokens", 8192))
 
         response = client.messages.create(
             model=_get_anthropic_model(client),
@@ -374,7 +374,7 @@ def send_agent_messages(
             i += 1
 
         from helpers.config import Config
-        max_tokens = int(Config.get("ai.max_tokens", 2048))
+        max_tokens = int(Config.get("ai.max_tokens", 8192))
 
         return client.messages.create(
             model=_get_anthropic_model(client),
@@ -439,53 +439,6 @@ def get_text_from_response(
 
     elif isinstance(response, ollama.ChatResponse):
         return response.message.content
-
-
-def get_function_from_response(
-    response: typing.Union[
-        genai_types.GenerateContentResponse,
-        anthropic.types.Message,
-        ollama.ChatResponse,
-    ],
-) -> typing.Optional[typing.Dict[str, typing.Any]]:
-    if isinstance(response, genai_types.GenerateContentResponse):
-        try:
-            parts = response.candidates[0].content.parts or []  # type: ignore
-        except (AttributeError, IndexError):
-            return None
-        for part in parts:
-            fc = getattr(part, "function_call", None)
-            if fc and getattr(fc, "name", None):
-                return {"name": fc.name, "args": fc.args}
-
-    elif isinstance(response, anthropic.types.Message):
-        tool_uses = response.content
-
-        for block in tool_uses:
-            if block.type == "tool_use":
-                function_name = block.name
-                function_args = block.input
-
-                return {
-                    "name": function_name,
-                    "args": function_args,
-                }
-
-    elif isinstance(response, ollama.ChatResponse):
-        if response.message.tool_calls is None:
-            return
-
-        for tool in response.message.tool_calls:
-            function_name = tool.function.name
-            function_args = tool.function.arguments
-
-            if function_args is None:
-                function_args = {}
-
-            return {
-                "name": function_name,
-                "args": function_args,
-            }
 
 
 def describe_readiness() -> typing.Tuple[bool, str]:
