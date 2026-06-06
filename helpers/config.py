@@ -13,6 +13,13 @@ DEFAULTS: typing.Dict[str, typing.Any] = {
         "tts_voice_index": 1,
         "rate": 150,
         "volume": 0.6,
+        "wake_word": {
+            "enabled": False,
+            "phrase": "hey jarvis",    # built-in model name; ignored when model_path is set
+            "model_path": None,        # path to a custom .onnx model (optional)
+            "threshold": 0.5,          # detection score cutoff 0..1
+            "cooldown_seconds": 2.0,
+        },
     },
     "ai": {
         "provider": None,

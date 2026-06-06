@@ -1,7 +1,11 @@
 import os
+import threading
 import typing
 
+import numpy as np
+
 _tts_warned = False
+_tts_lock = threading.Lock()  # pyttsx3/SAPI5 is not re-entrant; serialize calls
 
 
 class TTS_Engine:
@@ -39,36 +43,16 @@ class TTS_Engine:
 
 
 class Audio:
-    _microphone: typing.Any = None
-    _recognizer: typing.Any = None
-
-    @staticmethod
-    def _get_microphone() -> typing.Any:
-        if Audio._microphone is None:
-            import speech_recognition as sr
-
-            Audio._microphone = sr.Microphone()
-        return Audio._microphone
-
-    @staticmethod
-    def _get_recognizer() -> typing.Any:
-        if Audio._recognizer is None:
-            import speech_recognition as sr
-
-            Audio._recognizer = sr.Recognizer()
-        return Audio._recognizer
-
     @staticmethod
     def play_audio_from_file(filename: str) -> None:
-        if os.path.exists(filename):
-            try:
-                import playsound
-
-                playsound.playsound(filename, block=False)
-            except ImportError:
-                pass
-        else:
+        if not os.path.exists(filename):
             print(f"Audio file {filename} does not exist.")
+            return
+        try:
+            from helpers import mic
+            mic.play_wav(filename, blocking=False)
+        except Exception as e:
+            print(f"[audio] playback failed for {filename}: {e}")
 
     @staticmethod
     def save_text_to_file(text: str, filename: str) -> None:
@@ -80,29 +64,28 @@ class Audio:
     @staticmethod
     def text_to_speech(text: str) -> None:
         global _tts_warned
-        try:
-            tts_engine = TTS_Engine()
-            tts_engine.text_to_speech(text)
-            del tts_engine
-        except ImportError:
-            if not _tts_warned:
-                print(
-                    "TTS unavailable: pyttsx3 not installed. "
-                    "Run: pip install -r requirements/voice.txt"
-                )
-                _tts_warned = True
-        except Exception as e:
-            if not _tts_warned:
-                print(
-                    f"TTS unavailable: {e} — check your audio device or voice.tts_voice_index in config.yaml."
-                )
-                _tts_warned = True
+        with _tts_lock:
+            try:
+                tts_engine = TTS_Engine()
+                tts_engine.text_to_speech(text)
+                del tts_engine
+            except ImportError:
+                if not _tts_warned:
+                    print(
+                        "TTS unavailable: pyttsx3 not installed. "
+                        "Run: pip install -r requirements/voice.txt"
+                    )
+                    _tts_warned = True
+            except Exception as e:
+                if not _tts_warned:
+                    print(
+                        f"TTS unavailable: {e} — check your audio device or voice.tts_voice_index in config.yaml."
+                    )
+                    _tts_warned = True
 
     @staticmethod
-    def record_audio(duration: int = 3) -> typing.Any:
+    def record_audio(duration: int = 3) -> np.ndarray:
+        """Record from the default mic and return float32 @16kHz mono numpy array."""
         Audio.play_audio_from_file("voice/bot/listening.wav")
-        mic = Audio._get_microphone()
-        rec = Audio._get_recognizer()
-        with mic as source:
-            audio = rec.record(source, duration=duration)
-            return audio
+        from helpers import mic
+        return mic.record_16k(duration)

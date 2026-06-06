@@ -1,4 +1,3 @@
-import io
 import typing
 
 from helpers.audio import Audio
@@ -28,15 +27,18 @@ def _get_model() -> typing.Any:
     return _model
 
 
+def preload_model() -> None:
+    _get_model()
+
+
 class Recognizer:
     @staticmethod
     def recognize_speech_from_mic() -> str:
         try:
-            audio = Audio.record_audio()
-            wav = io.BytesIO(audio.get_wav_data())
+            audio = Audio.record_audio()  # np.float32 @16kHz mono
             language = Config.get("assistant.language", "en")
             model = _get_model()
-            segments, _ = model.transcribe(wav, language=language, beam_size=5)
+            segments, _ = model.transcribe(audio, language=language, beam_size=5)
             return " ".join(seg.text for seg in segments).strip()
         except Exception as e:
             print(f"Couldn't capture audio — check your microphone. ({e})")

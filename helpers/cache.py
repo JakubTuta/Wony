@@ -49,10 +49,3 @@ class Cache:
     def get_audio() -> bool:
         return Cache.get_value("audio", default=False)
 
-    @staticmethod
-    def set_local(value: bool) -> None:
-        Cache.set_value("local", value)
-
-    @staticmethod
-    def get_local() -> bool:
-        return Cache.get_value("local", default=False)

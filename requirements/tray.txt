@@ -1,0 +1,5 @@
+# Tray icon dependencies.
+# Required for: python wony.py tray  (always-on background mode)
+# Pillow is already in requirements/core.txt; listed here for documentation.
+pystray
+Pillow

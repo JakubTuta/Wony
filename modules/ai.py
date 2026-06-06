@@ -104,11 +104,6 @@ class AI:
     client = None
 
     def __init__(self) -> None:
-        local = Cache.get_local()
-        if local:
-            self.client = ollama.Client()
-            return
-
         response = helpers_model.get_model()
         if response is None:
             raise Exception(
@@ -118,9 +113,10 @@ class AI:
         model, api_key = response
         if model == "gemini":
             self.client = genai.Client(api_key=api_key)
-
         elif model == "anthropic":
             self.client = anthropic.Anthropic(api_key=api_key)
+        elif model == "ollama":
+            self.client = ollama.Client()
 
     @capture_response
     @method_job

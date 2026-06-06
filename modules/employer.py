@@ -17,10 +17,16 @@ from modules.ai import AI, build_agent_system_prompt
 class Employer:
     available_jobs: typing.Dict[str, typing.Callable] = {}
     _services = {}
+    _exit_hook: typing.Optional[typing.Callable] = None
 
     def __init__(self) -> None:
         self.service_instances = {}
         self.ai_model = AI()
+
+    @staticmethod
+    def set_exit_hook(callback: typing.Callable) -> None:
+        """Register a callback invoked by the exit job instead of sys.exit (tray mode)."""
+        Employer._exit_hook = callback
 
     def speak(self) -> None:
         user_input = str(Recognizer.recognize_speech_from_mic())
@@ -32,10 +38,15 @@ class Employer:
             )
             return
 
-        print(f"\nTranscribed text: {user_input}")
-        logger.log_user_input(user_input, "speech")
+        self.handle_utterance(user_input)
 
-        self.job_on_command(user_input)
+    def handle_utterance(self, text: str) -> None:
+        """Process a transcribed speech utterance (called by wake word and ctrl+l paths)."""
+        if not text:
+            return
+        print(f"\nTranscribed text: {text}")
+        logger.log_user_input(text, "speech")
+        self.job_on_command(text)
 
     def job_on_command(self, user_input: str) -> None:
         self._refresh_available_jobs()
@@ -56,22 +67,24 @@ class Employer:
             return
 
         from helpers.config import Config
+        from helpers.decorators import agent_lock
         max_steps = int(Config.get("ai.agent.max_steps", 5))
         system_prompt = build_agent_system_prompt()
 
-        # Suppress per-tool print/TTS while the agent loop runs
-        set_agent_active(True)
-        try:
-            agent_result = run_agent(
-                client=self.ai_model.client,
-                user_input=user_input,
-                available_jobs=self.available_jobs,
-                system_instructions=system_prompt,
-                history=Conversation.get_messages(),
-                max_steps=max_steps,
-            )
-        finally:
-            set_agent_active(False)
+        # agent_lock serializes concurrent agent runs (wake word + web /api/chat)
+        with agent_lock:
+            set_agent_active(True)
+            try:
+                agent_result = run_agent(
+                    client=self.ai_model.client,
+                    user_input=user_input,
+                    available_jobs=self.available_jobs,
+                    system_instructions=system_prompt,
+                    history=Conversation.get_messages(),
+                    max_steps=max_steps,
+                )
+            finally:
+                set_agent_active(False)
 
         text = agent_result.text
         if text:
@@ -213,7 +226,10 @@ class Employer:
             Audio.text_to_speech("Exiting program. o7")
         print("Exiting program. o7")
 
-        sys.exit(0)
+        if Employer._exit_hook is not None:
+            Employer._exit_hook()
+        else:
+            sys.exit(0)
 
     def _refresh_available_jobs(self):
         """Refresh available jobs from registry"""

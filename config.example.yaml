@@ -1,7 +1,7 @@
 # config.example.yaml — copy to config.yaml and edit.
 # Secrets (API keys) go in .env, not here.
 # config.yaml is gitignored; this file is the reference template.
-# Run `python assistant.py --doctor` to validate your full setup.
+# Run `python wony.py doctor` to validate your full setup.
 
 assistant:
   name: "Wony"
@@ -12,13 +12,25 @@ assistant:
   language: "en"
 
 voice:
-  # Set to true to default to voice mode (same as --audio flag).
-  enabled: false
   # pyttsx3 voice index. 0 = first installed voice (usually English),
   # 1 = second (often Polish on Windows). Run `python -m pyttsx3` to list.
   tts_voice_index: 1
   rate: 150
   volume: 0.6
+
+  # Wake-word listener (hands-free trigger). Works in voice mode and tray mode.
+  # Requires: pip install -r requirements/wakeword.txt
+  # No account or API key needed — fully local and free.
+  wake_word:
+    enabled: false
+    # Built-in model to use when model_path is not set.
+    # Valid built-in names: "hey jarvis", "alexa", "hey mycroft", "hey rhasspy"
+    phrase: "hey jarvis"
+    # Path to a custom .onnx model file (optional).
+    # Train one via the openWakeWord project for a custom phrase like "Hey Wony".
+    model_path: null
+    threshold: 0.5        # 0.0–1.0 detection score cutoff (lower = more sensitive)
+    cooldown_seconds: 2.0 # ignore re-triggers within this window after detection
 
 ai:
   # Which AI provider to use. Options: anthropic | gemini | ollama | null (auto-detect from keys).
@@ -121,6 +133,15 @@ modules:
   memory:
     # How many days of conversation history to keep in the database.
     max_history_days: 90
+  # How often (minutes) the background health watcher retries failed modules.
+  # Set to 0 to disable. Useful for modules like Spotify that may not be ready at boot.
+  health_check_interval_minutes: 5
+
+tray:
+  # Show a system tray balloon when Wony finishes starting up.
+  notify_on_ready: true
+  # Automatically open the web UI in your browser when tray mode starts.
+  open_browser_on_start: false
 
 server:
   # Host and port for the web server (python web_server.py).

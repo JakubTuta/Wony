@@ -25,6 +25,10 @@ class ServiceRegistry:
     _module_hints: typing.Dict[str, str] = {}
     _job_modules: typing.Dict[str, str] = {}
     _job_summaries: typing.Dict[str, str] = {}
+    # Stores enough info to retry failed modules at runtime.
+    # service: {"kind": "service", "cls": type, "requires": Requirement|None}
+    # jobs:    {"kind": "jobs", "items": [(job_name, func, requires, summary), ...]}
+    _reinit_pending: typing.Dict[str, typing.Dict] = {}
 
     @classmethod
     def get_all_jobs(cls) -> typing.Dict[str, typing.Callable]:
@@ -49,6 +53,84 @@ class ServiceRegistry:
     @classmethod
     def get_job_summaries(cls) -> typing.Dict[str, str]:
         return cls._job_summaries.copy()
+
+    @classmethod
+    def get_retryable_modules(cls) -> typing.List[str]:
+        """Modules that failed init and have enough info for a retry attempt."""
+        retryable = []
+        for name in cls._reinit_pending:
+            status, _ = cls._module_status.get(name, (None, ""))
+            if status in (ModuleStatus.ERROR, ModuleStatus.MISCONFIGURED):
+                retryable.append(name)
+        return retryable
+
+    @classmethod
+    def reinitialize_module(cls, module_name: str) -> bool:
+        """
+        Attempt to re-initialize a previously failed module.
+        Returns True if the module is now ENABLED.
+        Safe to call from any thread; caller should handle exceptions.
+        """
+        pending = cls._reinit_pending.get(module_name)
+        if not pending:
+            return False
+
+        status, _ = cls._module_status.get(module_name, (None, ""))
+        if status == ModuleStatus.DISABLED:
+            return False
+
+        kind = pending["kind"]
+
+        if kind == "service":
+            svc_class = pending["cls"]
+            requires = pending["requires"]
+
+            ready, reason = cls._check_requirements(requires)
+            if not ready:
+                cls._module_status[module_name] = (cls._status_for_reason(reason), reason)
+                return False
+
+            try:
+                instance = svc_class()
+                cls._service_instances[module_name] = instance
+                cls._services[module_name] = svc_class
+
+                for attr_name in dir(instance):
+                    attr = getattr(instance, attr_name)
+                    if hasattr(attr, "_is_job_method"):
+                        job_name = getattr(attr, "_job_name", attr_name)
+                        cls._jobs[job_name] = attr
+                        cls._job_modules[job_name] = module_name
+                        explicit_summary = getattr(attr, "_job_summary", "")
+                        cls._job_summaries[job_name] = explicit_summary or cls._extract_summary(attr)
+
+                cls._module_status[module_name] = (ModuleStatus.ENABLED, "")
+                cls._reinit_pending.pop(module_name, None)
+                return True
+            except Exception as e:
+                cls._module_status[module_name] = (ModuleStatus.ERROR, str(e))
+                return False
+
+        elif kind == "jobs":
+            items = pending["items"]
+            registered = []
+            for job_name, func, requires, summary in items:
+                ready, reason = cls._check_requirements(requires)
+                if not ready:
+                    cls._module_status[module_name] = (cls._status_for_reason(reason), reason)
+                    return False
+                registered.append((job_name, func, summary))
+
+            for job_name, func, summary in registered:
+                cls._jobs[job_name] = func
+                cls._job_modules[job_name] = module_name
+                cls._job_summaries[job_name] = summary or cls._extract_summary(func)
+
+            cls._module_status[module_name] = (ModuleStatus.ENABLED, "")
+            cls._reinit_pending.pop(module_name, None)
+            return True
+
+        return False
 
     @classmethod
     def _check_module_enabled(
@@ -138,6 +220,13 @@ class ServiceRegistry:
                     )
                     if requires and getattr(requires, "setup_hint", ""):
                         cls._module_hints[module_name] = requires.setup_hint
+                    # Store for later retry by health watcher
+                    entry = cls._reinit_pending.setdefault(
+                        module_name, {"kind": "jobs", "items": []}
+                    )
+                    entry["items"].append(
+                        (job_name, func, requires, summary or cls._extract_summary(func))
+                    )
                 return func
 
             cls._jobs[job_name] = func
@@ -187,6 +276,10 @@ class ServiceRegistry:
                 )
                 if requires and getattr(requires, "setup_hint", ""):
                     cls._module_hints[svc_module_name] = requires.setup_hint
+                # Store for later retry by health watcher
+                cls._reinit_pending[svc_module_name] = {
+                    "kind": "service", "cls": svc_class, "requires": requires
+                }
                 return svc_class
 
             cls._services[svc_module_name] = svc_class
@@ -213,6 +306,10 @@ class ServiceRegistry:
                 cls._services.pop(svc_module_name, None)
                 cls._service_instances.pop(svc_module_name, None)
                 cls._module_status[svc_module_name] = (ModuleStatus.ERROR, str(e))
+                # Store for retry — requirements passed, init itself failed (e.g. no device)
+                cls._reinit_pending[svc_module_name] = {
+                    "kind": "service", "cls": svc_class, "requires": requires
+                }
 
             return svc_class
 

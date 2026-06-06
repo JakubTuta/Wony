@@ -1,0 +1,11 @@
+# Wake-word detection dependencies (openWakeWord engine — free, fully local, no account).
+# Required for: voice.wake_word.enabled: true in config.yaml
+# First run auto-downloads the pre-trained models (~tens of MB).
+# Built-in phrases: "hey jarvis", "alexa", "hey mycroft", "hey rhasspy"
+# For a custom phrase, train a .onnx model via the openWakeWord docs and set
+# voice.wake_word.model_path. Mic capture uses sounddevice (also in voice.txt).
+openwakeword
+onnxruntime
+sounddevice
+soxr
+numpy

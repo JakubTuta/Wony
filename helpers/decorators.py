@@ -1,6 +1,7 @@
 import functools
 import os
 import sys
+import threading
 import typing
 
 T = typing.TypeVar("T")
@@ -8,6 +9,10 @@ T = typing.TypeVar("T")
 # Set to True by the agent loop while executing tools so capture_response
 # suppresses per-tool print/TTS output. The final narrated answer is output once.
 _agent_active: bool = False
+
+# Process-wide lock: serializes agent runs so wake-word and web /api/chat
+# calls don't interleave on shared Conversation state or _agent_active.
+agent_lock = threading.Lock()
 
 
 def set_agent_active(value: bool) -> None:

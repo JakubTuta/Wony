@@ -9,7 +9,6 @@ from google import genai
 from google.genai import types as genai_types
 
 import helpers.tools as helpers_tools
-from helpers.cache import Cache
 
 available_models = ["gemini", "anthropic", "ollama"]
 
@@ -68,11 +67,6 @@ def get_model() -> typing.Optional[
 ]:
     from helpers.config import Config
 
-    local = Cache.get_local()
-    if local:
-        return ["ollama", None]
-
-    # Honor explicit provider from config
     configured_provider = Config.get("ai.provider")
     if configured_provider == "ollama":
         return ["ollama", None]
@@ -444,19 +438,6 @@ def get_text_from_response(
 def describe_readiness() -> typing.Tuple[bool, str]:
     """Returns (ok, message) describing AI provider availability."""
     from helpers.config import Config
-
-    local = Cache.get_local()
-    if local:
-        ollama_model = Config.get("ai.ollama_model")
-        if not ollama_model:
-            return False, (
-                "Ollama model not configured. To fix:\n"
-                "  1. Open config.yaml\n"
-                "  2. Set ai.ollama_model to a model name, e.g.:  ollama_model: \"llama3.2\"\n"
-                "  3. Make sure Ollama is running:  ollama serve\n"
-                "  4. Pull the model if needed:  ollama pull llama3.2"
-            )
-        return True, f"Using local Ollama model ({ollama_model})."
 
     configured_provider = Config.get("ai.provider")
     gemini_key = os.environ.get("GEMINI_API_KEY")
