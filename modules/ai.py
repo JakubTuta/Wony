@@ -6,8 +6,6 @@ import ollama
 from google import genai
 
 import helpers.model as helpers_model
-from helpers.audio import Audio
-from helpers.cache import Cache
 from helpers.conversation import Conversation
 from helpers.decorators import capture_response
 from helpers.registry import method_job, register_job, simple_service
@@ -144,11 +142,6 @@ class AI:
 
         if not question:
             return "Error: No question provided."
-
-        audio = Cache.get_audio()
-        if audio:
-            Audio.text_to_speech(f"Asking {question}...")
-        print(f"Asking {question}...")
 
         assistant_instructions = (
             _persona()

@@ -3,9 +3,8 @@ import os
 
 from PIL import Image
 
-from helpers.audio import Audio
-from helpers.cache import Cache
 from helpers.decorators import capture_response
+from helpers.logger import logger
 from helpers.registry import ServiceRegistry, register_job
 from helpers.requirements import Requirement
 from helpers.screenReader import ScreenReader
@@ -22,7 +21,8 @@ _SCREEN_REQ = Requirement(
 
 
 @register_job(module_name="screen", requires=_SCREEN_REQ)
-def save_screenshot() -> None:
+@capture_response
+def save_screenshot() -> str:
     """
     [SCREEN CAPTURE JOB] Captures and saves a screenshot of the current active screen to disk.
     This standalone task creates a timestamped image file of whatever is currently displayed
@@ -41,22 +41,15 @@ def save_screenshot() -> None:
         None
 
     Returns:
-        None: Screenshot file saved to screenshots directory with timestamp filename.
+        str: Confirmation with saved file path.
     """
-    audio = Cache.get_audio()
-    if audio:
-        Audio.play_cached("Saving a screenshot...")
-    print("Saving a screenshot...")
-
     os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
-
     screenshot = ScreenReader.take_screenshot(target="active")
-
     filename = datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S") + ".png"
     file_path = os.path.join(SCREENSHOTS_DIR, filename)
-
     image = Image.fromarray(screenshot)
     image.save(file_path)
+    return f"Screenshot saved: {file_path}"
 
 
 @register_job(module_name="screen", requires=_SCREEN_REQ)
@@ -84,17 +77,8 @@ def explain_screenshot(user_input: str) -> str:
     Returns:
         str: Detailed AI-generated explanation of the screen content based on user's query.
     """
-    audio = Cache.get_audio()
-    if audio:
-        Audio.play_cached("Taking a screenshot and explaining it...")
-    print("Taking a screenshot and explaining it...")
-
     screenshot = ScreenReader.take_screenshot(target="active")
-
-    # Get AI service instance
     ai_service = ServiceRegistry.get_service_instance("ai")
     if not ai_service:
         return "Error: AI service not available"
-
-    response = ai_service.explain_screenshot(user_input, screenshot)
-    return response
+    return ai_service.explain_screenshot(user_input, screenshot)

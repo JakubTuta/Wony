@@ -31,10 +31,7 @@ class Employer:
     def speak(self) -> None:
         first_text = str(Recognizer.recognize_speech_from_mic())
         if not first_text:
-            print("I didn't hear anything.")
-            logger.log_system_event(
-                "speech_recognition_failed", "No speech detected or recognized"
-            )
+            logger.log_system_event("speech_recognition_failed", "No speech detected or recognized")
             return
         self.converse(first_text=first_text)
 
@@ -61,7 +58,6 @@ class Employer:
         # Non-audio or conversation disabled: single-turn behaviour
         if not audio or not enabled:
             if first_text:
-                print(f"\nTranscribed text: {first_text}")
                 logger.log_user_input(first_text, "speech")
                 self.job_on_command(first_text)
             return
@@ -89,7 +85,6 @@ class Employer:
             if self._is_stop_phrase(text, stop_phrases):
                 break
 
-            print(f"\nTranscribed text: {text}")
             logger.log_user_input(text, "speech")
 
             response = self.job_on_command(text)
@@ -186,10 +181,6 @@ class Employer:
         Returns:
             str: Commands grouped by module with descriptions.
         """
-        audio = Cache.get_audio()
-        if audio:
-            Audio.play_cached("Getting all commands...")
-
         job_modules = ServiceRegistry.get_job_modules()
         job_summaries = ServiceRegistry.get_job_summaries()
         all_jobs = ServiceRegistry.get_all_jobs()
@@ -234,10 +225,6 @@ class Employer:
         Returns:
             str: Confirmation message.
         """
-        audio = Cache.get_audio()
-        if audio:
-            Audio.play_cached("Stopping all active jobs...")
-
         stopped = BackgroundJobs.stop_all()
         if stopped:
             return f"Stopped {len(stopped)} background job(s): {', '.join(stopped)}."
@@ -292,7 +279,7 @@ class Employer:
         audio = Cache.get_audio()
         if audio:
             Audio.play_cached("Exiting program. o7")
-        print("Exiting program. o7")
+        logger.log_system_event("exit", "Exiting program.")
 
         if Employer._exit_hook is not None:
             Employer._exit_hook()

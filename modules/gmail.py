@@ -13,6 +13,7 @@ from helpers.cache import Cache
 from helpers.config import Config
 from helpers.decorators import capture_response
 from helpers.jobs import BackgroundJobs
+from helpers.logger import logger
 from helpers.registry import method_job, register_service
 from helpers.requirements import Requirement
 
@@ -548,10 +549,12 @@ class Gmail:
         Keywords: past emails, recent emails, previous messages, email history,
                  emails last week, show me emails from, read emails, all emails,
                  emails last N days, what emails did I get, show inbox history,
-                 sent emails last N days, past sent emails
+                 sent emails last N days, past sent emails,
+                 list emails, list all emails, show all emails, show emails,
+                 display emails, get all emails, fetch all emails
 
         Args:
-            days_back (int): How many days back to search (default 7).
+            days_back (int): How many days back to search (default 30).
             max_results (int): Maximum emails to return (default from config).
             folder (str): Folder to search: inbox, sent (default: inbox).
             account (str): Google account to use (default: primary).
@@ -559,7 +562,7 @@ class Gmail:
         Returns:
             str: All emails with full details.
         """
-        days_back = int(days_back) if days_back else 7
+        days_back = int(days_back) if days_back else 30
         try:
             max_r = int(max_results) if max_results else 0
         except (TypeError, ValueError):
@@ -1147,14 +1150,11 @@ class Gmail:
             msg = f"You have {len(messages)} new email(s) in {name}."
             if audio:
                 Audio.text_to_speech(msg)
-            else:
-                print(msg)
+            logger.log_system_event("gmail_poll", msg)
             for message in messages:
                 formatted = self._format_message(message, verbose=False)
                 if audio:
                     Audio.text_to_speech(formatted)
-                else:
-                    print(formatted)
 
         BackgroundJobs.start(job_name, _poll, interval=interval_minutes * 60)
         return f"Checking '{name}' emails every {interval_minutes} minutes."

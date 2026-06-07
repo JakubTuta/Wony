@@ -4,7 +4,9 @@ import time
 from helpers.audio import Audio
 from helpers.cache import Cache
 from helpers.controllers import MouseController
+from helpers.decorators import capture_response
 from helpers.jobs import BackgroundJobs
+from helpers.logger import logger
 from helpers.registry import register_job
 from helpers.requirements import Requirement
 from helpers.screenReader import ScreenReader
@@ -19,6 +21,7 @@ _ACCEPT_JOB = "league_accept"
 _MAX_ACCEPT_MINUTES = 30
 
 
+@capture_response
 @register_job(module_name="league", requires=_LEAGUE_REQ, summary="Auto-accept LoL queue")
 def accept_game() -> str:
     """
@@ -56,21 +59,18 @@ def accept_game() -> str:
                 msg = "Game accepted."
                 if audio:
                     Audio.text_to_speech(msg)
-                print(msg)
+                logger.log_system_event("league_accept", msg)
                 BackgroundJobs.stop(_ACCEPT_JOB)
                 return
             time.sleep(5)
-        print(f"accept_game: no queue pop-up found after {_MAX_ACCEPT_MINUTES} minutes, stopping.")
+        logger.log_system_event("league_accept", f"No queue pop-up found after {_MAX_ACCEPT_MINUTES} minutes.")
         BackgroundJobs.stop(_ACCEPT_JOB)
 
     BackgroundJobs.start(_ACCEPT_JOB, _watch)
-    msg = "Watching for queue pop-up (auto-stops after 30 min or when accepted)."
-    if audio:
-        Audio.text_to_speech(msg)
-    print(msg)
-    return msg
+    return "Watching for queue pop-up (auto-stops after 30 min or when accepted)."
 
 
+@capture_response
 @register_job(module_name="league", requires=_LEAGUE_REQ, summary="Launch League of Legends")
 def queue_up() -> str:
     """
@@ -90,23 +90,16 @@ def queue_up() -> str:
     Returns:
         str: Success or error message.
     """
-    audio = Cache.get_audio()
-
     if not os.path.exists(_LEAGUE_LNK):
-        msg = (
+        return (
             f"League of Legends shortcut not found at {_LEAGUE_LNK}. "
             "Create a desktop shortcut or update the path in modules/league.py."
         )
-        print(msg)
-        return msg
-
-    if audio:
-        Audio.play_cached("Launching League of Legends...")
-    print("Launching League of Legends...")
     os.startfile(_LEAGUE_LNK)
     return "League of Legends launched."
 
 
+@capture_response
 @register_job(module_name="league", requires=_LEAGUE_REQ, summary="Close League of Legends")
 def close_game() -> str:
     """
@@ -126,9 +119,5 @@ def close_game() -> str:
     Returns:
         str: Confirmation message.
     """
-    audio = Cache.get_audio()
-    if audio:
-        Audio.play_cached("Closing League of Legends...")
-    print("Closing League of Legends...")
     os.system("taskkill /f /im LeagueClientUx.exe")
     return "Sent close signal to League of Legends."

@@ -13,7 +13,8 @@ class GoogleAccounts:
         if cls._data is not None:
             return cls._data
         if os.path.exists(_ACCOUNTS_FILE):
-            with open(_ACCOUNTS_FILE, "r", encoding="utf-8") as f:
+            # Be tolerant of BOM-prefixed UTF-8 written by some editors/shell tools.
+            with open(_ACCOUNTS_FILE, "r", encoding="utf-8-sig") as f:
                 cls._data = json.load(f)
         else:
             cls._data = {"primary": None, "accounts": {}}

@@ -6,6 +6,7 @@ from datetime import datetime
 from helpers.audio import Audio
 from helpers.cache import Cache
 from helpers.decorators import capture_response
+from helpers.logger import logger
 from helpers.registry import method_job, register_service
 from helpers.requirements import Requirement
 
@@ -104,6 +105,7 @@ class Scheduler:
 
     # ------------------------------------------------------------------ jobs
 
+    @capture_response
     @method_job
     def add_reminder(self, when: str, text: str) -> str:
         """
@@ -180,11 +182,11 @@ class Scheduler:
             from helpers.memory_db import save_reminder
             save_reminder(meta)
         except Exception as e:
-            print(f"[scheduler] db save error: {e}")
+            logger.log_error(str(e), "scheduler.add_reminder.db_save")
         return f"Reminder set: '{text}' — {trigger_display} (id: {reminder_id})"
 
-    @method_job
     @capture_response
+    @method_job
     def list_reminders(self) -> str:
         """
         [SCHEDULER JOB] Lists all active scheduled reminders.
@@ -216,8 +218,8 @@ class Scheduler:
             lines.append(f"  [{job.id}] '{text}' — next: {next_str} ({when_str})")
         return "\n".join(lines)
 
-    @method_job
     @capture_response
+    @method_job
     def cancel_reminder(self, id_or_text: str = "") -> str:
         """
         [SCHEDULER JOB] Cancels a scheduled reminder by id or partial text match.
@@ -277,7 +279,7 @@ class Scheduler:
         audio = Cache.get_audio()
         if audio:
             Audio.text_to_speech(msg)
-        print(f"\n{msg}")
+        logger.log_system_event("reminder_fired", msg)
         meta = self._reminders.get(reminder_id, {})
         if missed_at or meta.get("trigger_type") == "date":
             self._reminders.pop(reminder_id, None)
@@ -333,4 +335,4 @@ class Scheduler:
                     continue
                 self._reminders[reminder_id] = meta
             except Exception as e:
-                print(f"[scheduler] could not restore reminder '{reminder_id}': {e}")
+                logger.log_error(str(e), f"scheduler.restore_reminder.{reminder_id}")

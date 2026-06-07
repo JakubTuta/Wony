@@ -1,6 +1,6 @@
 from helpers.accounts import GoogleAccounts
-from helpers.audio import Audio
-from helpers.cache import Cache
+from helpers.decorators import capture_response
+from helpers.logger import logger
 from helpers.registry import method_job, register_service
 
 
@@ -11,8 +11,49 @@ class GoogleAccountsService:
     def __init__(self):
         pass
 
+    def _email_from_gmail(self, gmail_svc, account: str) -> str:
+        if not gmail_svc:
+            return ""
+        try:
+            profile = gmail_svc._svc(account).users().getProfile(userId="me").execute()
+            return (profile or {}).get("emailAddress", "")
+        except Exception as e:
+            logger.log_error(str(e), f"google_account_email.gmail_profile.{account}")
+            return ""
+
+    def _email_from_calendar(self, cal_svc, account: str) -> str:
+        if not cal_svc:
+            return ""
+        try:
+            primary = (
+                cal_svc._service_for(account)
+                .calendarList()
+                .get(calendarId="primary")
+                .execute()
+            )
+            cal_id = (primary or {}).get("id", "")
+            return cal_id if "@" in cal_id else ""
+        except Exception as e:
+            logger.log_error(str(e), f"google_account_email.calendar_primary.{account}")
+            return ""
+
+    def _ensure_account_email(self, account: str, gmail_svc=None, cal_svc=None) -> str:
+        rec = GoogleAccounts.record(account)
+        email = (rec.get("email", "") or "").strip()
+        if email:
+            return email
+
+        email = self._email_from_gmail(gmail_svc, account)
+        if not email:
+            email = self._email_from_calendar(cal_svc, account)
+
+        if email:
+            GoogleAccounts.set_email(account, email)
+        return email
+
+    @capture_response
     @method_job
-    def list_google_accounts(self) -> None:
+    def list_google_accounts(self) -> str:
         """
         [GOOGLE ACCOUNTS JOB] Lists all configured Google accounts with their status.
 
@@ -23,43 +64,34 @@ class GoogleAccountsService:
 
         Keywords: google accounts, list accounts, my accounts, which accounts,
                  show accounts, configured accounts, email accounts, account list,
-                 available accounts
+                 available accounts, list all accounts, all accounts, all google accounts,
+                 show all accounts, get accounts, fetch accounts, display accounts
 
         Args:
             None
 
         Returns:
-            None: Prints all configured accounts, marking the primary.
+            str: All configured accounts, marking the primary.
         """
-        audio = Cache.get_audio()
         accounts = GoogleAccounts.list_accounts()
         primary = GoogleAccounts.get_primary()
 
         if not accounts:
-            msg = "No Google accounts configured. Say 'add google account' to set one up."
-            if audio:
-                Audio.text_to_speech(msg)
-            else:
-                print(msg)
-            return
+            return (
+                "No Google accounts configured. Say 'add google account' to set one up."
+            )
 
         lines = []
         for name in accounts:
+            # Listing should be read-only and must not trigger OAuth.
             rec = GoogleAccounts.record(name)
-            email = rec.get("email", "")
+            email = (rec.get("email", "") or "").strip()
             marker = " [primary]" if name == primary else ""
             lines.append(f"  {name}{marker}" + (f" ({email})" if email else ""))
 
-        if audio:
-            Audio.text_to_speech(
-                f"You have {len(accounts)} Google account{'s' if len(accounts) != 1 else ''}. "
-                + ", ".join(
-                    f"{n}{' primary' if n == primary else ''}" for n in accounts
-                )
-            )
-        else:
-            print(f"Google accounts ({len(accounts)}):\n" + "\n".join(lines))
+        return f"Google accounts ({len(accounts)}):\n" + "\n".join(lines)
 
+    @capture_response
     @method_job
     def add_google_account(self, name: str) -> str:
         """
@@ -82,53 +114,69 @@ class GoogleAccountsService:
         Returns:
             str: Confirmation that the account was added.
         """
-        audio = Cache.get_audio()
         if not name:
-            msg = "Please provide a name for the account, e.g. 'work' or 'personal'."
-            if audio:
-                Audio.text_to_speech(msg)
-            else:
-                print(msg)
-            return msg
+            return "Please provide a name for the account, e.g. 'work' or 'personal'."
 
         try:
             safe_name = GoogleAccounts.add_account(name)
         except ValueError as e:
-            msg = str(e)
-            if audio:
-                Audio.text_to_speech(msg)
-            else:
-                print(msg)
-            return msg
+            return str(e)
 
-        print(f"Account '{safe_name}' registered. Triggering OAuth authorization...")
+        logger.log_system_event(
+            "google_account_add",
+            f"Account '{safe_name}' registered. Triggering OAuth authorization...",
+        )
 
         from helpers.registry import ServiceRegistry
+
         gmail_svc = ServiceRegistry.get_service_instance("gmail")
         cal_svc = ServiceRegistry.get_service_instance("calendar")
+        auth_errors = []
+        gmail_ok = False
+        calendar_ok = False
 
         if gmail_svc:
             try:
-                print("Authorizing Gmail — a browser window will open...")
+                logger.log_system_event("google_account_add", "Authorizing Gmail...")
                 gmail_svc._client(safe_name)
-                print("Gmail authorized.")
+                email = self._email_from_gmail(gmail_svc, safe_name)
+                if email:
+                    GoogleAccounts.set_email(safe_name, email)
+                logger.log_system_event("google_account_add", "Gmail authorized.")
+                gmail_ok = True
             except Exception as e:
-                print(f"Gmail auth failed: {e}")
+                auth_errors.append(f"Gmail auth failed: {e}")
+                logger.log_error(str(e), f"google_account_add.gmail_auth.{safe_name}")
         if cal_svc:
             try:
-                print("Authorizing Calendar — a browser window will open...")
+                logger.log_system_event("google_account_add", "Authorizing Calendar...")
                 cal_svc._service_for(safe_name)
-                print("Calendar authorized.")
+                if not GoogleAccounts.record(safe_name).get("email", ""):
+                    email = self._email_from_calendar(cal_svc, safe_name)
+                    if email:
+                        GoogleAccounts.set_email(safe_name, email)
+                logger.log_system_event("google_account_add", "Calendar authorized.")
+                calendar_ok = True
             except Exception as e:
-                print(f"Calendar auth failed: {e}")
+                auth_errors.append(f"Calendar auth failed: {e}")
+                logger.log_error(
+                    str(e), f"google_account_add.calendar_auth.{safe_name}"
+                )
+        if auth_errors:
+            details = "; ".join(auth_errors)
+            if gmail_ok or calendar_ok:
+                return (
+                    f"Account '{safe_name}' was added, but authorization only partially "
+                    f"completed. {details}"
+                )
+            return (
+                f"Account '{safe_name}' was registered, but authorization failed. "
+                f"{details}"
+            )
 
-        result = f"Account '{safe_name}' added successfully."
-        if audio:
-            Audio.text_to_speech(result)
-        else:
-            print(result)
-        return result
+        return f"Account '{safe_name}' added successfully."
 
+    @capture_response
     @method_job
     def remove_google_account(self, name: str) -> str:
         """
@@ -149,27 +197,16 @@ class GoogleAccountsService:
         Returns:
             str: Confirmation that the account was removed.
         """
-        audio = Cache.get_audio()
         if not name:
-            msg = "Please specify which account to remove."
-            if audio:
-                Audio.text_to_speech(msg)
-            else:
-                print(msg)
-            return msg
+            return "Please specify which account to remove."
 
         try:
             GoogleAccounts.remove_account(name)
-            result = f"Account '{name}' removed."
+            return f"Account '{name}' removed."
         except ValueError as e:
-            result = str(e)
+            return str(e)
 
-        if audio:
-            Audio.text_to_speech(result)
-        else:
-            print(result)
-        return result
-
+    @capture_response
     @method_job
     def set_primary_account(self, name: str) -> str:
         """
@@ -191,23 +228,11 @@ class GoogleAccountsService:
         Returns:
             str: Confirmation that the primary account was updated.
         """
-        audio = Cache.get_audio()
         if not name:
-            msg = "Please specify which account to set as primary."
-            if audio:
-                Audio.text_to_speech(msg)
-            else:
-                print(msg)
-            return msg
+            return "Please specify which account to set as primary."
 
         try:
             GoogleAccounts.set_primary(name)
-            result = f"Primary account set to '{name}'."
+            return f"Primary account set to '{name}'."
         except ValueError as e:
-            result = str(e)
-
-        if audio:
-            Audio.text_to_speech(result)
-        else:
-            print(result)
-        return result
+            return str(e)

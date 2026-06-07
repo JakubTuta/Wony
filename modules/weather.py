@@ -1,9 +1,8 @@
 import os
 import typing
 
-from helpers.audio import Audio
-from helpers.cache import Cache
 from helpers.decorators import capture_response
+from helpers.logger import logger
 from helpers.registry import register_job
 from helpers.requirements import Requirement
 
@@ -49,11 +48,6 @@ def weather(city: str) -> str:
     if not api_key:
         return "Error: Weather API key not configured."
 
-    audio = Cache.get_audio()
-    if audio:
-        Audio.play_cached("Getting weather...")
-    print("Getting weather...")
-
     if city == "":
         my_geolocation = geocoder.ip("me")
         city = my_geolocation.city
@@ -75,7 +69,6 @@ def weather(city: str) -> str:
 def _get_coordinates_for_city_name(
     city_name: str, api_key: str
 ) -> typing.Tuple[typing.Optional[float], typing.Optional[float]]:
-    """Get coordinates for a city name."""
     import requests
 
     try:
@@ -83,22 +76,18 @@ def _get_coordinates_for_city_name(
             f"http://api.openweathermap.org/geo/1.0/direct?q={city_name}&appid={api_key}&limit=1"
         )
         data = response.json()
-
         if len(data) == 0:
             return None, None
-
         city = data[0]
         return city["lat"], city["lon"]
-
     except requests.exceptions.RequestException as e:
-        print(f"Error fetching coordinates: {e}")
+        logger.log_error(str(e), "get_coordinates_for_city_name")
         return None, None
 
 
 def _get_weather_for_coordinates(
     lat: float, lon: float, api_key: str
 ) -> typing.Optional[typing.Dict[str, typing.Any]]:
-    """Get weather data for coordinates."""
     import requests
 
     try:
@@ -106,7 +95,6 @@ def _get_weather_for_coordinates(
             f"https://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={api_key}&units=metric&lang=en"
         )
         return response.json()
-
     except requests.exceptions.RequestException as e:
-        print(f"Error fetching weather data: {e}")
+        logger.log_error(str(e), "get_weather_for_coordinates")
         return None

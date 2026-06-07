@@ -13,6 +13,7 @@ from helpers.cache import Cache
 from helpers.config import Config
 from helpers.decorators import capture_response
 from helpers.jobs import BackgroundJobs
+from helpers.logger import logger
 from helpers.registry import method_job, register_service
 from helpers.requirements import Requirement
 
@@ -410,14 +411,11 @@ class Calendar:
             msg = f"You have {len(events)} new calendar event(s) in {name}."
             if audio:
                 Audio.text_to_speech(msg)
-            else:
-                print(msg)
+            logger.log_system_event("calendar_poll", msg)
             for event in events:
                 formatted = self._format_event(event, verbose=False)
                 if audio:
                     Audio.text_to_speech(formatted)
-                else:
-                    print(formatted)
 
         BackgroundJobs.start(job_name, _poll, interval=interval_minutes * 60)
         return f"Checking '{name}' calendar every {interval_minutes} minutes."

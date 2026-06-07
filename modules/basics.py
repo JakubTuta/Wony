@@ -8,6 +8,7 @@ from helpers.cache import Cache
 from helpers.config import Config
 from helpers.decorators import capture_response
 from helpers.jobs import BackgroundJobs
+from helpers.logger import logger
 from helpers.registry import ServiceRegistry, register_job
 
 
@@ -67,7 +68,7 @@ def _timer_worker(minutes: float, label: str) -> None:
     audio = Cache.get_audio()
     if audio:
         Audio.text_to_speech(msg)
-    print(msg)
+    logger.log_system_event("timer_fired", msg)
 
 
 @register_job(module_name="basics", summary="Set a countdown timer")
@@ -187,14 +188,13 @@ def close_computer() -> None:
     """
     confirmation = input("Shut down the computer? Type 'yes' to confirm: ").strip().lower()
     if confirmation != "yes":
-        print("Shutdown cancelled.")
+        logger.log_system_event("shutdown_cancelled", "User did not confirm shutdown.")
         return
 
     audio = Cache.get_audio()
     if audio:
         Audio.play_cached("Closing computer. o7")
-    print("Closing computer. o7")
-
+    logger.log_system_event("shutdown", "Shutting down computer.")
     os.system("shutdown /s /f /t 0")
 
 
@@ -309,7 +309,7 @@ def _email_line() -> typing.Optional[str]:
         )
         return f"You have {len(msgs)} unread email(s) from: {', '.join(senders)}."
     except Exception as e:
-        print(f"[greeting] email line failed: {e}")
+        logger.log_error(str(e), "greeting.email_line")
         return None
 
 
@@ -333,5 +333,5 @@ def _calendar_line() -> typing.Optional[str]:
             lines.append(f"  - {title} at {when}")
         return "\n".join(lines)
     except Exception as e:
-        print(f"[greeting] calendar line failed: {e}")
+        logger.log_error(str(e), "greeting.calendar_line")
         return None

@@ -1,8 +1,7 @@
 import requests
 
-from helpers.audio import Audio
-from helpers.cache import Cache
 from helpers.decorators import capture_response
+from helpers.logger import logger
 from helpers.registry import register_job
 from helpers.requirements import Requirement
 
@@ -40,23 +39,13 @@ def turn_light_on() -> str:
     Returns:
         str: Success confirmation message or detailed error information about the light operation.
     """
-    audio = Cache.get_audio()
-    if audio:
-        Audio.play_cached("Turning light on...")
-    print("Turning light on...")
-
     try:
         response = requests.get(f"{_base_url()}/light/0/?turn=on")
-
         if response.status_code == 200:
             return "Light turned on successfully."
-        else:
-            return (
-                f"Error: Failed to turn on light. Status code: {response.status_code}"
-            )
-
+        return f"Error: Failed to turn on light. Status code: {response.status_code}"
     except requests.exceptions.RequestException as e:
-        print(f"Error turning on light: {e}")
+        logger.log_error(str(e), "turn_light_on")
         return "Error: Could not connect to Shelly device to turn on the light."
 
 
@@ -81,23 +70,13 @@ def turn_light_off() -> str:
     Returns:
         str: Success confirmation message or detailed error information about the light operation.
     """
-    audio = Cache.get_audio()
-    if audio:
-        Audio.play_cached("Turning light off...")
-    print("Turning light off...")
-
     try:
         response = requests.get(f"{_base_url()}/light/0/?turn=off")
-
         if response.status_code == 200:
             return "Light turned off successfully."
-        else:
-            return (
-                f"Error: Failed to turn off light. Status code: {response.status_code}"
-            )
-
+        return f"Error: Failed to turn off light. Status code: {response.status_code}"
     except requests.exceptions.RequestException as e:
-        print(f"Error turning off light: {e}")
+        logger.log_error(str(e), "turn_light_off")
         return "Error: Could not connect to Shelly device to turn off the light."
 
 
@@ -121,28 +100,18 @@ def toggle_light() -> str:
     Returns:
         str: Success confirmation message with the new state or detailed error information.
     """
-    audio = Cache.get_audio()
-    if audio:
-        Audio.play_cached("Toggling light...")
-    print("Toggling light...")
-
     try:
         status_response = requests.get(f"{_base_url()}/light/0")
-
         if status_response.status_code != 200:
             return f"Error: Failed to get light status. Status code: {status_response.status_code}"
 
-        status_data = status_response.json()
-        current_state = status_data.get("ison", False)
-
+        current_state = status_response.json().get("ison", False)
         new_state = "off" if current_state else "on"
         toggle_response = requests.get(f"{_base_url()}/light/0/?turn={new_state}")
 
         if toggle_response.status_code == 200:
             return f"Light toggled successfully. Light is now {'on' if new_state == 'on' else 'off'}."
-        else:
-            return f"Error: Failed to toggle light. Status code: {toggle_response.status_code}"
-
+        return f"Error: Failed to toggle light. Status code: {toggle_response.status_code}"
     except requests.exceptions.RequestException as e:
-        print(f"Error toggling light: {e}")
+        logger.log_error(str(e), "toggle_light")
         return "Error: Could not connect to Shelly device to toggle the light."

@@ -10,9 +10,9 @@ import webbrowser
 
 import requests
 
-from helpers.audio import Audio
 from helpers.cache import Cache
-from helpers.decorators import retry_on_unauthorized
+from helpers.decorators import capture_response, retry_on_unauthorized
+from helpers.logger import logger
 from helpers.registry import method_job, register_service
 from helpers.requirements import Requirement
 
@@ -92,6 +92,7 @@ class Spotify:
         if not self.device_id:
             raise Exception("No active Spotify device found")
 
+    @capture_response
     @retry_on_unauthorized("_refresh_access_token")
     @method_job
     def play_songs(self, title: str, artist: str, content_type: str = "") -> typing.Optional[str]:
@@ -122,30 +123,24 @@ class Spotify:
         """
 
         if not title and not artist:
-            self.start_playback()
-            return
+            return self.start_playback()
 
         search_response = self._search(query=title, artist=artist, content_type=content_type)
 
         if not search_response:
-            self._handle_search_not_found(title, artist)
-            return
-
-        self._announce_action(
-            f"Playing {search_response['name']} by {search_response['artist']}"
-        )
+            return f"Could not find '{title}'" + (f" by {artist}" if artist else "") + "."
 
         songs = self._get_songs_from_search(search_response)
         url = self._build_url_with_device("https://api.spotify.com/v1/me/player/play")
 
-        data = {"uris": songs}
-
         self.toggle_shuffle(state=False)
-        self._make_spotify_request("put", url, json=data)
+        self._make_spotify_request("put", url, json={"uris": songs})
+        return f"Playing {search_response['name']} by {search_response['artist']}."
 
+    @capture_response
     @retry_on_unauthorized("_refresh_access_token")
     @method_job
-    def add_to_queue(self, title: str, artist: str) -> None:
+    def add_to_queue(self, title: str, artist: str) -> str:
         """
         [SPOTIFY SERVICE METHOD] Adds songs or albums to the Spotify playback queue for later listening.
         This service method searches for music content and adds it to the current playback queue
@@ -171,12 +166,7 @@ class Spotify:
         search_response = self._search(query=title, artist=artist)
 
         if not search_response:
-            self._handle_search_not_found(title, artist)
-            return
-
-        self._announce_action(
-            f"Adding {search_response['name']} by {search_response['artist']} to the queue"
-        )
+            return f"Could not find '{title}'" + (f" by {artist}" if artist else "") + "."
 
         base_url = "https://api.spotify.com/v1/me/player/queue"
         url = self._build_url_with_device(base_url)
@@ -188,8 +178,11 @@ class Spotify:
             request_url = f"{url}{separator}uri={song}"
             self._make_spotify_request("post", request_url)
 
+        return f"Added {search_response['name']} by {search_response['artist']} to the queue."
+
+    @capture_response
     @method_job
-    def toggle_playback(self) -> None:
+    def toggle_playback(self) -> str:
         """
         [SPOTIFY SERVICE METHOD] Switches between play and pause states for current Spotify playback.
         This service method checks the current playback state and toggles it - pausing if playing,
@@ -212,16 +205,14 @@ class Spotify:
         """
 
         is_playing = self._is_playback_playing()
-
         if is_playing:
-            self.stop_playback()
+            return self.stop_playback()
+        return self.start_playback()
 
-        else:
-            self.start_playback()
-
+    @capture_response
     @retry_on_unauthorized("_refresh_access_token")
     @method_job
-    def start_playback(self) -> None:
+    def start_playback(self) -> str:
         """
         [SPOTIFY SERVICE METHOD] Resumes or starts Spotify music playback from current position.
         This service method sends play command to Spotify API to begin or continue playback
@@ -245,11 +236,12 @@ class Spotify:
 
         url = self._build_url_with_device("https://api.spotify.com/v1/me/player/play")
         self._make_spotify_request("put", url)
-        print("Playback resumed")
+        return "Playback resumed."
 
+    @capture_response
     @retry_on_unauthorized("_refresh_access_token")
     @method_job
-    def stop_playback(self) -> None:
+    def stop_playback(self) -> str:
         """
         [SPOTIFY SERVICE METHOD] Pauses current Spotify music playback at current position.
         This service method sends pause command to Spotify API to temporarily stop playback
@@ -273,11 +265,12 @@ class Spotify:
 
         url = self._build_url_with_device("https://api.spotify.com/v1/me/player/pause")
         self._make_spotify_request("put", url)
-        print("Playback paused")
+        return "Playback paused."
 
+    @capture_response
     @retry_on_unauthorized("_refresh_access_token")
     @method_job
-    def skip_song(self) -> None:
+    def skip_song(self) -> str:
         """
         [SPOTIFY SERVICE METHOD] Advances to the next track in the current Spotify playlist or queue.
         This service method skips the currently playing song and moves forward to the next
@@ -301,11 +294,12 @@ class Spotify:
 
         url = self._build_url_with_device("https://api.spotify.com/v1/me/player/next")
         self._make_spotify_request("post", url)
-        print("Skipped a song")
+        return "Skipped to next song."
 
+    @capture_response
     @retry_on_unauthorized("_refresh_access_token")
     @method_job
-    def previous_song(self) -> None:
+    def previous_song(self) -> str:
         """
         Skips to the previous song in Spotify music playback.
 
@@ -322,7 +316,7 @@ class Spotify:
             "https://api.spotify.com/v1/me/player/previous"
         )
         self._make_spotify_request("post", url)
-        print("Skipped to the previous song")
+        return "Playing previous song."
 
     @retry_on_unauthorized("_refresh_access_token")
     @method_job
@@ -353,8 +347,7 @@ class Spotify:
 
         current_volume = playback_state.get("device", {}).get("volume_percent", 50)
         new_volume = min(current_volume + 10, 100)
-
-        self.set_volume(volume=new_volume)
+        return self.set_volume(volume=new_volume)
 
     @retry_on_unauthorized("_refresh_access_token")
     @method_job
@@ -376,12 +369,11 @@ class Spotify:
 
         current_volume = playback_state.get("device", {}).get("volume_percent", 50)
         new_volume = max(current_volume - 10, 0)
-
-        self.set_volume(volume=new_volume)
+        return self.set_volume(volume=new_volume)
 
     @retry_on_unauthorized("_refresh_access_token")
     @method_job
-    def max_volume(self) -> None:
+    def max_volume(self) -> str:
         """
         Sets Spotify playback volume to maximum (100%).
 
@@ -394,11 +386,12 @@ class Spotify:
             None
         """
 
-        self.set_volume(volume=100)
+        return self.set_volume(volume=100)
 
+    @capture_response
     @retry_on_unauthorized("_refresh_access_token")
     @method_job
-    def set_volume(self, volume: int) -> None:
+    def set_volume(self, volume: int) -> str:
         """
         Sets Spotify playback volume to a specific level.
 
@@ -414,10 +407,10 @@ class Spotify:
         try:
             volume = int(volume)
         except ValueError:
-            return
+            return "Error: Invalid volume value."
 
         if not 0 <= volume <= 100:
-            return
+            return "Error: Volume must be between 0 and 100."
 
         base_url = (
             f"https://api.spotify.com/v1/me/player/volume?volume_percent={volume}"
@@ -425,8 +418,9 @@ class Spotify:
         url = self._build_url_with_device(base_url, "&")
 
         self._make_spotify_request("put", url)
-        print(f"Volume set to {volume}%")
+        return f"Volume set to {volume}%."
 
+    @capture_response
     @retry_on_unauthorized("_refresh_access_token")
     @method_job
     def get_current_track(self) -> str:
@@ -456,9 +450,9 @@ class Spotify:
             artists = ", ".join(a["name"] for a in item.get("artists", []))
             result = f"Now playing: {name}" + (f" by {artists}" if artists else "") + "."
 
-        self._announce_action(result)
         return result
 
+    @capture_response
     @retry_on_unauthorized("_refresh_access_token")
     @method_job
     def like_current_track(self) -> typing.Optional[str]:
@@ -480,9 +474,7 @@ class Spotify:
         """
         track_id = self._get_current_track_id()
         if not track_id:
-            msg = "Nothing is currently playing"
-            self._announce_action(msg)
-            return msg
+            return "Nothing is currently playing."
 
         self._make_spotify_request(
             "put",
@@ -490,10 +482,9 @@ class Spotify:
         )
         state = self._get_playback_state()
         name = state["item"]["name"] if state and state.get("item") else "Track"
-        msg = f"Liked {name}"
-        self._announce_action(msg)
-        return msg
+        return f"Liked {name}."
 
+    @capture_response
     @retry_on_unauthorized("_refresh_access_token")
     @method_job
     def unlike_current_track(self) -> typing.Optional[str]:
@@ -525,10 +516,9 @@ class Spotify:
         )
         state = self._get_playback_state()
         name = state["item"]["name"] if state and state.get("item") else "Track"
-        msg = f"Removed {name} from liked songs"
-        self._announce_action(msg)
-        return msg
+        return f"Removed {name} from liked songs."
 
+    @capture_response
     @retry_on_unauthorized("_refresh_access_token")
     @method_job
     def toggle_like_current_track(self) -> typing.Optional[str]:
@@ -549,9 +539,7 @@ class Spotify:
         """
         track_id = self._get_current_track_id()
         if not track_id:
-            msg = "Nothing is currently playing"
-            self._announce_action(msg)
-            return msg
+            return "Nothing is currently playing."
 
         response = self._make_spotify_request(
             "get",
@@ -564,9 +552,10 @@ class Spotify:
         else:
             return self.like_current_track()
 
+    @capture_response
     @retry_on_unauthorized("_refresh_access_token")
     @method_job
-    def get_playlists(self) -> typing.List[typing.Dict[str, str]]:
+    def get_playlists(self) -> str:
         """
         [SPOTIFY SERVICE METHOD] Lists all playlists owned or followed by the current user.
 
@@ -581,13 +570,14 @@ class Spotify:
             None
 
         Returns:
-            list: Playlist dicts with 'name', 'id', and 'uri'.
+            str: Names of all playlists.
         """
         playlists = self._get_user_playlists()
-        names = "\n".join(p["name"] for p in playlists) if playlists else "No playlists found"
-        self._announce_action(names)
-        return playlists
+        if not playlists:
+            return "No playlists found."
+        return "Your playlists:\n" + "\n".join(f"  {p['name']}" for p in playlists)
 
+    @capture_response
     @retry_on_unauthorized("_refresh_access_token")
     @method_job
     def play_playlist(self, name: str) -> typing.Optional[str]:
@@ -616,15 +606,11 @@ class Spotify:
         )
 
         if not match:
-            msg = f"Playlist '{name}' not found"
-            self._announce_action(msg)
-            return msg
+            return f"Playlist '{name}' not found."
 
         url = self._build_url_with_device("https://api.spotify.com/v1/me/player/play")
         self._make_spotify_request("put", url, json={"context_uri": match["uri"]})
-        msg = f"Playing playlist {match['name']}"
-        self._announce_action(msg)
-        return msg
+        return f"Playing playlist {match['name']}."
 
     @retry_on_unauthorized("_refresh_access_token")
     def toggle_shuffle(self, **kwargs) -> None:
@@ -695,26 +681,6 @@ class Spotify:
         response = getattr(requests, method.lower())(url, headers=headers, **kwargs)
         response.raise_for_status()
         return response
-
-    def _handle_search_not_found(self, title: str, artist: str = "") -> None:
-        """Handle case when search returns no results"""
-        text = f"Didn't find {title}"
-        if artist:
-            text += f" by {artist}"
-
-        audio = Cache.get_audio()
-        if audio:
-            Audio.text_to_speech(text)
-        else:
-            print(text)
-
-    def _announce_action(self, message: str) -> None:
-        """Announce an action via audio or print"""
-        audio = Cache.get_audio()
-        if audio:
-            Audio.text_to_speech(message)
-        else:
-            print(message)
 
     def _is_playback_playing(self):
         playback_state = self._get_playback_state()
@@ -805,11 +771,11 @@ class Spotify:
             }
         )
 
-        print(f"Opening browser for authorization: {auth_url}")
+        logger.log_system_event("spotify_auth", f"Opening browser for authorization.")
         webbrowser.open(auth_url)
 
         httpd = socketserver.TCPServer(("", self.PORT), AuthHandler)
-        print(f"Waiting for authorization at http://localhost:{self.PORT}")
+        logger.log_system_event("spotify_auth", f"Waiting for authorization at http://localhost:{self.PORT}")
         httpd.serve_forever()
 
         if auth_code:
