@@ -10,9 +10,17 @@ DEFAULTS: typing.Dict[str, typing.Any] = {
     },
     "voice": {
         "enabled": False,
-        "tts_voice_index": 1,
-        "rate": 150,
+        "tts_voice": "af_heart",
+        "speed": 1.0,
         "volume": 0.6,
+        "model_path": "models/kokoro-v1.0.onnx",
+        "voices_path": "models/voices-v1.0.bin",
+        "stt": {
+            "start_timeout": 4.0,
+            "max_seconds": 12.0,
+            "silence_ms": 500,
+            "vad_aggressiveness": 2,
+        },
         "wake_word": {
             "enabled": False,
             "phrase": "hey jarvis",    # built-in model name; ignored when model_path is set

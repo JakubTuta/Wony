@@ -61,6 +61,26 @@ def play_wav(filename: str, blocking: bool = False) -> None:
         threading.Thread(target=_play, daemon=True).start()
 
 
+def play_array(samples: np.ndarray, sr: int, blocking: bool = True) -> None:
+    """Play a numpy float32 audio array on the system default output device.
+
+    blocking=True (default): blocks until playback finishes (required for TTS
+    so the mic is not opened while the assistant is still speaking).
+    blocking=False: spawns a daemon thread and returns immediately.
+    """
+    if blocking:
+        sd.play(samples, sr)
+        sd.wait()
+    else:
+        def _play() -> None:
+            try:
+                sd.play(samples, sr)
+                sd.wait()
+            except Exception as e:
+                print(f"[mic] playback failed: {e}")
+        threading.Thread(target=_play, daemon=True).start()
+
+
 def record_native(seconds: float) -> typing.Tuple[np.ndarray, int]:
     """Record from the default input at its native sample rate.
 

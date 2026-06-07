@@ -60,5 +60,5 @@ def print_startup_summary(voice_mode: bool = False) -> None:
 def _check_voice_deps() -> typing.List[str]:
     import importlib.util
 
-    required = ["pyttsx3", "sounddevice", "soundfile", "soxr", "faster_whisper", "pynput"]
+    required = ["kokoro_onnx", "espeakng_loader", "sounddevice", "soundfile", "soxr", "faster_whisper", "pynput"]
     return [m for m in required if importlib.util.find_spec(m) is None]

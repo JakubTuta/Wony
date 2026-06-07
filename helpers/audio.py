@@ -5,7 +5,7 @@ import typing
 import numpy as np
 
 _tts_warned = False
-_tts_lock = threading.Lock()  # pyttsx3/SAPI5 is not re-entrant; serialize calls
+_tts_lock = threading.Lock()  # Kokoro is not re-entrant; serialize calls
 _tts_singleton: typing.Optional["TTS_Engine"] = None
 
 # Fixed-text clips rendered to WAV by scripts/render_voice_clips.py.
@@ -27,6 +27,64 @@ CACHED_CLIPS: dict[str, str] = {
     "Closing League of Legends...": "voice/bot/close_league.wav",
 }
 
+# Map BCP-47 language codes to Kokoro lang codes.
+_LANG_MAP: dict[str, str] = {
+    "en": "en-us",
+    "en-us": "en-us",
+    "en-gb": "en-gb",
+    "fr": "fr-fr",
+    "fr-fr": "fr-fr",
+    "ja": "ja",
+    "ko": "ko",
+    "zh": "zh",
+    "pt": "pt-br",
+    "pt-br": "pt-br",
+    "es": "es",
+    "it": "it",
+    "de": "de",
+    "hi": "hi",
+}
+
+# Languages not supported by Kokoro v1.0 — fall back to en-us with a warning.
+_UNSUPPORTED_LANG_WARNING_SHOWN = False
+
+
+def _resolve_kokoro_lang(bcp47: str) -> str:
+    global _UNSUPPORTED_LANG_WARNING_SHOWN
+    lang = bcp47.lower()
+    if lang in _LANG_MAP:
+        return _LANG_MAP[lang]
+    # Try prefix match (e.g. "pl" → no match → fallback)
+    prefix = lang.split("-")[0]
+    if prefix in _LANG_MAP:
+        return _LANG_MAP[prefix]
+    if not _UNSUPPORTED_LANG_WARNING_SHOWN:
+        print(
+            f"[TTS] Language '{bcp47}' not supported by Kokoro v1.0 — falling back to en-us. "
+            "Set voice.tts_voice to an English voice or update assistant.language."
+        )
+        _UNSUPPORTED_LANG_WARNING_SHOWN = True
+    return "en-us"
+
+
+def _download_model_files(onnx_path: str, voices_path: str) -> None:
+    """Download Kokoro model files if absent."""
+    import urllib.request
+
+    base_url = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/"
+    files = {
+        onnx_path: "kokoro-v1.0.onnx",
+        voices_path: "voices-v1.0.bin",
+    }
+    os.makedirs(os.path.dirname(onnx_path) or ".", exist_ok=True)
+    for dest, name in files.items():
+        if os.path.exists(dest):
+            continue
+        url = base_url + name
+        print(f"[TTS] Downloading {name} → {dest} …")
+        urllib.request.urlretrieve(url, dest)
+        print(f"[TTS] Downloaded {name}.")
+
 
 def _get_tts_singleton() -> "TTS_Engine":
     global _tts_singleton
@@ -37,36 +95,76 @@ def _get_tts_singleton() -> "TTS_Engine":
 
 class TTS_Engine:
     def __init__(self) -> None:
-        import pyttsx3
-
-        self._engine = pyttsx3.init()
-
+        from kokoro_onnx import Kokoro, EspeakConfig
+        import espeakng_loader
         from helpers.config import Config
 
-        rate = Config.get("voice.rate", 150)
-        volume = Config.get("voice.volume", 0.6)
-        self._engine.setProperty("rate", rate)
-        self._engine.setProperty("volume", volume)
+        self._voice = Config.get("voice.tts_voice", "af_heart")
+        self._speed = float(Config.get("voice.speed", 1.0))
+        self._volume = float(Config.get("voice.volume", 0.6))
+        language = str(Config.get("assistant.language", "en"))
+        self._lang = _resolve_kokoro_lang(language)
 
-        voices = self._engine.getProperty("voices")
-        voice_index = Config.get("voice.tts_voice_index", 1)
-        if voices:
-            if voice_index >= len(voices):
-                print(
-                    f"Warning: voice.tts_voice_index={voice_index} is out of range "
-                    f"(only {len(voices)} voice(s) available). Using index 0. "
-                    f"Run `python -c \"import pyttsx3; e=pyttsx3.init(); [print(i, v.name) for i, v in enumerate(e.getProperty('voices'))]\"` to list voices."
-                )
-                voice_index = 0
-            self._engine.setProperty("voice", voices[voice_index].id)
+        onnx_path = Config.get("voice.model_path", "models/kokoro-v1.0.onnx")
+        voices_path = Config.get("voice.voices_path", "models/voices-v1.0.bin")
+
+        _download_model_files(onnx_path, voices_path)
+
+        espeak_cfg = EspeakConfig(
+            lib_path=espeakng_loader.get_library_path(),
+            data_path=espeakng_loader.get_data_path(),
+        )
+        self._kokoro = Kokoro(onnx_path, voices_path, espeak_config=espeak_cfg)
+
+    async def _stream_async(self, text: str) -> None:
+        import sounddevice as sd
+
+        out_stream: typing.Optional[sd.OutputStream] = None
+        try:
+            async for samples, sr in self._kokoro.create_stream(
+                text,
+                voice=self._voice,
+                speed=self._speed,
+                lang=self._lang,
+            ):
+                if self._volume != 1.0:
+                    samples = (samples * self._volume).astype(np.float32)
+                if out_stream is None:
+                    out_stream = sd.OutputStream(samplerate=sr, channels=1, dtype="float32")
+                    out_stream.start()
+                out_stream.write(samples)
+        finally:
+            if out_stream is not None:
+                out_stream.stop()
+                out_stream.close()
 
     def text_to_speech(self, text: str) -> None:
-        self._engine.say(text)
-        self._engine.runAndWait()
+        import asyncio
+        from helpers import mic
 
-    def save_text_to_file(self, text: str, filename: str) -> None:
-        self._engine.save_to_file(text, filename)
-        self._engine.runAndWait()
+        try:
+            asyncio.get_running_loop()
+            # Already in an event loop — sync fallback
+            samples, sr = self._kokoro.create(text, voice=self._voice, speed=self._speed, lang=self._lang)
+            if self._volume != 1.0:
+                samples = (samples * self._volume).astype(np.float32)
+            mic.play_array(samples, sr, blocking=True)
+        except RuntimeError:
+            asyncio.run(self._stream_async(text))
+
+    def save_to_file(self, text: str, filename: str) -> None:
+        import soundfile as sf
+
+        samples, sr = self._kokoro.create(
+            text,
+            voice=self._voice,
+            speed=self._speed,
+            lang=self._lang,
+        )
+        if self._volume != 1.0:
+            samples = (samples * self._volume).astype(np.float32)
+        os.makedirs(os.path.dirname(filename) or ".", exist_ok=True)
+        sf.write(filename, samples, sr)
 
 
 class Audio:
@@ -84,10 +182,8 @@ class Audio:
 
     @staticmethod
     def save_text_to_file(text: str, filename: str) -> None:
-        os.makedirs(os.path.dirname(filename), exist_ok=True)
-        tts_engine = TTS_Engine()
-        tts_engine.save_text_to_file(text, filename)
-        del tts_engine
+        engine = _get_tts_singleton()
+        engine.save_to_file(text, filename)
 
     @staticmethod
     def play_cached(text: str, blocking: bool = False) -> None:
@@ -128,14 +224,14 @@ class Audio:
             except ImportError:
                 if not _tts_warned:
                     print(
-                        "TTS unavailable: pyttsx3 not installed. "
+                        "TTS unavailable: kokoro-onnx not installed. "
                         "Run: pip install -r requirements/voice.txt"
                     )
                     _tts_warned = True
             except Exception as e:
                 if not _tts_warned:
                     print(
-                        f"TTS unavailable: {e} — check your audio device or voice.tts_voice_index in config.yaml."
+                        f"TTS unavailable: {e} — check voice.tts_voice / voice.model_path in config.yaml."
                     )
                     _tts_warned = True
                 # Engine may be broken; reset so next call tries a fresh one.
@@ -168,6 +264,15 @@ class Audio:
         return mic.record_until_silence(
             max_seconds=float(cfg.get("max_seconds", 12.0)),
             start_timeout=effective_timeout,
-            silence_ms=int(cfg.get("silence_ms", 700)),
+            silence_ms=int(cfg.get("silence_ms", 500)),
             vad_aggressiveness=int(cfg.get("vad_aggressiveness", 2)),
         )
+
+
+def preload_tts() -> None:
+    """Warm the TTS engine at startup so the first response has no cold-start lag."""
+    try:
+        _get_tts_singleton()
+        print("TTS engine loaded.")
+    except Exception as e:
+        print(f"[TTS] Preload failed (non-fatal): {e}")

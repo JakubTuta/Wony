@@ -1,6 +1,8 @@
 # Voice input/output dependencies.
 # Required for --audio mode (speech recognition + text-to-speech).
-pyttsx3
+kokoro-onnx
+espeakng-loader
+onnxruntime
 sounddevice
 soundfile
 soxr

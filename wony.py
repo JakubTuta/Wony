@@ -89,8 +89,10 @@ def cmd_voice(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     from helpers.recognizer import preload_model
+    from helpers.audio import preload_tts
 
     preload_model()
+    preload_tts()
 
     from helpers.audio import Audio
 

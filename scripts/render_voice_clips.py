@@ -2,7 +2,7 @@
 Render fixed TTS phrases to WAV files in voice/bot/.
 
 Run this after initial setup or whenever you change voice settings
-(voice.rate, voice.volume, voice.tts_voice_index in config.yaml):
+(voice.tts_voice, voice.speed, voice.volume in config.yaml):
 
     python scripts/render_voice_clips.py
 
@@ -20,9 +20,7 @@ if ROOT not in sys.path:
 
 
 def main() -> None:
-    from helpers.audio import CACHED_CLIPS, TTS_Engine
-
-    engine = TTS_Engine()
+    from helpers.audio import CACHED_CLIPS, Audio
 
     total = len(CACHED_CLIPS)
     rendered = 0
@@ -37,9 +35,8 @@ def main() -> None:
             skipped += 1
             continue
 
-        os.makedirs(os.path.dirname(abs_path), exist_ok=True)
         try:
-            engine.save_text_to_file(text, abs_path)
+            Audio.save_text_to_file(text, abs_path)
             print(f"  rendered       {path}  ({text!r})")
             rendered += 1
         except Exception as e:

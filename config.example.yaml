@@ -12,11 +12,18 @@ assistant:
   language: "en"
 
 voice:
-  # pyttsx3 voice index. 0 = first installed voice (usually English),
-  # 1 = second (often Polish on Windows). Run `python -m pyttsx3` to list.
-  tts_voice_index: 1
-  rate: 150
-  volume: 0.6
+  # Kokoro voice name. Common choices:
+  #   af_heart, af_sarah, af_nicole  (American female)
+  #   am_michael, am_adam            (American male)
+  #   bf_emma, bf_alice              (British female)
+  #   bm_george, bm_daniel           (British male)
+  # Run `python -c "from kokoro_onnx import Kokoro; k=Kokoro('models/kokoro-v1.0.onnx','models/voices-v1.0.bin'); print(k.get_voices())"` to list all.
+  tts_voice: "af_heart"
+  speed: 1.0    # 0.5–2.0 speaking rate
+  volume: 0.6   # output gain (0.0–1.0)
+  # Kokoro model files (auto-downloaded to models/ on first run if missing).
+  model_path: "models/kokoro-v1.0.onnx"
+  voices_path: "models/voices-v1.0.bin"
 
   # Speech-to-text capture. Recording uses VAD endpointing: it starts when you
   # speak and stops on trailing silence — no fixed window. Requires webrtcvad

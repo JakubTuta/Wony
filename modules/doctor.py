@@ -126,7 +126,8 @@ def run_doctor(voice_mode: bool = False) -> str:
                 "Voice (TTS/STT)",
                 Requirement(
                     pip_modules=[
-                        "pyttsx3",
+                        "kokoro_onnx",
+                        "espeakng_loader",
                         "sounddevice",
                         "soundfile",
                         "soxr",

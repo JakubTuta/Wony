@@ -56,7 +56,7 @@ class Recognizer:
             segments, _ = model.transcribe(
                 audio,
                 language=language,
-                beam_size=5,
+                beam_size=1,
                 condition_on_previous_text=False,
                 no_speech_threshold=0.6,
             )

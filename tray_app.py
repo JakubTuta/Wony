@@ -139,7 +139,9 @@ def run_tray() -> None:
 
     if audio_mode or wakeword._enabled:
         from helpers.recognizer import preload_model
+        from helpers.audio import preload_tts
         preload_model()
+        preload_tts()
 
     # Build controller
     from helpers.assistant_controller import AssistantController
