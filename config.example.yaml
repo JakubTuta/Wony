@@ -27,8 +27,9 @@ voice:
     # Valid built-in names: "hey jarvis", "alexa", "hey mycroft", "hey rhasspy"
     phrase: "hey jarvis"
     # Path to a custom .onnx model file (optional).
-    # Train one via the openWakeWord project for a custom phrase like "Hey Wony".
-    model_path: null
+    # Use training/train_hey_wony.ipynb (Colab) or training/train_hey_wony.sh (WSL) to train,
+    # then place the result at models/hey_wony.onnx and set the path below.
+    model_path: null  # e.g. "models/hey_wony.onnx"
     threshold: 0.5        # 0.0–1.0 detection score cutoff (lower = more sensitive)
     cooldown_seconds: 2.0 # ignore re-triggers within this window after detection
 

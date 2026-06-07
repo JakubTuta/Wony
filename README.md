@@ -253,11 +253,52 @@ use `large-v3`; CPU-only machines use `small`. A progress message is printed dur
        enabled: true
        phrase: "hey jarvis"  # built-in; also: "alexa", "hey mycroft", "hey rhasspy"
    ```
-4. For a custom phrase (e.g. "Hey Wony"), train a `.onnx` model using the
-   [openWakeWord](https://github.com/dscripka/openWakeWord) training notebook,
-   then set `voice.wake_word.model_path` to the file.
-5. Wake word works in `voice` mode and `tray` mode. On first run, pre-trained model
+4. Wake word works in `voice` mode and `tray` mode. On first run, pre-trained model
    weights download automatically (~tens of MB).
+
+### Training a custom wake word ("Hey Wony")
+
+Two equivalent pipelines — pick whichever fits your setup:
+
+| | [train_hey_wony.sh](training/train_hey_wony.sh) | [train_hey_wony.ipynb](training/train_hey_wony.ipynb) |
+|---|---|---|
+| **Where to run** | WSL (Windows Subsystem for Linux) | Google Colab |
+| **GPU** | RTX 4060 (CUDA 12.1) | T4 free tier |
+| **Time** | ~1–2 h | ~2–4 h |
+
+**WSL script:**
+```bash
+bash /mnt/d/Projekty/Wony/training/train_hey_wony.sh
+```
+Requires Python 3.11 (installed automatically via deadsnakes PPA if missing).
+
+**Colab notebook:**
+1. Open `training/train_hey_wony.ipynb` in Google Colab
+2. Runtime → Change runtime type → **GPU (T4)**
+3. Run all cells top-to-bottom
+4. Download `hey_wony.onnx` from the last cell
+
+**After training:**
+
+Place the model in the repo and point `config.yaml` at it:
+```bash
+# WSL — script copies automatically; for Colab place the downloaded file here:
+cp hey_wony.onnx models/hey_wony.onnx
+```
+```yaml
+voice:
+  wake_word:
+    enabled: true
+    model_path: "models/hey_wony.onnx"
+    threshold: 0.5   # lower = more sensitive, raise to cut false triggers
+```
+
+Verify the model loads:
+```python
+from openwakeword.model import Model
+m = Model(wakeword_models=["models/hey_wony.onnx"], inference_framework="onnx")
+print(list(m.prediction_buffer.keys()))  # should contain 'hey_wony'
+```
 
 ### Ollama (local AI)
 
