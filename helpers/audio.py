@@ -63,6 +63,9 @@ class Audio:
 
     @staticmethod
     def text_to_speech(text: str) -> None:
+        from helpers.decorators import is_agent_active
+        if is_agent_active():
+            return
         global _tts_warned
         with _tts_lock:
             try:

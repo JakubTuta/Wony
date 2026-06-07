@@ -61,6 +61,8 @@ def install() -> None:
         print(f"[autostart] Warning: pythonw.exe not found at {pythonw}")
         print("[autostart] The task will be created but may not run silently.")
 
+    username = os.environ.get("USERNAME", "")
+
     # Build XML for full features: hidden, restart-on-crash
     xml = textwrap.dedent(f"""\
         <?xml version="1.0" encoding="UTF-16"?>
@@ -68,8 +70,16 @@ def install() -> None:
           <Triggers>
             <LogonTrigger>
               <Enabled>true</Enabled>
+              <UserId>{username}</UserId>
             </LogonTrigger>
           </Triggers>
+          <Principals>
+            <Principal id="Author">
+              <UserId>{username}</UserId>
+              <LogonType>InteractiveToken</LogonType>
+              <RunLevel>LeastPrivilege</RunLevel>
+            </Principal>
+          </Principals>
           <Settings>
             <Hidden>true</Hidden>
             <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
