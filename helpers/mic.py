@@ -8,6 +8,7 @@ Single-input-stream contract: only one input stream may be open at a time.
 WakeWordListener enforces this via pause()/resume() before STT records.
 """
 import threading
+import time
 import typing
 
 import numpy as np
@@ -77,3 +78,99 @@ def record_16k(seconds: float) -> np.ndarray:
     """Record from the default input and resample to 16 kHz mono float32."""
     raw, rate = record_native(seconds)
     return to_16k_mono_f32(raw, rate)
+
+
+def record_until_silence(
+    max_seconds: float = 12.0,
+    start_timeout: float = 4.0,
+    silence_ms: int = 700,
+    vad_aggressiveness: int = 2,
+    preroll_ms: int = 300,
+) -> np.ndarray:
+    """Record until trailing silence (VAD endpointing). Returns 16k mono float32.
+
+    Uses webrtcvad to detect speech start/end so commands aren't clipped (long
+    ones) or padded (short ones). Captures a short pre-roll so word onsets are
+    preserved. Returns whatever was captured — empty array if no speech.
+
+    Args:
+        max_seconds: hard cap on total capture length.
+        start_timeout: give up if no speech begins within this window.
+        silence_ms: trailing silence that ends the utterance.
+        vad_aggressiveness: webrtcvad 0..3 (higher = more aggressive filtering).
+        preroll_ms: audio kept before detected speech onset.
+
+    Caller must ensure no other input stream is open (single-stream contract).
+    Falls back to a fixed 3 s window if webrtcvad is unavailable.
+    """
+    try:
+        import webrtcvad
+    except ImportError:
+        return record_16k(3)
+
+    from collections import deque
+
+    vad = webrtcvad.Vad(int(vad_aggressiveness))
+    native = default_input_rate()
+    frame_ms = 30  # webrtcvad accepts 10/20/30 ms frames only
+    out_frame = int(_SR_TARGET * frame_ms / 1000)  # 480 samples @16k
+    native_block = int(round(native * out_frame / _SR_TARGET))
+
+    preroll_frames = max(1, int(preroll_ms / frame_ms))
+    silence_frames_needed = max(1, int(silence_ms / frame_ms))
+
+    ring: typing.Deque[np.ndarray] = deque(maxlen=preroll_frames)
+    voiced: typing.List[np.ndarray] = []
+    started = False
+    silence_run = 0
+    start_deadline = time.monotonic() + start_timeout
+    max_deadline = time.monotonic() + max_seconds
+
+    stream = sd.InputStream(
+        samplerate=native, channels=1, dtype="float32", blocksize=native_block
+    )
+    stream.start()
+    try:
+        while True:
+            now = time.monotonic()
+            if now > max_deadline:
+                break
+            if not started and now > start_deadline:
+                break
+
+            data, _overflowed = stream.read(native_block)
+            f16 = to_16k_mono_f32(data[:, 0], native)
+            # webrtcvad needs an exact 480-sample frame
+            if len(f16) < out_frame:
+                f16 = np.pad(f16, (0, out_frame - len(f16)))
+            else:
+                f16 = f16[:out_frame]
+
+            pcm16 = np.clip(f16 * 32768.0, -32768, 32767).astype(np.int16)
+            is_speech = vad.is_speech(pcm16.tobytes(), _SR_TARGET)
+
+            if not started:
+                ring.append(f16)
+                if is_speech:
+                    started = True
+                    voiced.extend(ring)
+                    ring.clear()
+                    silence_run = 0
+            else:
+                voiced.append(f16)
+                if is_speech:
+                    silence_run = 0
+                else:
+                    silence_run += 1
+                    if silence_run >= silence_frames_needed:
+                        break
+    finally:
+        try:
+            stream.stop()
+            stream.close()
+        except Exception:
+            pass
+
+    if not voiced:
+        return np.zeros(0, dtype=np.float32)
+    return np.concatenate(voiced).astype(np.float32)

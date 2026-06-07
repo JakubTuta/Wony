@@ -29,26 +29,91 @@ class Employer:
         Employer._exit_hook = callback
 
     def speak(self) -> None:
-        user_input = str(Recognizer.recognize_speech_from_mic())
-
-        if not user_input:
+        first_text = str(Recognizer.recognize_speech_from_mic())
+        if not first_text:
             print("I didn't hear anything.")
             logger.log_system_event(
                 "speech_recognition_failed", "No speech detected or recognized"
             )
             return
-
-        self.handle_utterance(user_input)
+        self.converse(first_text=first_text)
 
     def handle_utterance(self, text: str) -> None:
         """Process a transcribed speech utterance (called by wake word and ctrl+l paths)."""
         if not text:
             return
-        print(f"\nTranscribed text: {text}")
-        logger.log_user_input(text, "speech")
-        self.job_on_command(text)
+        self.converse(first_text=text)
 
-    def job_on_command(self, user_input: str) -> None:
+    def converse(self, first_text: typing.Optional[str] = None) -> None:
+        """Run a continuous voice conversation until silence or a stop phrase.
+
+        Each turn: log utterance → run job → speak → listen for follow-up.
+        Clarifying questions (response ends with '?') wait with the normal STT
+        start_timeout; completed turns use the shorter follow_up_timeout.
+        """
+        from helpers.cache import Cache
+        from helpers.config import Config
+
+        audio = Cache.get_audio()
+        cfg = Config.get("voice.conversation", {}) or {}
+        enabled = bool(cfg.get("enabled", True))
+
+        # Non-audio or conversation disabled: single-turn behaviour
+        if not audio or not enabled:
+            if first_text:
+                print(f"\nTranscribed text: {first_text}")
+                logger.log_user_input(first_text, "speech")
+                self.job_on_command(first_text)
+            return
+
+        stt_cfg = Config.get("voice.stt", {}) or {}
+        clarify_timeout = float(stt_cfg.get("start_timeout", 4.0))
+        follow_up_timeout = float(cfg.get("follow_up_timeout", 4.0))
+        stop_phrases = [
+            "thanks",
+            "thank you",
+            "that's all",
+            "thats all",
+            "that's it",
+            "thats it",
+            "never mind",
+            "nevermind",
+            "stop",
+            "done",
+            "goodbye",
+            "shut up",
+        ]
+
+        text = first_text
+        while text:
+            if self._is_stop_phrase(text, stop_phrases):
+                break
+
+            print(f"\nTranscribed text: {text}")
+            logger.log_user_input(text, "speech")
+
+            response = self.job_on_command(text)
+
+            # Choose next listen timeout based on whether assistant asked a question
+            if self._is_question(response):
+                next_timeout = clarify_timeout
+            else:
+                next_timeout = follow_up_timeout
+
+            text = str(Recognizer.recognize_speech_from_mic(start_timeout=next_timeout))
+
+    @staticmethod
+    def _is_question(response: typing.Optional[str]) -> bool:
+        if not response:
+            return False
+        return response.strip().endswith("?")
+
+    @staticmethod
+    def _is_stop_phrase(text: str, stop_phrases: typing.List[str]) -> bool:
+        normalized = text.lower().strip().rstrip(".,!?")
+        return normalized in stop_phrases
+
+    def job_on_command(self, user_input: str) -> typing.Optional[str]:
         self._refresh_available_jobs()
 
         # Fast path: exact command match (e.g. "help", "exit")
@@ -63,11 +128,13 @@ class Employer:
             logger.log_function_response(
                 function_name, str(result) if result else "No response", user_input
             )
-            Conversation.record_turn(user_input, str(result) if result else "")
-            return
+            result_str = str(result) if result else ""
+            Conversation.record_turn(user_input, result_str)
+            return result_str
 
         from helpers.config import Config
         from helpers.decorators import agent_lock
+
         max_steps = int(Config.get("ai.agent.max_steps", 5))
         system_prompt = build_agent_system_prompt()
 
@@ -95,6 +162,7 @@ class Employer:
                 print(text)
 
         Conversation.record_turn(user_input, text)
+        return text
 
     @register_job
     @capture_response
@@ -120,7 +188,7 @@ class Employer:
         """
         audio = Cache.get_audio()
         if audio:
-            Audio.text_to_speech("Getting all commands...")
+            Audio.play_cached("Getting all commands...")
 
         job_modules = ServiceRegistry.get_job_modules()
         job_summaries = ServiceRegistry.get_job_summaries()
@@ -168,7 +236,7 @@ class Employer:
         """
         audio = Cache.get_audio()
         if audio:
-            Audio.text_to_speech("Stopping all active jobs...")
+            Audio.play_cached("Stopping all active jobs...")
 
         stopped = BackgroundJobs.stop_all()
         if stopped:
@@ -223,7 +291,7 @@ class Employer:
         """
         audio = Cache.get_audio()
         if audio:
-            Audio.text_to_speech("Exiting program. o7")
+            Audio.play_cached("Exiting program. o7")
         print("Exiting program. o7")
 
         if Employer._exit_hook is not None:

@@ -101,7 +101,7 @@ def queue_up() -> str:
         return msg
 
     if audio:
-        Audio.text_to_speech("Launching League of Legends...")
+        Audio.play_cached("Launching League of Legends...")
     print("Launching League of Legends...")
     os.startfile(_LEAGUE_LNK)
     return "League of Legends launched."
@@ -128,7 +128,7 @@ def close_game() -> str:
     """
     audio = Cache.get_audio()
     if audio:
-        Audio.text_to_speech("Closing League of Legends...")
+        Audio.play_cached("Closing League of Legends...")
     print("Closing League of Legends...")
     os.system("taskkill /f /im LeagueClientUx.exe")
     return "Sent close signal to League of Legends."

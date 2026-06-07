@@ -6,6 +6,9 @@ soundfile
 soxr
 pynput
 faster-whisper
+# VAD endpointing — record from speech start to silence (no fixed window).
+# webrtcvad-wheels ships prebuilt Windows/macOS/Linux wheels (import name: webrtcvad).
+webrtcvad-wheels
 
 # GPU (optional, NVIDIA only) — uncomment for CUDA acceleration:
 # nvidia-cublas-cu12

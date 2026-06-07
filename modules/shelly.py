@@ -42,7 +42,7 @@ def turn_light_on() -> str:
     """
     audio = Cache.get_audio()
     if audio:
-        Audio.text_to_speech("Turning light on...")
+        Audio.play_cached("Turning light on...")
     print("Turning light on...")
 
     try:
@@ -83,7 +83,7 @@ def turn_light_off() -> str:
     """
     audio = Cache.get_audio()
     if audio:
-        Audio.text_to_speech("Turning light off...")
+        Audio.play_cached("Turning light off...")
     print("Turning light off...")
 
     try:
@@ -123,7 +123,7 @@ def toggle_light() -> str:
     """
     audio = Cache.get_audio()
     if audio:
-        Audio.text_to_speech("Toggling light...")
+        Audio.play_cached("Toggling light...")
     print("Toggling light...")
 
     try:

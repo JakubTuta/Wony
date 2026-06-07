@@ -18,6 +18,24 @@ voice:
   rate: 150
   volume: 0.6
 
+  # Speech-to-text capture. Recording uses VAD endpointing: it starts when you
+  # speak and stops on trailing silence — no fixed window. Requires webrtcvad
+  # (in requirements/voice.txt); falls back to a 3 s window if missing.
+  stt:
+    max_seconds: 12        # hard cap on a single command's length
+    start_timeout: 4       # give up if no speech starts within this many seconds
+    silence_ms: 700        # trailing silence (ms) that ends the command
+    vad_aggressiveness: 2  # 0–3; higher = more aggressively treat audio as non-speech
+
+  # Continuous conversation mode. After each response the mic reopens automatically
+  # so follow-up questions and chained commands need no re-activation. Session ends
+  # on silence or a stop phrase.
+  conversation:
+    enabled: true
+    # Seconds to wait for speech after a completed (non-question) turn before
+    # closing the session and returning to the wake-word listener.
+    follow_up_timeout: 4.0
+
   # Wake-word listener (hands-free trigger). Works in voice mode and tray mode.
   # Requires: pip install -r requirements/wakeword.txt
   # No account or API key needed — fully local and free.
@@ -32,6 +50,10 @@ voice:
     model_path: null  # e.g. "models/hey_wony.onnx"
     threshold: 0.5        # 0.0–1.0 detection score cutoff (lower = more sensitive)
     cooldown_seconds: 2.0 # ignore re-triggers within this window after detection
+    vad_threshold: 0.5    # Silero VAD pre-gate; raise to cut noise false-triggers
+    # Far-field noise suppression (Speex). Linux-only dependency (speexdsp-ns);
+    # ignored automatically on Windows/macOS.
+    noise_suppression: false
 
 ai:
   # Which AI provider to use. Options: anthropic | gemini | ollama | null (auto-detect from keys).

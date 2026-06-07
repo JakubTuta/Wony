@@ -192,7 +192,7 @@ def close_computer() -> None:
 
     audio = Cache.get_audio()
     if audio:
-        Audio.text_to_speech("Closing computer. o7")
+        Audio.play_cached("Closing computer. o7")
     print("Closing computer. o7")
 
     os.system("shutdown /s /f /t 0")

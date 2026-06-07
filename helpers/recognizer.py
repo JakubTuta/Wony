@@ -10,10 +10,21 @@ def _build_model() -> typing.Any:
     import ctranslate2
     from faster_whisper import WhisperModel
 
+    language = str(Config.get("assistant.language", "en")).lower()
+
     if ctranslate2.get_cuda_device_count() > 0:
         try:
             print("Loading speech model (first run downloads ~1 GB, please wait)...")
             return WhisperModel("large-v3", device="cuda", compute_type="float16")
+        except Exception:
+            pass
+
+    # CPU: distil-small.en is faster AND more accurate than small, but is
+    # English-only. Fall back to multilingual small for non-English.
+    if language.startswith("en"):
+        try:
+            print("Loading speech model (first run downloads ~0.5 GB, please wait)...")
+            return WhisperModel("distil-small.en", device="cpu", compute_type="int8")
         except Exception:
             pass
     print("Loading speech model (first run downloads ~0.5 GB, please wait)...")
@@ -33,12 +44,22 @@ def preload_model() -> None:
 
 class Recognizer:
     @staticmethod
-    def recognize_speech_from_mic() -> str:
+    def recognize_speech_from_mic(start_timeout: typing.Optional[float] = None) -> str:
         try:
-            audio = Audio.record_audio()  # np.float32 @16kHz mono
+            audio = Audio.record_command(start_timeout=start_timeout)  # np.float32 @16kHz mono, VAD-trimmed
+            if audio is None or len(audio) == 0:
+                return ""
             language = Config.get("assistant.language", "en")
             model = _get_model()
-            segments, _ = model.transcribe(audio, language=language, beam_size=5)
+            # no vad_filter — record_command already endpoints with webrtcvad;
+            # a second Silero VAD pass over-trims short clips.
+            segments, _ = model.transcribe(
+                audio,
+                language=language,
+                beam_size=5,
+                condition_on_previous_text=False,
+                no_speech_threshold=0.6,
+            )
             return " ".join(seg.text for seg in segments).strip()
         except Exception as e:
             print(f"Couldn't capture audio — check your microphone. ({e})")

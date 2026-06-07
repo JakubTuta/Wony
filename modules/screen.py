@@ -45,7 +45,7 @@ def save_screenshot() -> None:
     """
     audio = Cache.get_audio()
     if audio:
-        Audio.text_to_speech("Saving a screenshot...")
+        Audio.play_cached("Saving a screenshot...")
     print("Saving a screenshot...")
 
     os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
@@ -86,7 +86,7 @@ def explain_screenshot(user_input: str) -> str:
     """
     audio = Cache.get_audio()
     if audio:
-        Audio.text_to_speech("Taking a screenshot and explaining it...")
+        Audio.play_cached("Taking a screenshot and explaining it...")
     print("Taking a screenshot and explaining it...")
 
     screenshot = ScreenReader.take_screenshot(target="active")

@@ -51,7 +51,7 @@ def weather(city: str) -> str:
 
     audio = Cache.get_audio()
     if audio:
-        Audio.text_to_speech("Getting weather...")
+        Audio.play_cached("Getting weather...")
     print("Getting weather...")
 
     if city == "":

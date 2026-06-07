@@ -9,3 +9,7 @@ onnxruntime
 sounddevice
 soxr
 numpy
+# Optional: far-field noise suppression for wake detection (set
+# voice.wake_word.noise_suppression: true). speexdsp-ns is effectively
+# Linux-only; on Windows/macOS the listener silently runs without it.
+# speexdsp-ns

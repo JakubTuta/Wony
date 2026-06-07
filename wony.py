@@ -15,11 +15,12 @@ Usage:
 All subcommands that start the assistant brain load Config before importing
 modules, preserving the invariant that Config.load() precedes Employer import.
 """
+
 import argparse
 import sys
 
-
 # ── Subcommand handlers ───────────────────────────────────────────────────────
+
 
 def cmd_tray(args: argparse.Namespace) -> None:
     import os
@@ -38,19 +39,23 @@ def cmd_tray(args: argparse.Namespace) -> None:
                 [pythonw, script, "tray"],
                 cwd=os.path.dirname(script),
                 close_fds=True,
-                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+                creationflags=subprocess.DETACHED_PROCESS
+                | subprocess.CREATE_NEW_PROCESS_GROUP,
             )
             return
 
     from tray_app import run_tray
+
     run_tray()
 
 
 def cmd_text(args: argparse.Namespace) -> None:
     from helpers.config import Config
+
     Config.load()
 
     from helpers.bootstrap import BootstrapError, bootstrap
+
     try:
         employer = bootstrap(audio=False)
     except BootstrapError as e:
@@ -58,6 +63,7 @@ def cmd_text(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     from helpers.logger import logger
+
     print("Listening for text input...")
     while True:
         try:
@@ -71,9 +77,11 @@ def cmd_text(args: argparse.Namespace) -> None:
 
 def cmd_voice(args: argparse.Namespace) -> None:
     from helpers.config import Config
+
     Config.load()
 
     from helpers.bootstrap import BootstrapError, bootstrap
+
     try:
         employer = bootstrap(audio=True)
     except BootstrapError as e:
@@ -81,24 +89,29 @@ def cmd_voice(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     from helpers.recognizer import preload_model
+
     preload_model()
 
     from helpers.audio import Audio
-    Audio.play_audio_from_file("voice/bot/ready.wav")
+
+    Audio.play_cached("I'm ready!")
     print("\nListening for key combination (Ctrl + L)...")
 
     import threading
+
     from pynput import keyboard as pynput_keyboard
 
     _stop = threading.Event()
 
     # Start Porcupine wake-word listener (no-op if disabled/missing)
     from helpers.wakeword import WakeWordListener
+
     ww = WakeWordListener(employer, exit_event=_stop)
     ww.start()
 
     def _do_speak() -> None:
         from helpers.logger import logger
+
         logger.log_system_event("hotkey_fired", "ctrl+l")
         print("[voice] Ctrl+L — listening")
         ww.pause()
@@ -127,9 +140,11 @@ def cmd_voice(args: argparse.Namespace) -> None:
 
 def cmd_web(args: argparse.Namespace) -> None:
     from helpers.config import Config
+
     Config.load()
 
     from helpers.bootstrap import BootstrapError, bootstrap
+
     try:
         bootstrap(audio=False, seed_conversation=True)
     except BootstrapError as e:
@@ -137,9 +152,11 @@ def cmd_web(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     from helpers.web_app import build_app
+
     app = build_app()
 
     import uvicorn
+
     host = str(Config.get("server.host", "127.0.0.1"))
     port = int(Config.get("server.port", 8000))
     print(f"\nWony Web Server → http://{host}:{port}\n")
@@ -148,22 +165,27 @@ def cmd_web(args: argparse.Namespace) -> None:
 
 def cmd_doctor(args: argparse.Namespace) -> None:
     from helpers.config import Config
+
     Config.load()
 
     from helpers.cache import Cache
+
     Cache.load_values()
 
     Cache.set_audio(False)
 
     import dotenv
+
     dotenv.load_dotenv()
 
     from modules.doctor import run_doctor
+
     print(run_doctor(voice_mode=True))
 
 
 def cmd_autostart(args: argparse.Namespace) -> None:
-    from helpers.autostart import install, uninstall, status
+    from helpers.autostart import install, status, uninstall
+
     if args.action == "install":
         install()
     elif args.action == "uninstall":
@@ -173,6 +195,7 @@ def cmd_autostart(args: argparse.Namespace) -> None:
 
 
 # ── Argument parser ───────────────────────────────────────────────────────────
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(

@@ -23,6 +23,7 @@ Config keys (voice.wake_word.*):
 Required pip packages: openwakeword onnxruntime sounddevice soxr numpy
 No account or API key required.
 """
+
 import threading
 import time
 import typing
@@ -61,27 +62,36 @@ class WakeWordListener:
             import openwakeword  # noqa: F401
             from openwakeword.model import Model  # noqa: F401
         except ImportError:
-            print("[wakeword] disabled — openwakeword not installed (pip install -r requirements/wakeword.txt)")
+            print(
+                "[wakeword] disabled — openwakeword not installed (pip install -r requirements/wakeword.txt)"
+            )
             return False
 
         try:
             import sounddevice  # noqa: F401
         except ImportError:
-            print("[wakeword] disabled — sounddevice not installed (pip install -r requirements/wakeword.txt)")
+            print(
+                "[wakeword] disabled — sounddevice not installed (pip install -r requirements/wakeword.txt)"
+            )
             return False
 
         try:
             import numpy  # noqa: F401
         except ImportError:
-            print("[wakeword] disabled — numpy not installed (pip install -r requirements/wakeword.txt)")
+            print(
+                "[wakeword] disabled — numpy not installed (pip install -r requirements/wakeword.txt)"
+            )
             return False
 
         # Download pre-trained weights on first run (no-op if already present)
         try:
             import openwakeword
+
             openwakeword.utils.download_models()
         except Exception as e:
-            print(f"[wakeword] model download failed (offline?): {e} — continuing with cached models")
+            print(
+                f"[wakeword] model download failed (offline?): {e} — continuing with cached models"
+            )
 
         model_path = cfg.get("model_path") or None
         phrase = cfg.get("phrase", "hey jarvis")
@@ -89,22 +99,54 @@ class WakeWordListener:
         self._cooldown = float(cfg.get("cooldown_seconds", 2.0))
         self._last_trigger = 0.0
 
+        # Silero VAD pre-gate cuts false triggers from non-speech noise.
+        vad_threshold = float(cfg.get("vad_threshold", 0.5))
+        # Speex noise suppression helps in noisy/far-field rooms, but the
+        # speexdsp-ns package is effectively Linux-only — guarded below.
+        noise_suppression = bool(cfg.get("noise_suppression", False))
+        models = [model_path] if model_path else [phrase]
+
         try:
             from openwakeword.model import Model
-            if model_path:
-                self._oww = Model(wakeword_models=[model_path], inference_framework="onnx")
-            else:
-                self._oww = Model(wakeword_models=[phrase], inference_framework="onnx")
+
+            kwargs: dict = {
+                "wakeword_models": models,
+                "inference_framework": "onnx",
+                "vad_threshold": vad_threshold,
+            }
+            if noise_suppression:
+                kwargs["enable_speex_noise_suppression"] = True
+            try:
+                self._oww = Model(**kwargs)
+            except Exception as inner:
+                # Retry without speex NS (unavailable on this platform) and/or
+                # without newer kwargs (older openwakeword).
+                if noise_suppression:
+                    print(
+                        f"[wakeword] noise suppression unavailable ({inner}) — "
+                        "continuing without it"
+                    )
+                kwargs.pop("enable_speex_noise_suppression", None)
+                try:
+                    self._oww = Model(**kwargs)
+                except TypeError:
+                    self._oww = Model(
+                        wakeword_models=models, inference_framework="onnx"
+                    )
         except Exception as e:
             print(f"[wakeword] disabled — openWakeWord init failed: {e}")
             print(
                 f"[wakeword] hint: phrase '{phrase}' may not be a valid built-in name. "
-                "Valid built-in phrases: \"hey jarvis\", \"alexa\", \"hey mycroft\", \"hey rhasspy\""
+                'Valid built-in phrases: "hey jarvis", "alexa", "hey mycroft", "hey rhasspy"'
             )
             return False
 
         # Resolve the model key from the constructed model (avoids hardcoding)
-        keys = list(self._oww.prediction_buffer.keys()) if hasattr(self._oww, "prediction_buffer") else []
+        keys = (
+            list(self._oww.prediction_buffer.keys())
+            if hasattr(self._oww, "prediction_buffer")
+            else []
+        )
         if not keys:
             self._model_key = phrase.lower().replace(" ", "_")
         else:
@@ -153,6 +195,7 @@ class WakeWordListener:
 
     def _open_stream(self, native_rate: int, native_block: int) -> typing.Any:
         import sounddevice as sd
+
         stream = sd.InputStream(
             samplerate=native_rate,
             channels=1,
@@ -165,6 +208,7 @@ class WakeWordListener:
     def _run(self) -> None:
         try:
             import numpy as np
+
             from helpers import mic
         except ImportError:
             return
@@ -260,9 +304,11 @@ class WakeWordListener:
 
     def _handle_detection(self) -> None:
         from helpers.audio import Audio
-        Audio.play_audio_from_file("voice/bot/listening.wav")
+
+        Audio.play_cached("Yes?")  # non-blocking WAV if rendered, else live TTS
 
         from helpers.recognizer import Recognizer
+
         text = Recognizer.recognize_speech_from_mic()
         if not text:
             return
@@ -271,6 +317,7 @@ class WakeWordListener:
             self._employer.handle_utterance(text)
         except SystemExit:
             from modules.employer import Employer
+
             if Employer._exit_hook is not None:
                 Employer._exit_hook()
             elif self._exit_event is not None:
