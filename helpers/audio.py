@@ -1,3 +1,4 @@
+import asyncio
 import os
 import threading
 import typing
@@ -95,8 +96,10 @@ def _get_tts_singleton() -> "TTS_Engine":
 
 class TTS_Engine:
     def __init__(self) -> None:
-        from kokoro_onnx import Kokoro, EspeakConfig
         import espeakng_loader
+        from kokoro_onnx import Kokoro
+        from kokoro_onnx.config import EspeakConfig
+
         from helpers.config import Config
 
         self._voice = Config.get("voice.tts_voice", "af_heart")
@@ -130,7 +133,9 @@ class TTS_Engine:
                 if self._volume != 1.0:
                     samples = (samples * self._volume).astype(np.float32)
                 if out_stream is None:
-                    out_stream = sd.OutputStream(samplerate=sr, channels=1, dtype="float32")
+                    out_stream = sd.OutputStream(
+                        samplerate=sr, channels=1, dtype="float32"
+                    )
                     out_stream.start()
                 out_stream.write(samples)
         finally:
@@ -139,13 +144,14 @@ class TTS_Engine:
                 out_stream.close()
 
     def text_to_speech(self, text: str) -> None:
-        import asyncio
         from helpers import mic
 
         try:
             asyncio.get_running_loop()
             # Already in an event loop — sync fallback
-            samples, sr = self._kokoro.create(text, voice=self._voice, speed=self._speed, lang=self._lang)
+            samples, sr = self._kokoro.create(
+                text, voice=self._voice, speed=self._speed, lang=self._lang
+            )
             if self._volume != 1.0:
                 samples = (samples * self._volume).astype(np.float32)
             mic.play_array(samples, sr, blocking=True)
@@ -260,7 +266,11 @@ class Audio:
         from helpers.config import Config
 
         cfg = Config.get("voice.stt", {}) or {}
-        effective_timeout = start_timeout if start_timeout is not None else float(cfg.get("start_timeout", 4.0))
+        effective_timeout = (
+            start_timeout
+            if start_timeout is not None
+            else float(cfg.get("start_timeout", 4.0))
+        )
         return mic.record_until_silence(
             max_seconds=float(cfg.get("max_seconds", 12.0)),
             start_timeout=effective_timeout,
@@ -272,7 +282,26 @@ class Audio:
 def preload_tts() -> None:
     """Warm the TTS engine at startup so the first response has no cold-start lag."""
     try:
-        _get_tts_singleton()
+        engine = _get_tts_singleton()
+
+        async def _warm_stream() -> None:
+            async for _samples, _sr in engine._kokoro.create_stream(
+                "warm up",
+                voice=engine._voice,
+                speed=engine._speed,
+                lang=engine._lang,
+            ):
+                break
+
+        try:
+            asyncio.run(_warm_stream())
+        except RuntimeError:
+            engine._kokoro.create(
+                "warm up",
+                voice=engine._voice,
+                speed=engine._speed,
+                lang=engine._lang,
+            )
         print("TTS engine loaded.")
     except Exception as e:
         print(f"[TTS] Preload failed (non-fatal): {e}")

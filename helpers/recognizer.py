@@ -46,7 +46,9 @@ class Recognizer:
     @staticmethod
     def recognize_speech_from_mic(start_timeout: typing.Optional[float] = None) -> str:
         try:
-            audio = Audio.record_command(start_timeout=start_timeout)  # np.float32 @16kHz mono, VAD-trimmed
+            audio = Audio.record_command(
+                start_timeout=start_timeout
+            )  # np.float32 @16kHz mono, VAD-trimmed
             if audio is None or len(audio) == 0:
                 return ""
             language = Config.get("assistant.language", "en")

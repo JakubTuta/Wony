@@ -18,20 +18,9 @@ frontend/package-lock.json
 *.tflite
 
 # Wake word training artifacts (large data, generated files)
-training/venv/
-training/piper-sample-generator/
-training/openwakeword/
-training/ESC-50-master/
-training/musan/
-training/audioset_raw/
-training/background_noise/
-training/mit_rirs/
-training/hey_wony/
-training/*.npy
-training/*.tar*
-training/*.gz
-training/*.zip
-training/*.yaml
+training/
+!training/train_hey_wony.ipynb
+!training/train_get_wony.sh
 web/node_modules/
 web/dist/
 web/.vscode/

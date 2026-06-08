@@ -31,7 +31,9 @@ class Employer:
     def speak(self) -> None:
         first_text = str(Recognizer.recognize_speech_from_mic())
         if not first_text:
-            logger.log_system_event("speech_recognition_failed", "No speech detected or recognized")
+            logger.log_system_event(
+                "speech_recognition_failed", "No speech detected or recognized"
+            )
             return
         self.converse(first_text=first_text)
 
