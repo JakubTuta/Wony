@@ -174,7 +174,7 @@ tray:
   open_browser_on_start: false
 
 server:
-  # Host and port for the web server (python web_server.py).
+  # Host and port for the web server (python wony.py web).
   host: "127.0.0.1"
   port: 8000
   # Jobs that show a confirm dialog in the web UI before executing.
