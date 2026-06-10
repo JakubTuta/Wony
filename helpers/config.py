@@ -51,7 +51,6 @@ DEFAULTS: typing.Dict[str, typing.Any] = {
         "history": {
             "enabled": True,
             "max_turns": 5,
-            "idle_timeout_minutes": 10,
         },
         "agent": {
             "max_steps": 5,

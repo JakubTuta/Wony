@@ -156,6 +156,9 @@ class Employer:
         user_input: str,
         interrupt_event: typing.Optional[threading.Event] = None,
     ) -> typing.Optional[str]:
+        if not user_input or not user_input.strip():
+            return None
+
         self._refresh_available_jobs()
         self._last_paused_sentences = []
 

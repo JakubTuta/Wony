@@ -447,6 +447,37 @@ def delete_embedding_by_ref(
 
 # ------------------------------------------------------------------
 
+def wipe_all() -> None:
+    """Delete every row the user owns: turns, facts, reminders, mcp servers, embeddings.
+
+    Resets a fresh session id and clears the in-memory conversation window.
+    """
+    global SESSION_ID
+    conn = _get_conn()
+    with _lock:
+        for table in ("turns", "facts", "reminders", "mcp_servers", "embeddings"):
+            try:
+                conn.execute(f"DELETE FROM {table}")
+            except sqlite3.OperationalError:
+                pass
+        if _fts_available:
+            try:
+                conn.execute("INSERT INTO turns_fts(turns_fts) VALUES('delete-all')")
+            except sqlite3.OperationalError:
+                try:
+                    conn.execute("DELETE FROM turns_fts")
+                except sqlite3.OperationalError:
+                    pass
+        conn.commit()
+        SESSION_ID = str(uuid.uuid4())[:12]
+
+    try:
+        from helpers.conversation import Conversation
+        Conversation.clear()
+    except Exception:
+        pass
+
+
 def close() -> None:
     """Flush and close the SQLite connection. Safe to call multiple times."""
     global _conn

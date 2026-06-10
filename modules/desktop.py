@@ -29,6 +29,113 @@ def _require_actions(action: str) -> typing.Optional[str]:
     return None
 
 
+_SKIP_DIRS = {"node_modules", "__pycache__", "venv", ".git", ".venv"}
+
+
+def _resolve_executable(name: str) -> typing.Optional[str]:
+    """Resolve an app name to a launchable executable path, deterministically.
+
+    Avoids handing a bare name to ShellExecute (os.startfile), which pops a
+    Windows error dialog on failure. Checks, in order:
+      1. an existing path as given,
+      2. PATH (shutil.which),
+      3. the App Paths registry (how Windows resolves 'chrome', 'spotify', …).
+    Returns the full path, or None if unresolved.
+    """
+    import shutil
+
+    expanded = os.path.expanduser(name)
+    if os.path.exists(expanded):
+        return os.path.abspath(expanded)
+
+    found = shutil.which(name)
+    if found:
+        return found
+
+    import winreg
+
+    key = name if name.lower().endswith(".exe") else f"{name}.exe"
+    subkey = rf"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{key}"
+    for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        try:
+            with winreg.OpenKey(hive, subkey) as k:
+                path, _ = winreg.QueryValueEx(k, "")  # default value = exe path
+                path = os.path.expandvars(path).strip('"')
+                if path and os.path.exists(path):
+                    return path
+        except OSError:
+            continue
+    return None
+
+
+def _known_dirs() -> typing.List[str]:
+    """Common user folders to resolve bare filenames against.
+
+    Includes OneDrive-redirected variants (Win11 commonly moves Desktop/
+    Documents under %USERPROFILE%\\OneDrive). Order = search priority.
+    """
+    home = os.path.expanduser("~")
+    onedrive = os.environ.get("OneDrive") or os.path.join(home, "OneDrive")
+    candidates = [
+        os.getcwd(),
+        os.path.join(home, "Desktop"),
+        os.path.join(onedrive, "Desktop"),
+        os.path.join(home, "Documents"),
+        os.path.join(onedrive, "Documents"),
+        os.path.join(home, "Downloads"),
+        home,
+    ]
+    seen: typing.List[str] = []
+    for d in candidates:
+        if d and os.path.isdir(d) and d not in seen:
+            seen.append(d)
+    return seen
+
+
+def _resolve_file(path: str) -> typing.Tuple[typing.Optional[str], typing.List[str]]:
+    """Resolve a path or bare filename to an existing file.
+
+    Returns (resolved_path, matches). If exactly one file is found,
+    resolved_path is set. If multiple ambiguous matches, resolved_path is
+    None and matches holds them. If none, both are empty.
+    Matches by exact name (case-insensitive); if the input has no extension,
+    also matches files whose stem equals the input.
+    """
+    expanded = os.path.expanduser(path)
+    if os.path.exists(expanded):
+        return os.path.abspath(expanded), []
+
+    # Absolute/relative path that doesn't exist and isn't a bare name → give up.
+    if os.path.dirname(path):
+        return None, []
+
+    needle = path.lower()
+    stem_only = "." not in needle
+    matches: typing.List[str] = []
+    for d in _known_dirs():
+        try:
+            entries = os.listdir(d)
+        except OSError:
+            continue
+        for fname in entries:
+            full = os.path.join(d, fname)
+            if not os.path.isfile(full):
+                continue
+            lname = fname.lower()
+            if lname == needle or (stem_only and os.path.splitext(lname)[0] == needle):
+                matches.append(full)
+
+    # Dedupe preserving order.
+    uniq: typing.List[str] = []
+    for m in matches:
+        if m not in uniq:
+            uniq.append(m)
+
+    if len(uniq) == 1:
+        return uniq[0], uniq
+    return None, uniq
+
+
 @register_service(
     module_name="desktop",
     requires=_desktop_requirement(),
@@ -119,37 +226,50 @@ class Desktop:
 
         from helpers.config import Config
 
-        root = search_path or Config.get("modules.desktop.file_search_root", "~")
-        root = os.path.expanduser(root)
+        # Explicit path overrides; otherwise search common user folders first
+        # (Desktop/Documents/Downloads, incl. OneDrive) then the configured root.
+        if search_path:
+            roots = [os.path.expanduser(search_path)]
+        else:
+            roots = list(_known_dirs())
+            cfg_root = os.path.expanduser(Config.get("modules.desktop.file_search_root", "~"))
+            if cfg_root not in roots:
+                roots.append(cfg_root)
 
-        if not os.path.isdir(root):
-            return f"Error: Search path '{root}' does not exist."
+        roots = [r for r in roots if os.path.isdir(r)]
+        if not roots:
+            return f"Error: No valid search path (search_path={search_path!r})."
 
         needle = name.lower()
         matches: typing.List[str] = []
+        seen: typing.Set[str] = set()
         max_results = 20
 
-        try:
+        for root in roots:
+            if len(matches) >= max_results:
+                break
             for dirpath, dirnames, filenames in os.walk(root):
                 dirnames[:] = [
                     d for d in dirnames
-                    if not d.startswith(".") and d not in ("node_modules", "__pycache__", "venv", ".git")
+                    if not d.startswith(".") and d not in _SKIP_DIRS
                 ]
-                for fname in filenames:
-                    if needle in fname.lower():
-                        matches.append(os.path.join(dirpath, fname))
-                        if len(matches) >= max_results:
-                            break
+                # Match folders too (docstring promises locating folders).
+                for entry in filenames + dirnames:
+                    if needle in entry.lower():
+                        full = os.path.join(dirpath, entry)
+                        if full not in seen:
+                            seen.add(full)
+                            matches.append(full)
+                            if len(matches) >= max_results:
+                                break
                 if len(matches) >= max_results:
                     break
-        except PermissionError:
-            pass
 
         if not matches:
-            return f"No files found matching '{name}' under {root}."
+            return f"No files found matching '{name}' under: {', '.join(roots)}."
 
         suffix = f"\n(Showing first {max_results}; there may be more.)" if len(matches) == max_results else ""
-        return f"Found {len(matches)} file(s) matching '{name}':\n" + "\n".join(f"  {p}" for p in matches) + suffix
+        return f"Found {len(matches)} match(es) for '{name}':\n" + "\n".join(f"  {p}" for p in matches) + suffix
 
     # ------------------------------------------------------------------ action-gated
 
@@ -182,10 +302,19 @@ class Desktop:
 
         target = windows[0]
         try:
+            if getattr(target, "isMinimized", False):
+                target.restore()
             target.activate()
             return f"Focused window: '{target.title}'."
-        except Exception as e:
-            return f"Could not focus '{target.title}': {e}"
+        except Exception:
+            # pygetwindow.activate() throws intermittently on Windows; the
+            # minimize→restore toggle reliably forces the window forward.
+            try:
+                target.minimize()
+                target.restore()
+                return f"Focused window: '{target.title}'."
+            except Exception as e:
+                return f"Could not focus '{target.title}': {e}"
 
     @method_job
     @capture_response
@@ -215,15 +344,22 @@ class Desktop:
         if not name:
             return "Error: No application name provided."
 
+        # Resolve to a concrete executable BEFORE launching. Handing a bare
+        # name to ShellExecute/start pops a premature "cannot find" dialog and
+        # reports failure even when the app opens moments later. Resolving up
+        # front means a single, final success/error.
+        exe = _resolve_executable(name)
+        if exe is None:
+            return (
+                f"Error: Could not find an application named '{name}'. "
+                "Provide the full path to its .exe, or check the name."
+            )
+
         try:
-            os.startfile(name)
+            subprocess.Popen([exe])
             return f"Opening '{name}'."
-        except OSError:
-            try:
-                subprocess.run(["cmd", "/c", "start", "", name], check=False)
-                return f"Opening '{name}'."
-            except Exception as e:
-                return f"Error opening '{name}': {e}"
+        except Exception as e:
+            return f"Error opening '{name}': {e}"
 
     @method_job
     @capture_response
@@ -240,7 +376,10 @@ class Desktop:
         Keywords: open file, view file, open document, open image, open with
 
         Args:
-            path (str): Full path to the file to open. (required)
+            path (str): Full path OR just a filename (with or without extension).
+                Bare names are resolved against Desktop, Documents, Downloads,
+                home, and the current directory (incl. OneDrive-redirected
+                folders). (required)
 
         Returns:
             str: Confirmation or error.
@@ -251,12 +390,23 @@ class Desktop:
 
         if not path:
             return "Error: No file path provided."
-        if not os.path.exists(path):
-            return f"Error: File not found: '{path}'"
+
+        resolved, matches = _resolve_file(path)
+        if resolved is None:
+            if matches:
+                listing = "\n".join(f"  {m}" for m in matches[:20])
+                return (
+                    f"Ambiguous: multiple files match '{path}'. "
+                    f"Specify a full path:\n{listing}"
+                )
+            return (
+                f"Error: File not found: '{path}'. "
+                f"Searched: {', '.join(_known_dirs())}"
+            )
 
         try:
-            os.startfile(path)
-            return f"Opened: {path}"
+            os.startfile(resolved)
+            return f"Opened: {resolved}"
         except Exception as e:
             return f"Error opening file: {e}"
 

@@ -233,6 +233,9 @@ def build_app() -> FastAPI:
         from helpers.logger import logger
         from modules.ai import build_agent_system_prompt
 
+        if not req.message or not req.message.strip():
+            raise HTTPException(status_code=400, detail="Message cannot be empty.")
+
         try:
             ai_client = get_ai_client()
             system_prompt = build_agent_system_prompt()
@@ -255,8 +258,10 @@ def build_app() -> FastAPI:
                     set_agent_active(False)
 
             safe_calls = _sanitize_calls(result.calls)
-            Conversation.record_turn(req.message, result.text, calls=safe_calls)
-            return {"text": result.text, "calls": safe_calls}
+            turn_id = Conversation.record_turn(
+                req.message, result.text, calls=safe_calls
+            )
+            return {"id": turn_id, "text": result.text, "calls": safe_calls}
         except Exception as e:
             logger.log_error(str(e), "web_chat")
             raise HTTPException(status_code=500, detail=str(e))
@@ -268,6 +273,18 @@ def build_app() -> FastAPI:
         Conversation.clear()
         return {"status": "cleared"}
 
+    @app.post("/api/data/wipe")
+    def wipe_data() -> typing.Dict[str, str]:
+        from helpers.logger import logger
+        from helpers.memory_db import wipe_all
+
+        try:
+            wipe_all()
+            return {"status": "wiped"}
+        except Exception as e:
+            logger.log_error(str(e), "web_wipe_data")
+            raise HTTPException(status_code=500, detail=str(e))
+
     @app.get("/api/chat/history")
     def chat_history(limit: int = 50) -> typing.Dict[str, typing.Any]:
         from helpers.memory_db import recent_turns
@@ -276,6 +293,7 @@ def build_app() -> FastAPI:
         return {
             "turns": [
                 {
+                    "id": t["id"],
                     "user": t["user_text"],
                     "assistant": t["assistant_text"],
                     "ts": t["ts"],

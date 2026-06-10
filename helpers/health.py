@@ -32,6 +32,12 @@ def print_startup_summary(voice_mode: bool = False) -> None:
 
     ready, problems = _status_lines()
 
+    ai_ok, ai_msg = describe_readiness()
+    if ai_ok:
+        print(f"  ✓ AI: {ai_msg}")
+    else:
+        print(f"  ✗ AI: {ai_msg}")
+
     if ready:
         print(f"  ✓ Modules ready: {', '.join(ready)}")
 
@@ -39,12 +45,6 @@ def print_startup_summary(voice_mode: bool = False) -> None:
         print("  Modules with issues:")
         for line in problems:
             print(line)
-
-    ai_ok, ai_msg = describe_readiness()
-    if ai_ok:
-        print(f"  ✓ AI: {ai_msg}")
-    else:
-        print(f"  ✗ AI: {ai_msg}")
 
     if voice_mode:
         missing_voice = _check_voice_deps()

@@ -1,0 +1,4 @@
+pyaudiowpatch
+shazamio
+soundfile
+numpy

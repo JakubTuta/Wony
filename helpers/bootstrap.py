@@ -123,8 +123,6 @@ def bootstrap(
 
     if seed_conversation:
         try:
-            import time as _time
-
             from helpers.config import Config as _Cfg
             from helpers.conversation import Conversation as _Conv
             from helpers.memory_db import recent_turns as _recent_turns
@@ -137,7 +135,6 @@ def bootstrap(
                         "assistant": _t["assistant_text"],
                     }
                 )
-            _Conv._last_activity = _time.time()
         except Exception:
             pass
 

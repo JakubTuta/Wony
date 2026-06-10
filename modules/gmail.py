@@ -482,7 +482,7 @@ class Gmail:
         label_map = self._label_map(account)
         query = self._scope(f"is:unread newer_than:{newer_than_days}d")
         refs = self._list_ids(svc, query, self._default_max())
-        return self._batch_get(svc, refs, "metadata", label_map)
+        return self._batch_get(svc, refs, "full", label_map)
 
     def _get_newer_than_days(self, cache_key: str) -> int:
         last_email_date: typing.Optional[str] = Cache.get_value(cache_key)
@@ -499,7 +499,7 @@ class Gmail:
         svc = self._svc(account)
         label_map = self._label_map(account)
         refs = self._list_ids(svc, self._scope(query), max_results)
-        return self._batch_get(svc, refs, "metadata", label_map)
+        return self._batch_get(svc, refs, "full", label_map)
 
     # ------------------------------------------------------------------
     # Jobs — read
@@ -575,7 +575,7 @@ class Gmail:
         label_map = self._label_map(account)
         query = self._scope(f"newer_than:{days_back}d", folder=folder)
         refs = self._list_ids(svc, query, max_r)
-        messages = self._sort_desc(self._batch_get(svc, refs, "metadata", label_map))
+        messages = self._sort_desc(self._batch_get(svc, refs, "full", label_map))
         folder_label = f" ({folder})" if folder else ""
         return self._render_messages(
             messages,
@@ -612,7 +612,7 @@ class Gmail:
         svc = self._svc(account)
         label_map = self._label_map(account)
         refs = self._list_ids(svc, self._scope(query), max_results)
-        messages = self._sort_desc(self._batch_get(svc, refs, "metadata", label_map))
+        messages = self._sort_desc(self._batch_get(svc, refs, "full", label_map))
         return self._render_messages(
             messages,
             header=f"Searching emails: {query}",
@@ -655,7 +655,7 @@ class Gmail:
         svc = self._svc(account)
         label_map = self._label_map(account)
         refs = self._list_ids(svc, self._scope(f"from:{sender}"), max_results)
-        messages = self._sort_desc(self._batch_get(svc, refs, "metadata", label_map))
+        messages = self._sort_desc(self._batch_get(svc, refs, "full", label_map))
         return self._render_messages(
             messages,
             header=f"Emails from: {sender}",
@@ -871,7 +871,7 @@ class Gmail:
         label_q = f'label:"{label}"' if " " in label else f"label:{label}"
         query = self._scope(label_q, no_inbox_prefix=True)
         refs = self._list_ids(svc, query, max_results)
-        messages = self._sort_desc(self._batch_get(svc, refs, "metadata", label_map))
+        messages = self._sort_desc(self._batch_get(svc, refs, "full", label_map))
         return self._render_messages(
             messages,
             header=f"Emails with label '{label}':",
@@ -915,7 +915,7 @@ class Gmail:
         label_map = self._label_map(account)
         query = self._scope(f"has:attachment newer_than:{days_back}d")
         refs = self._list_ids(svc, query, max_results)
-        messages = self._sort_desc(self._batch_get(svc, refs, "metadata", label_map))
+        messages = self._sort_desc(self._batch_get(svc, refs, "full", label_map))
         return self._render_messages(
             messages,
             header=f"Emails with attachments (past {days_back} days):",
@@ -956,7 +956,7 @@ class Gmail:
         label_map = self._label_map(account)
         query = self._scope("is:starred", no_inbox_prefix=True)
         refs = self._list_ids(svc, query, max_results)
-        messages = self._sort_desc(self._batch_get(svc, refs, "metadata", label_map))
+        messages = self._sort_desc(self._batch_get(svc, refs, "full", label_map))
         return self._render_messages(
             messages,
             header="Starred emails:",
@@ -997,7 +997,7 @@ class Gmail:
         label_map = self._label_map(account)
         query = self._scope("is:important", no_inbox_prefix=True)
         refs = self._list_ids(svc, query, max_results)
-        messages = self._sort_desc(self._batch_get(svc, refs, "metadata", label_map))
+        messages = self._sort_desc(self._batch_get(svc, refs, "full", label_map))
         return self._render_messages(
             messages,
             header="Important emails:",
@@ -1306,7 +1306,7 @@ class Gmail:
         if not refs:
             return "No matching email found to reply to."
 
-        msgs = self._sort_desc(self._batch_get(svc, refs, "metadata", label_map))
+        msgs = self._sort_desc(self._batch_get(svc, refs, "full", label_map))
         if not msgs:
             return "No matching email found to reply to."
 

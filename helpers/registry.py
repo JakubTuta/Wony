@@ -302,7 +302,6 @@ class ServiceRegistry:
                 cls._module_status[svc_module_name] = (ModuleStatus.ENABLED, "")
 
             except Exception as e:
-                print(f"Failed to initialize {svc_class.__name__}: {e}")
                 cls._services.pop(svc_module_name, None)
                 cls._service_instances.pop(svc_module_name, None)
                 cls._module_status[svc_module_name] = (ModuleStatus.ERROR, str(e))

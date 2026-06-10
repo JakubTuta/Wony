@@ -1,12 +1,13 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Send, Trash2, ChevronDown, ChevronRight, Loader2, Bot, User } from 'lucide-react';
-import { sendChat, clearChat, fetchHistory, connectTurnsSocket } from '../api';
+import { Send, Trash2, Database, ChevronDown, ChevronRight, Loader2, Bot, User } from 'lucide-react';
+import { sendChat, clearChat, wipeData, fetchHistory, connectTurnsSocket } from '../api';
 import type { ChatCall, HistoryTurn } from '../api';
 
 interface Message {
   role: 'user' | 'assistant';
   text: string;
   calls?: ChatCall[];
+  turnId?: number | null;
 }
 
 export function ChatPanel() {
@@ -17,32 +18,49 @@ export function ChatPanel() {
   const [expandedCalls, setExpandedCalls] = useState<Set<number>>(new Set());
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  // Track the last optimistically-shown (user, assistant) pair to avoid WS duplication
-  const lastSentRef = useRef<{ user: string; assistant: string } | null>(null);
+  // Turn ids whose assistant reply is already on screen — the single source of
+  // truth for dedup. A turn arrives from up to two paths (HTTP /chat response
+  // and the WS broadcast); whichever lands first claims the id, the other skips.
+  const seenTurnIds = useRef<Set<number>>(new Set());
 
   useEffect(() => {
     fetchHistory(50).then(turns => {
       const msgs: Message[] = [];
       for (const t of turns) {
         msgs.push({ role: 'user', text: t.user });
-        if (t.assistant) msgs.push({ role: 'assistant', text: t.assistant, calls: t.calls ?? [] });
+        if (t.assistant) {
+          msgs.push({ role: 'assistant', text: t.assistant, calls: t.calls ?? [], turnId: t.id });
+        }
+        if (t.id != null) seenTurnIds.current.add(t.id);
       }
       setMessages(msgs);
     }).finally(() => setHistoryLoading(false));
   }, []);
 
   const handleIncomingTurn = useCallback((turn: HistoryTurn) => {
-    // Skip turns that were sent by this tab (already shown optimistically)
-    const last = lastSentRef.current;
-    if (last && last.user === turn.user && last.assistant === turn.assistant) {
-      lastSentRef.current = null;
-      return;
-    }
-    setMessages(prev => [
-      ...prev,
-      { role: 'user' as const, text: turn.user },
-      ...(turn.assistant ? [{ role: 'assistant' as const, text: turn.assistant, calls: turn.calls ?? [] }] : []),
-    ]);
+    // Already rendered (e.g. HTTP response beat the WS frame) — ignore.
+    if (turn.id != null && seenTurnIds.current.has(turn.id)) return;
+    if (turn.id != null) seenTurnIds.current.add(turn.id);
+
+    setMessages(prev => {
+      const n = prev.length;
+      const assistantMsg: Message = {
+        role: 'assistant',
+        text: turn.assistant,
+        calls: turn.calls ?? [],
+        turnId: turn.id,
+      };
+      // Optimistic user bubble already shown for this turn — attach the reply.
+      if (n >= 1 && prev[n - 1].role === 'user' && prev[n - 1].text === turn.user) {
+        return turn.assistant ? [...prev, assistantMsg] : prev;
+      }
+      // External / proactive turn (voice, desktop) — add both bubbles.
+      return [
+        ...prev,
+        { role: 'user' as const, text: turn.user },
+        ...(turn.assistant ? [assistantMsg] : []),
+      ];
+    });
   }, []);
 
   useEffect(() => {
@@ -62,11 +80,12 @@ export function ChatPanel() {
     setLoading(true);
     try {
       const res = await sendChat(text);
-      // Mark this pair so the WebSocket echo is skipped
-      lastSentRef.current = { user: text, assistant: res.text };
+      // WS frame may have already rendered this turn — dedup by id, not text.
+      if (res.id != null && seenTurnIds.current.has(res.id)) return;
+      if (res.id != null) seenTurnIds.current.add(res.id);
       setMessages(prev => [
         ...prev,
-        { role: 'assistant', text: res.text, calls: res.calls },
+        { role: 'assistant', text: res.text, calls: res.calls, turnId: res.id },
       ]);
     } catch (e) {
       setMessages(prev => [
@@ -82,6 +101,22 @@ export function ChatPanel() {
     await clearChat();
     setMessages([]);
     setExpandedCalls(new Set());
+    seenTurnIds.current.clear();
+  }
+
+  async function handleWipe() {
+    const ok = window.confirm(
+      'Permanently delete ALL your data — messages, profile facts, reminders, connected accounts, and embeddings? This cannot be undone.',
+    );
+    if (!ok) return;
+    try {
+      await wipeData();
+      setMessages([]);
+      setExpandedCalls(new Set());
+      seenTurnIds.current.clear();
+    } catch (e) {
+      window.alert(`Wipe failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   function toggleCalls(idx: number) {
@@ -106,15 +141,25 @@ export function ChatPanel() {
         <span className="text-sm font-medium text-gray-500 dark:text-gray-400">
           {messages.length === 0 ? 'Start a conversation' : `${messages.length} messages`}
         </span>
-        {messages.length > 0 && (
+        <div className="flex items-center gap-3">
+          {messages.length > 0 && (
+            <button
+              onClick={handleClear}
+              className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-colors"
+            >
+              <Trash2 size={13} />
+              Clear
+            </button>
+          )}
           <button
-            onClick={handleClear}
-            className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-colors"
+            onClick={handleWipe}
+            title="Permanently delete all stored data"
+            className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-red-600 dark:hover:text-red-500 transition-colors"
           >
-            <Trash2 size={13} />
-            Clear
+            <Database size={13} />
+            Wipe data
           </button>
-        )}
+        </div>
       </div>
 
       {/* Messages */}

@@ -1,4 +1,3 @@
-import time
 import typing
 
 
@@ -6,51 +5,42 @@ def _try_persist(
     user_text: str,
     assistant_text: str,
     calls: typing.Optional[typing.List[typing.Dict[str, typing.Any]]] = None,
-) -> None:
+) -> typing.Optional[int]:
     try:
         from helpers.memory_db import insert_turn
-        conn = insert_turn(user_text, assistant_text, calls=calls)
+        turn_id = insert_turn(user_text, assistant_text, calls=calls)
     except Exception:
-        conn = None
+        turn_id = None
 
     # Embed in background — never blocks the response path.
     try:
         from helpers import semantic
-        if semantic.is_available() and conn is not None:
-            semantic.store_turn(conn, user_text, assistant_text or "")
+        if semantic.is_available() and turn_id is not None:
+            semantic.store_turn(turn_id, user_text, assistant_text or "")
     except Exception:
         pass
+
+    return turn_id
 
 
 class Conversation:
     _turns: typing.List[typing.Dict[str, str]] = []
-    _last_activity: float = 0.0
 
     @classmethod
-    def _config(cls) -> typing.Tuple[bool, int, float]:
+    def _config(cls) -> typing.Tuple[bool, int]:
         try:
             from helpers.config import Config
             enabled = Config.get("ai.history.enabled", True)
             max_turns = int(Config.get("ai.history.max_turns", 5))
-            timeout_min = float(Config.get("ai.history.idle_timeout_minutes", 10))
         except Exception:
-            enabled, max_turns, timeout_min = True, 5, 10.0
-        return enabled, max_turns, timeout_min
-
-    @classmethod
-    def _maybe_expire(cls) -> None:
-        _, _, timeout_min = cls._config()
-        if cls._turns and cls._last_activity > 0:
-            if time.time() - cls._last_activity > timeout_min * 60:
-                cls._turns = []
-                cls._last_activity = 0.0
+            enabled, max_turns = True, 5
+        return enabled, max_turns
 
     @classmethod
     def get_messages(cls) -> typing.List[typing.Dict[str, str]]:
-        enabled, _, _ = cls._config()
+        enabled, _ = cls._config()
         if not enabled:
             return []
-        cls._maybe_expire()
         messages = []
         for turn in cls._turns:
             messages.append({"role": "user", "content": turn["user"]})
@@ -63,23 +53,22 @@ class Conversation:
         user_text: str,
         assistant_text: str,
         calls: typing.Optional[typing.List[typing.Dict[str, typing.Any]]] = None,
-    ) -> None:
-        enabled, max_turns, _ = cls._config()
+    ) -> typing.Optional[int]:
+        enabled, max_turns = cls._config()
         if not enabled or not user_text:
-            return
-        cls._maybe_expire()
+            return None
         cls._turns.append({
             "user": user_text,
             "assistant": assistant_text or "",
         })
         if len(cls._turns) > max_turns:
             cls._turns = cls._turns[-max_turns:]
-        cls._last_activity = time.time()
-        _try_persist(user_text, assistant_text or "", calls=calls)
+        turn_id = _try_persist(user_text, assistant_text or "", calls=calls)
         try:
             from helpers.events import emit_turn
             from datetime import datetime
             emit_turn({
+                "id": turn_id,
                 "user": user_text,
                 "assistant": assistant_text or "",
                 "calls": calls or [],
@@ -87,8 +76,8 @@ class Conversation:
             })
         except Exception:
             pass
+        return turn_id
 
     @classmethod
     def clear(cls) -> None:
         cls._turns = []
-        cls._last_activity = 0.0

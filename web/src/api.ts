@@ -45,6 +45,7 @@ export interface ChatCall {
 }
 
 export interface ChatResponse {
+  id: number | null;
   text: string;
   calls: ChatCall[];
 }
@@ -91,7 +92,13 @@ export async function clearChat(): Promise<void> {
   await fetch(`${BASE}/chat/clear`, { method: 'POST' });
 }
 
+export async function wipeData(): Promise<void> {
+  const res = await fetch(`${BASE}/data/wipe`, { method: 'POST' });
+  if (!res.ok) throw new Error(`Wipe failed: ${res.status}`);
+}
+
 export interface HistoryTurn {
+  id: number | null;
   user: string;
   assistant: string;
   ts: string;
