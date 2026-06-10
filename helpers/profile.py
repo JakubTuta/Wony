@@ -43,11 +43,25 @@ class Profile:
     def set(cls, key: str, value: str) -> None:
         from helpers.memory_db import set_fact
         set_fact(key, value)
+        try:
+            from helpers import semantic
+            if semantic.is_available():
+                semantic.store_fact(key, value)
+        except Exception:
+            pass
 
     @classmethod
     def remove(cls, key: str) -> bool:
         from helpers.memory_db import remove_fact
-        return remove_fact(key)
+        removed = remove_fact(key)
+        if removed:
+            try:
+                from helpers import semantic
+                if semantic.is_available():
+                    semantic.remove_fact(key)
+            except Exception:
+                pass
+        return removed
 
     @classmethod
     def all(cls) -> typing.Dict[str, str]:

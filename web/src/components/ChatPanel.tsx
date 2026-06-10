@@ -1,7 +1,7 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { Send, Trash2, ChevronDown, ChevronRight, Loader2, Bot, User } from 'lucide-react';
-import { sendChat, clearChat, fetchHistory } from '../api';
-import type { ChatCall } from '../api';
+import { sendChat, clearChat, fetchHistory, connectTurnsSocket } from '../api';
+import type { ChatCall, HistoryTurn } from '../api';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -17,17 +17,38 @@ export function ChatPanel() {
   const [expandedCalls, setExpandedCalls] = useState<Set<number>>(new Set());
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  // Track the last optimistically-shown (user, assistant) pair to avoid WS duplication
+  const lastSentRef = useRef<{ user: string; assistant: string } | null>(null);
 
   useEffect(() => {
     fetchHistory(50).then(turns => {
       const msgs: Message[] = [];
       for (const t of turns) {
         msgs.push({ role: 'user', text: t.user });
-        if (t.assistant) msgs.push({ role: 'assistant', text: t.assistant });
+        if (t.assistant) msgs.push({ role: 'assistant', text: t.assistant, calls: t.calls ?? [] });
       }
       setMessages(msgs);
     }).finally(() => setHistoryLoading(false));
   }, []);
+
+  const handleIncomingTurn = useCallback((turn: HistoryTurn) => {
+    // Skip turns that were sent by this tab (already shown optimistically)
+    const last = lastSentRef.current;
+    if (last && last.user === turn.user && last.assistant === turn.assistant) {
+      lastSentRef.current = null;
+      return;
+    }
+    setMessages(prev => [
+      ...prev,
+      { role: 'user' as const, text: turn.user },
+      ...(turn.assistant ? [{ role: 'assistant' as const, text: turn.assistant, calls: turn.calls ?? [] }] : []),
+    ]);
+  }, []);
+
+  useEffect(() => {
+    const disconnect = connectTurnsSocket(handleIncomingTurn);
+    return disconnect;
+  }, [handleIncomingTurn]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -41,6 +62,8 @@ export function ChatPanel() {
     setLoading(true);
     try {
       const res = await sendChat(text);
+      // Mark this pair so the WebSocket echo is skipped
+      lastSentRef.current = { user: text, assistant: res.text };
       setMessages(prev => [
         ...prev,
         { role: 'assistant', text: res.text, calls: res.calls },

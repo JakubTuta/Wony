@@ -279,6 +279,156 @@ class Audio:
         )
 
 
+def _split_sentences(text: str) -> typing.List[str]:
+    """Split text into speakable sentences. Keeps abbreviations intact."""
+    import re
+    # Split on sentence-ending punctuation followed by whitespace or end of string
+    parts = re.split(r"(?<=[.!?])\s+", text.strip())
+    return [p.strip() for p in parts if p.strip()]
+
+
+class BargeinListener:
+    """
+    Lightweight VAD listener that monitors the mic during TTS playback.
+    When speech is detected, sets `interrupt_event` so the caller can stop TTS.
+    Captures the speech audio for later transcription (stored in `captured`).
+
+    Respects the single-input-stream contract: closes its stream before signalling,
+    so the caller can open a fresh stream for full STT.
+    """
+
+    def __init__(self, interrupt_event: threading.Event) -> None:
+        self._interrupt = interrupt_event
+        self._stop = threading.Event()
+        self._thread: typing.Optional[threading.Thread] = None
+        self.captured: typing.Optional[str] = None  # transcribed text, set after capture
+
+    def start(self) -> None:
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._listen, daemon=True, name="barge-in-vad")
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=2.0)
+
+    def _listen(self) -> None:
+        try:
+            import webrtcvad
+        except ImportError:
+            return
+
+        import sounddevice as sd
+
+        try:
+            from helpers import mic as _mic
+
+            vad = webrtcvad.Vad(2)
+            native = _mic.default_input_rate()
+            frame_ms = 30
+            out_frame = int(16000 * frame_ms / 1000)  # 480 samples @16k
+            native_block = int(round(native * out_frame / 16000))
+
+            stream = sd.InputStream(
+                samplerate=native, channels=1, dtype="float32", blocksize=native_block
+            )
+            stream.start()
+            speech_frames = 0
+            try:
+                while not self._stop.is_set():
+                    data, _ = stream.read(native_block)
+                    f16 = _mic.to_16k_mono_f32(data[:, 0], native)
+                    if len(f16) < out_frame:
+                        import numpy as _np
+                        f16 = _np.pad(f16, (0, out_frame - len(f16)))
+                    else:
+                        f16 = f16[:out_frame]
+                    import numpy as _np
+                    pcm16 = _np.clip(f16 * 32768.0, -32768, 32767).astype(_np.int16)
+                    if vad.is_speech(pcm16.tobytes(), 16000):
+                        speech_frames += 1
+                        if speech_frames >= 3:  # ~90ms sustained speech
+                            self._interrupt.set()
+                            break
+                    else:
+                        speech_frames = max(0, speech_frames - 1)
+            finally:
+                try:
+                    stream.stop()
+                    stream.close()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+
+def stream_text_to_speech(
+    text_gen: typing.Union[typing.Generator[str, None, None], typing.Iterable[str]],
+    interrupt_event: typing.Optional[threading.Event] = None,
+) -> typing.Tuple[str, typing.List[str]]:
+    """
+    Stream model text deltas to TTS sentence-by-sentence.
+
+    Accumulates chunks until a sentence boundary is detected, then renders and
+    plays that sentence immediately. Checks `interrupt_event` between sentences.
+
+    Returns:
+        (spoken_text, remaining_sentences)
+        spoken_text: everything that was actually spoken aloud
+        remaining_sentences: unspoken sentences buffered when interrupted
+    """
+    if interrupt_event is None:
+        interrupt_event = threading.Event()
+
+    spoken_parts: typing.List[str] = []
+    pending: typing.List[str] = []
+    buffer = ""
+
+    def _flush_sentence(sentence: str) -> bool:
+        """Render and play one sentence. Returns False if interrupted."""
+        with _tts_lock:
+            try:
+                engine = _get_tts_singleton()
+                engine.text_to_speech(sentence)
+            except Exception:
+                pass
+        return not interrupt_event.is_set()
+
+    for chunk in text_gen:
+        if interrupt_event.is_set():
+            # Collect remaining chunks as pending (for resume)
+            buffer += chunk
+            continue
+
+        buffer += chunk
+        sentences = _split_sentences(buffer)
+
+        # Keep the last element as the accumulating fragment (may be incomplete)
+        if len(sentences) > 1:
+            complete = sentences[:-1]
+            buffer = sentences[-1]
+            for s in complete:
+                if interrupt_event.is_set():
+                    pending.append(s)
+                else:
+                    if not _flush_sentence(s):
+                        pending.append(s)
+                        spoken_parts.append(s)
+                    else:
+                        spoken_parts.append(s)
+
+    # Flush remainder
+    if buffer.strip():
+        if interrupt_event.is_set():
+            pending.append(buffer.strip())
+        else:
+            spoken_parts.append(buffer.strip())
+            _flush_sentence(buffer.strip())
+
+    return " ".join(spoken_parts), pending
+
+
 def preload_tts() -> None:
     """Warm the TTS engine at startup so the first response has no cold-start lag."""
     try:

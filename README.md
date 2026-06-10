@@ -145,11 +145,13 @@ Install only what you use:
 
 ```powershell
 pip install -r requirements/core.txt       # always required (text mode)
-pip install -r requirements/voice.txt      # --audio mode (speech I/O)
+pip install -r requirements/voice.txt      # audio mode (speech I/O, TTS)
 pip install -r requirements/screen.txt     # screen capture + OCR
 pip install -r requirements/automation.txt # league / mouse control
 pip install -r requirements/weather.txt    # weather module
 pip install -r requirements/gmail.txt      # gmail module
+pip install -r requirements/mcp.txt        # MCP client (external tool servers)
+pip install -r requirements/semantic.txt   # semantic memory / RAG (fastembed)
 ```
 
 ## Available commands (examples)
@@ -307,6 +309,44 @@ ollama serve          # start the server
 # set in config.yaml: ai.provider: ollama  and  ai.ollama_model: "llama3.1"
 python wony.py
 ```
+
+### MCP client (external tool servers)
+
+Connect any [MCP](https://modelcontextprotocol.io)-compatible server entirely from chat — no config editing required.
+
+```powershell
+pip install -r requirements/mcp.txt
+# enable 'mcp' in config.yaml
+```
+
+Example chat commands:
+- *"Add an MCP server called filesystem at command npx -y @modelcontextprotocol/server-filesystem"*
+- *"Connect the filesystem server"*
+- *"List my MCP servers"*
+
+Tools from connected servers appear immediately as normal commands with no restart.
+
+### Semantic memory (RAG)
+
+Long-term recall across sessions using local embeddings (no API key required).
+
+```powershell
+pip install -r requirements/semantic.txt
+```
+
+Activates automatically. Conversation turns and profile facts are embedded in the background. Use the `semantic recall` command to search by meaning, or `index document` to make a file searchable.
+
+### Voice barge-in
+
+Any speech during TTS playback stops the assistant mid-sentence. Enable in `config.yaml`:
+
+```yaml
+voice:
+  barge_in:
+    enabled: true
+```
+
+Interruption behaviour: empty/noise or resume phrase → resumes from where it stopped; stop phrase → ends turn; real command → processes immediately.
 
 ### Shelly smart switch
 

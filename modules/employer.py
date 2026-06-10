@@ -1,5 +1,6 @@
 import os
 import sys
+import threading
 import typing
 
 from helpers.agent import run_agent
@@ -22,6 +23,7 @@ class Employer:
     def __init__(self) -> None:
         self.service_instances = {}
         self.ai_model = AI()
+        self._last_paused_sentences: typing.List[str] = []
 
     @staticmethod
     def set_exit_hook(callback: typing.Callable) -> None:
@@ -47,8 +49,9 @@ class Employer:
         """Run a continuous voice conversation until silence or a stop phrase.
 
         Each turn: log utterance → run job → speak → listen for follow-up.
-        Clarifying questions (response ends with '?') wait with the normal STT
-        start_timeout; completed turns use the shorter follow_up_timeout.
+        With barge-in enabled: any speech during TTS playback stops playback immediately;
+        the interruption is transcribed and branched: empty/resume-phrase → resume remaining
+        text; stop phrase → end; real command → process as new turn.
         """
         from helpers.cache import Cache
         from helpers.config import Config
@@ -82,6 +85,13 @@ class Employer:
             "shut up",
         ]
 
+        streaming_enabled = bool(Config.get("voice.streaming.enabled", True))
+        barge_in_enabled = bool(Config.get("voice.barge_in.enabled", False))
+        resume_phrases = list(
+            Config.get("voice.barge_in.resume_phrases", None)
+            or ["continue", "go on", "keep going", "go ahead"]
+        )
+
         text = first_text
         while text:
             if self._is_stop_phrase(text, stop_phrases):
@@ -89,7 +99,38 @@ class Employer:
 
             logger.log_user_input(text, "speech")
 
-            response = self.job_on_command(text)
+            if streaming_enabled and barge_in_enabled:
+                interrupt_event = threading.Event()
+                from helpers.audio import BargeinListener
+                listener = BargeinListener(interrupt_event)
+                listener.start()
+                try:
+                    response = self.job_on_command(text, interrupt_event=interrupt_event)
+                finally:
+                    listener.stop()
+
+                paused = list(self._last_paused_sentences)
+                self._last_paused_sentences = []
+
+                if interrupt_event.is_set() and paused:
+                    # Transcribe what interrupted
+                    interruption = str(
+                        Recognizer.recognize_speech_from_mic(start_timeout=2.0)
+                    ).strip()
+                    norm = interruption.lower().rstrip(".,!?")
+
+                    if not norm or norm in resume_phrases:
+                        # Resume: speak the remaining sentences
+                        Audio.text_to_speech(" ".join(paused))
+                        # Fall through to normal follow-up listen
+                    elif self._is_stop_phrase(interruption, stop_phrases):
+                        break
+                    else:
+                        # Genuine new command — process as next turn
+                        text = interruption
+                        continue
+            else:
+                response = self.job_on_command(text)
 
             # Choose next listen timeout based on whether assistant asked a question
             if self._is_question(response):
@@ -110,8 +151,13 @@ class Employer:
         normalized = text.lower().strip().rstrip(".,!?")
         return normalized in stop_phrases
 
-    def job_on_command(self, user_input: str) -> typing.Optional[str]:
+    def job_on_command(
+        self,
+        user_input: str,
+        interrupt_event: typing.Optional[threading.Event] = None,
+    ) -> typing.Optional[str]:
         self._refresh_available_jobs()
+        self._last_paused_sentences = []
 
         # Fast path: exact command match (e.g. "help", "exit")
         if (function := self._check_if_user_input_is_command(user_input)) is not None:
@@ -154,11 +200,16 @@ class Employer:
         if text:
             audio = Cache.get_audio()
             if audio:
-                Audio.text_to_speech(text)
+                if interrupt_event is not None:
+                    from helpers.audio import stream_text_to_speech
+                    _, paused = stream_text_to_speech([text], interrupt_event)
+                    self._last_paused_sentences = paused
+                else:
+                    Audio.text_to_speech(text)
             else:
                 print(text)
 
-        Conversation.record_turn(user_input, text)
+        Conversation.record_turn(user_input, text, calls=agent_result.calls)
         return text
 
     @register_job

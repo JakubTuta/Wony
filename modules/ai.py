@@ -11,6 +11,29 @@ from helpers.decorators import capture_response
 from helpers.registry import method_job, register_job, simple_service
 
 
+def _extract_text(path: str) -> str:
+    """Extract plain text from a file. Supports .txt/.md/plain and .pdf."""
+    import os
+    ext = os.path.splitext(path)[1].lower()
+    try:
+        if ext == ".pdf":
+            try:
+                import pdfminer.high_level
+                return pdfminer.high_level.extract_text(path)
+            except ImportError:
+                pass
+            try:
+                from pypdf import PdfReader
+                reader = PdfReader(path)
+                return "\n".join(p.extract_text() or "" for p in reader.pages)
+            except ImportError:
+                pass
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except Exception:
+        return ""
+
+
 def _persona() -> str:
     """Build persona preamble from config + persistent profile."""
     from helpers.config import Config
@@ -79,9 +102,11 @@ def build_agent_system_prompt() -> str:
 
         "\n\n9. RECALL FROM PERSISTENT HISTORY: If the user asks about past conversations"
         " across sessions ('what did we discuss last week', 'did I mention X before',"
-        " 'what did we talk about on Monday'), call `search_history` or `recall_on_date`"
-        " to query the persistent SQLite conversation database. Do NOT claim you cannot"
-        " remember past sessions — use these tools first."
+        " 'what did we talk about on Monday'), first try `semantic_recall` for fuzzy/meaning-based"
+        " recall, or `search_history` for exact keyword matches, or `recall_on_date` for a specific date."
+        " Do NOT claim you cannot remember past sessions — use these tools first."
+        " `semantic_recall` is preferred for questions like 'what did we talk about regarding X',"
+        " 'do you remember what I think about Y', or 'what did I say about Z' where meaning matters."
 
         "\n\n10. USE WEB FOR CURRENT INFO: If the user asks about recent events, current"
         " news, live data, or anything that may have changed since your training cutoff,"
@@ -427,6 +452,132 @@ class AI:
                     preview += "…"
                 lines.append(f"  Assistant: {preview}")
         return "\n".join(lines)
+
+    @register_job
+    @capture_response
+    @staticmethod
+    def semantic_recall(query: str = "", k: int = 5) -> str:
+        """
+        [AI SERVICE JOB] Finds past conversation turns, stored facts, and indexed documents
+        that are semantically related to the query — not just keyword matches.
+        Uses local embeddings (no API key needed). Best for fuzzy recall across sessions.
+
+        Use this job when the user wants to:
+        - Find what was said about a topic across past sessions
+        - Recall a preference or opinion they mentioned before
+        - Search memory by meaning rather than exact words
+
+        Keywords: remember, recall, what did we talk about, what do I think about, semantic search,
+                 fuzzy recall, memory search, past conversations about, what did I say about
+
+        Args:
+            query (str): The topic or question to search for semantically. (required)
+            k (int): Number of top results to return (default 5).
+
+        Returns:
+            str: Top matching past exchanges and facts, ranked by semantic similarity.
+        """
+        from helpers import semantic as _sem
+
+        if not query:
+            return "Error: No query provided."
+
+        if not _sem.is_available():
+            return "Semantic recall unavailable — install fastembed: pip install fastembed"
+
+        results = _sem.retrieve(query, k=int(k))
+        if not results:
+            return f"No semantically similar memories found for '{query}'."
+
+        lines = [f"Semantic recall for '{query}' ({len(results)} result(s)):"]
+        for r in results:
+            score = r["score"]
+            stype = r["source_type"]
+            text = r["text"]
+            preview = text[:300] + ("…" if len(text) > 300 else "")
+            lines.append(f"\n[{stype} | score {score:.3f}]")
+            lines.append(f"  {preview}")
+        return "\n".join(lines)
+
+    @register_job
+    @capture_response
+    @staticmethod
+    def index_document(path: str = "") -> str:
+        """
+        [AI SERVICE JOB] Indexes a local file for semantic recall via ask_my_docs.
+        Extracts text from the file and embeds it for future retrieval.
+        Supports text files, PDFs (via pdfminer/pypdf2 if available), and plain text.
+
+        Use this job when the user wants to:
+        - Add a document to their searchable knowledge base
+        - Make a file queryable with ask_my_docs
+        - Index a PDF, text file, or notes file for later recall
+
+        Keywords: index document, add document, index file, add to knowledge base, read this file,
+                 remember this document, index this
+
+        Args:
+            path (str): Absolute or home-relative path to the file to index. (required)
+
+        Returns:
+            str: Confirmation with character count, or error.
+        """
+        import os
+        from helpers import semantic as _sem
+
+        if not path:
+            return "Error: No file path provided."
+
+        if not _sem.is_available():
+            return "Semantic indexing unavailable — install fastembed: pip install fastembed"
+
+        path = os.path.expanduser(path)
+        if not os.path.isfile(path):
+            return f"Error: File not found: '{path}'"
+
+        text = _extract_text(path)
+        if not text:
+            return f"Could not extract text from '{path}'."
+
+        _sem.store_doc(path, text)
+        return f"Indexed '{os.path.basename(path)}' ({len(text)} chars). Use ask_my_docs to query it."
+
+    @register_job
+    @capture_response
+    @staticmethod
+    def ask_my_docs(query: str = "") -> str:
+        """
+        [AI SERVICE JOB] Answers a question using semantically indexed personal documents.
+        Retrieves the most relevant document chunks and synthesises an answer.
+
+        Use this job when the user wants to:
+        - Ask a question about a previously indexed document
+        - Search their personal notes or files
+        - Query their local knowledge base
+
+        Keywords: ask my docs, search documents, query notes, what does my document say,
+                 find in my files, search knowledge base, ask about document
+
+        Args:
+            query (str): The question to answer from indexed documents. (required)
+
+        Returns:
+            str: Answer synthesised from the most relevant document chunks.
+        """
+        from helpers import semantic as _sem
+
+        if not query:
+            return "Error: No query provided."
+
+        if not _sem.is_available():
+            return "Document search unavailable — install fastembed: pip install fastembed"
+
+        results = _sem.retrieve(query, k=3, source_types=["doc"])
+        if not results:
+            return "No indexed documents found. Use index_document to add files first."
+
+        context = "\n\n".join(r["text"] for r in results)
+        return f"From indexed documents (top {len(results)} chunk(s)):\n\n{context}"
 
     def explain_screenshot(
         self,

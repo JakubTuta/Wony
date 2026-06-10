@@ -95,6 +95,7 @@ export interface HistoryTurn {
   user: string;
   assistant: string;
   ts: string;
+  calls?: ChatCall[];
 }
 
 export async function fetchHistory(limit = 50): Promise<HistoryTurn[]> {
@@ -102,4 +103,40 @@ export async function fetchHistory(limit = 50): Promise<HistoryTurn[]> {
   if (!res.ok) return [];
   const data = await res.json();
   return data.turns ?? [];
+}
+
+export function connectTurnsSocket(
+  onTurn: (turn: HistoryTurn) => void,
+): () => void {
+  const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws`;
+  let ws: WebSocket | null = null;
+  let closed = false;
+  let retryTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  function connect() {
+    if (closed) return;
+    ws = new WebSocket(wsUrl);
+    ws.onmessage = (ev) => {
+      try {
+        const turn: HistoryTurn = JSON.parse(ev.data);
+        onTurn(turn);
+      } catch {
+        // ignore malformed
+      }
+    };
+    ws.onclose = () => {
+      if (!closed) {
+        retryTimeout = setTimeout(connect, 3000);
+      }
+    };
+    ws.onerror = () => ws?.close();
+  }
+
+  connect();
+
+  return () => {
+    closed = true;
+    if (retryTimeout) clearTimeout(retryTimeout);
+    ws?.close();
+  };
 }

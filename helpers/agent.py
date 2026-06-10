@@ -18,6 +18,15 @@ class AgentResult(typing.NamedTuple):
     calls: typing.List[typing.Dict[str, typing.Any]]
 
 
+def _fallback_from_calls(calls: typing.List[typing.Dict[str, typing.Any]]) -> str:
+    """Return last non-empty tool result as the assistant text, or 'Done.'."""
+    for call in reversed(calls):
+        result = (call.get("result") or "").strip()
+        if result:
+            return result
+    return "Done."
+
+
 def run_agent(
     client: typing.Any,
     user_input: str,
@@ -59,6 +68,8 @@ def run_agent(
         if not tool_calls:
             # No tool call — model produced a text response (final answer or clarifying question)
             text = helpers_model.get_text_from_response(response) or ""
+            if not text and calls_made:
+                text = _fallback_from_calls(calls_made)
             return AgentResult(text=text, calls=calls_made)
 
         # Execute each tool call and append results to messages

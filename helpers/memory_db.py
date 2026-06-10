@@ -1,4 +1,5 @@
 import atexit
+import json as _json
 import sqlite3
 import threading
 import typing
@@ -37,6 +38,12 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             assistant_text  TEXT
         )
     """)
+    # Add calls column if it doesn't exist yet (migration for existing DBs)
+    try:
+        conn.execute("ALTER TABLE turns ADD COLUMN calls TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # column already exists
     conn.execute("""
         CREATE TABLE IF NOT EXISTS facts (
             key   TEXT PRIMARY KEY,
@@ -54,6 +61,39 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             created_ts     TEXT NOT NULL
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS mcp_servers (
+            name         TEXT PRIMARY KEY,
+            transport    TEXT NOT NULL DEFAULT 'stdio',
+            command      TEXT,
+            args         TEXT,
+            env          TEXT,
+            url          TEXT,
+            oauth_tokens TEXT,
+            enabled      INTEGER NOT NULL DEFAULT 1,
+            created_ts   TEXT NOT NULL,
+            updated_ts   TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS embeddings (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_type TEXT NOT NULL,
+            ref_id      INTEGER,
+            ref_key     TEXT,
+            text        TEXT NOT NULL,
+            vector      BLOB NOT NULL,
+            ts          TEXT NOT NULL
+        )
+    """)
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_emb_turn "
+        "ON embeddings(source_type, ref_id) WHERE ref_id IS NOT NULL"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_emb_keyed "
+        "ON embeddings(source_type, ref_key) WHERE ref_key IS NOT NULL"
+    )
     try:
         conn.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS turns_fts
@@ -65,13 +105,19 @@ def _init_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def insert_turn(user_text: str, assistant_text: str) -> None:
+def insert_turn(
+    user_text: str,
+    assistant_text: str,
+    calls: typing.Optional[typing.List[typing.Dict[str, typing.Any]]] = None,
+) -> typing.Optional[int]:
+    """Insert a conversation turn and return its row id."""
     conn = _get_conn()
     ts = datetime.now().isoformat(timespec="seconds")
+    calls_json = _json.dumps(calls) if calls else None
     with _lock:
         cur = conn.execute(
-            "INSERT INTO turns (session_id, ts, user_text, assistant_text) VALUES (?, ?, ?, ?)",
-            (SESSION_ID, ts, user_text, assistant_text or ""),
+            "INSERT INTO turns (session_id, ts, user_text, assistant_text, calls) VALUES (?, ?, ?, ?, ?)",
+            (SESSION_ID, ts, user_text, assistant_text or "", calls_json),
         )
         row_id = cur.lastrowid
         if _fts_available:
@@ -83,6 +129,7 @@ def insert_turn(user_text: str, assistant_text: str) -> None:
             except sqlite3.OperationalError:
                 pass
         conn.commit()
+        return row_id
 
 
 def search_turns(
@@ -138,10 +185,19 @@ def recent_turns(limit: int = 10) -> typing.List[typing.Dict]:
     conn = _get_conn()
     with _lock:
         rows = conn.execute(
-            "SELECT id, session_id, ts, user_text, assistant_text FROM turns ORDER BY ts DESC LIMIT ?",
+            "SELECT id, session_id, ts, user_text, assistant_text, calls FROM turns ORDER BY ts DESC LIMIT ?",
             (limit,),
         ).fetchall()
-        return [dict(r) for r in reversed(rows)]
+        result = []
+        for r in reversed(rows):
+            d = dict(r)
+            raw_calls = d.get("calls")
+            try:
+                d["calls"] = _json.loads(raw_calls) if raw_calls else []
+            except Exception:
+                d["calls"] = []
+            result.append(d)
+        return result
 
 
 # ------------------------------------------------------------------ facts (profile store)
@@ -240,6 +296,153 @@ def all_reminders() -> typing.List[typing.Dict]:
                 d["trigger_kwargs"] = {}
             result.append(d)
         return result
+
+
+# ------------------------------------------------------------------
+
+# ------------------------------------------------------------------ mcp servers
+
+def upsert_mcp_server(record: typing.Dict) -> None:
+    conn = _get_conn()
+    ts = datetime.now().isoformat(timespec="seconds")
+    with _lock:
+        conn.execute(
+            """
+            INSERT INTO mcp_servers (name, transport, command, args, env, url, oauth_tokens, enabled, created_ts, updated_ts)
+            VALUES (:name, :transport, :command, :args, :env, :url, :oauth_tokens, :enabled, :created_ts, :updated_ts)
+            ON CONFLICT(name) DO UPDATE SET
+                transport=excluded.transport, command=excluded.command, args=excluded.args,
+                env=excluded.env, url=excluded.url, oauth_tokens=excluded.oauth_tokens,
+                enabled=excluded.enabled, updated_ts=excluded.updated_ts
+            """,
+            {
+                "name": record["name"],
+                "transport": record.get("transport", "stdio"),
+                "command": record.get("command") or None,
+                "args": record.get("args") or "[]",
+                "env": record.get("env") or "{}",
+                "url": record.get("url") or None,
+                "oauth_tokens": record.get("oauth_tokens") or None,
+                "enabled": int(record.get("enabled", 1)),
+                "created_ts": record.get("created_ts", ts),
+                "updated_ts": ts,
+            },
+        )
+        conn.commit()
+
+
+def get_mcp_server(name: str) -> typing.Optional[typing.Dict]:
+    conn = _get_conn()
+    with _lock:
+        row = conn.execute(
+            "SELECT * FROM mcp_servers WHERE name = ?", (name,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def delete_mcp_server(name: str) -> None:
+    conn = _get_conn()
+    with _lock:
+        conn.execute("DELETE FROM mcp_servers WHERE name = ?", (name,))
+        conn.commit()
+
+
+def all_mcp_servers(enabled_only: bool = False) -> typing.List[typing.Dict]:
+    conn = _get_conn()
+    with _lock:
+        if enabled_only:
+            rows = conn.execute(
+                "SELECT * FROM mcp_servers WHERE enabled = 1 ORDER BY name"
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM mcp_servers ORDER BY name"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def set_mcp_server_tokens(name: str, tokens: typing.Dict) -> None:
+    conn = _get_conn()
+    ts = datetime.now().isoformat(timespec="seconds")
+    with _lock:
+        conn.execute(
+            "UPDATE mcp_servers SET oauth_tokens = ?, updated_ts = ? WHERE name = ?",
+            (_json.dumps(tokens), ts, name),
+        )
+        conn.commit()
+
+
+# ------------------------------------------------------------------ embeddings
+
+def upsert_embedding(
+    source_type: str,
+    ref_id: typing.Optional[int],
+    ref_key: typing.Optional[str],
+    text: str,
+    vector: bytes,
+) -> None:
+    conn = _get_conn()
+    ts = datetime.now().isoformat(timespec="seconds")
+    with _lock:
+        if ref_id is not None:
+            conn.execute(
+                """
+                INSERT INTO embeddings (source_type, ref_id, ref_key, text, vector, ts)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(source_type, ref_id) DO UPDATE SET
+                    text=excluded.text, vector=excluded.vector, ts=excluded.ts
+                """,
+                (source_type, ref_id, ref_key, text, vector, ts),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO embeddings (source_type, ref_id, ref_key, text, vector, ts)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(source_type, ref_key) DO UPDATE SET
+                    text=excluded.text, vector=excluded.vector, ts=excluded.ts
+                """,
+                (source_type, ref_id, ref_key, text, vector, ts),
+            )
+        conn.commit()
+
+
+def all_embeddings(
+    source_types: typing.Optional[typing.List[str]] = None,
+) -> typing.List[typing.Dict]:
+    conn = _get_conn()
+    with _lock:
+        if source_types:
+            placeholders = ",".join("?" * len(source_types))
+            rows = conn.execute(
+                f"SELECT id, source_type, ref_id, ref_key, text, vector FROM embeddings WHERE source_type IN ({placeholders})",
+                source_types,
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id, source_type, ref_id, ref_key, text, vector FROM embeddings"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def delete_embedding_by_ref(
+    source_type: str,
+    ref_id: typing.Optional[int] = None,
+    ref_key: typing.Optional[str] = None,
+) -> None:
+    conn = _get_conn()
+    with _lock:
+        if ref_id is not None:
+            conn.execute(
+                "DELETE FROM embeddings WHERE source_type = ? AND ref_id = ?",
+                (source_type, ref_id),
+            )
+        elif ref_key is not None:
+            conn.execute(
+                "DELETE FROM embeddings WHERE source_type = ? AND ref_key = ?",
+                (source_type, ref_key),
+            )
+        conn.commit()
 
 
 # ------------------------------------------------------------------

@@ -2,10 +2,22 @@ import time
 import typing
 
 
-def _try_persist(user_text: str, assistant_text: str) -> None:
+def _try_persist(
+    user_text: str,
+    assistant_text: str,
+    calls: typing.Optional[typing.List[typing.Dict[str, typing.Any]]] = None,
+) -> None:
     try:
         from helpers.memory_db import insert_turn
-        insert_turn(user_text, assistant_text)
+        conn = insert_turn(user_text, assistant_text, calls=calls)
+    except Exception:
+        conn = None
+
+    # Embed in background — never blocks the response path.
+    try:
+        from helpers import semantic
+        if semantic.is_available() and conn is not None:
+            semantic.store_turn(conn, user_text, assistant_text or "")
     except Exception:
         pass
 
@@ -46,7 +58,12 @@ class Conversation:
         return messages
 
     @classmethod
-    def record_turn(cls, user_text: str, assistant_text: str) -> None:
+    def record_turn(
+        cls,
+        user_text: str,
+        assistant_text: str,
+        calls: typing.Optional[typing.List[typing.Dict[str, typing.Any]]] = None,
+    ) -> None:
         enabled, max_turns, _ = cls._config()
         if not enabled or not user_text:
             return
@@ -58,7 +75,18 @@ class Conversation:
         if len(cls._turns) > max_turns:
             cls._turns = cls._turns[-max_turns:]
         cls._last_activity = time.time()
-        _try_persist(user_text, assistant_text or "")
+        _try_persist(user_text, assistant_text or "", calls=calls)
+        try:
+            from helpers.events import emit_turn
+            from datetime import datetime
+            emit_turn({
+                "user": user_text,
+                "assistant": assistant_text or "",
+                "calls": calls or [],
+                "ts": datetime.now().isoformat(timespec="seconds"),
+            })
+        except Exception:
+            pass
 
     @classmethod
     def clear(cls) -> None:

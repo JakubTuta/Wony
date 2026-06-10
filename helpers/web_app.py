@@ -3,11 +3,12 @@ FastAPI app factory. Call build_app() after bootstrap() has run.
 The app is built in-process by the unified web entry point and the tray host.
 """
 
+import asyncio
 import json
 import os
 import typing
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -27,6 +28,16 @@ _DEFAULT_DESTRUCTIVE: typing.Set[str] = {
     "create_event",
     "edit_event",
     "delete_event",
+    # scheduler
+    "cancel_reminder",
+    "edit_reminder",
+    # gmail write
+    "delete_email",
+    "delete_draft",
+    "edit_draft",
+    # accounts
+    "remove_google_account",
+    "edit_google_account",
 }
 
 
@@ -82,6 +93,23 @@ def _coerce_args(
             coerced[key] = value
 
     return coerced
+
+
+def _sanitize_calls(
+    calls: typing.List[typing.Dict[str, typing.Any]],
+) -> typing.List[typing.Dict[str, typing.Any]]:
+    """Ensure every call is JSON-serializable (coerce non-serializable args to str)."""
+    safe = []
+    for c in calls:
+        safe_args: typing.Dict[str, typing.Any] = {}
+        for k, v in (c.get("args") or {}).items():
+            try:
+                json.dumps(v)
+                safe_args[k] = v
+            except (TypeError, ValueError):
+                safe_args[k] = str(v)
+        safe.append({"name": c.get("name", ""), "args": safe_args, "result": str(c.get("result", ""))})
+    return safe
 
 
 class InvokeRequest(BaseModel):
@@ -202,31 +230,36 @@ def build_app() -> FastAPI:
         from helpers.bootstrap import get_ai_client
         from helpers.conversation import Conversation
         from helpers.decorators import agent_lock, set_agent_active
+        from helpers.logger import logger
         from modules.ai import build_agent_system_prompt
 
-        ai_client = get_ai_client()
-        system_prompt = build_agent_system_prompt()
-        history = Conversation.get_messages()
-        max_steps = int(Config.get("ai.agent.max_steps", 5))
-        all_jobs = ServiceRegistry.get_all_jobs()
+        try:
+            ai_client = get_ai_client()
+            system_prompt = build_agent_system_prompt()
+            history = Conversation.get_messages()
+            max_steps = int(Config.get("ai.agent.max_steps", 5))
+            all_jobs = ServiceRegistry.get_all_jobs()
 
-        with agent_lock:
-            set_agent_active(True)
-            try:
-                result = run_agent(
-                    client=ai_client,
-                    user_input=req.message,
-                    available_jobs=all_jobs,
-                    system_instructions=system_prompt,
-                    history=history,
-                    max_steps=max_steps,
-                )
-            finally:
-                set_agent_active(False)
+            with agent_lock:
+                set_agent_active(True)
+                try:
+                    result = run_agent(
+                        client=ai_client,
+                        user_input=req.message,
+                        available_jobs=all_jobs,
+                        system_instructions=system_prompt,
+                        history=history,
+                        max_steps=max_steps,
+                    )
+                finally:
+                    set_agent_active(False)
 
-        Conversation.record_turn(req.message, result.text)
-        print(f"\nUser: {req.message}\nAssistant: {result.text}")
-        return {"text": result.text, "calls": result.calls}
+            safe_calls = _sanitize_calls(result.calls)
+            Conversation.record_turn(req.message, result.text, calls=safe_calls)
+            return {"text": result.text, "calls": safe_calls}
+        except Exception as e:
+            logger.log_error(str(e), "web_chat")
+            raise HTTPException(status_code=500, detail=str(e))
 
     @app.post("/api/chat/clear")
     def clear_chat() -> typing.Dict[str, str]:
@@ -246,10 +279,62 @@ def build_app() -> FastAPI:
                     "user": t["user_text"],
                     "assistant": t["assistant_text"],
                     "ts": t["ts"],
+                    "calls": t.get("calls", []),
                 }
                 for t in turns
             ]
         }
+
+    # ------------------------------------------------------------------
+    # WebSocket — live turn push
+    # ------------------------------------------------------------------
+
+    _ws_clients: typing.Set[WebSocket] = set()
+    _ws_loop: typing.Optional[asyncio.AbstractEventLoop] = None
+
+    async def _ws_broadcast(message: dict) -> None:
+        dead: typing.List[WebSocket] = []
+        for ws in list(_ws_clients):
+            try:
+                await ws.send_json(message)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            _ws_clients.discard(ws)
+
+    def _on_turn(turn: dict) -> None:
+        loop = _ws_loop
+        if loop is None or not _ws_clients:
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(_ws_broadcast(turn), loop)
+        except Exception:
+            pass
+
+    @app.on_event("startup")
+    async def _ws_startup() -> None:
+        nonlocal _ws_loop
+        _ws_loop = asyncio.get_running_loop()
+        from helpers.events import subscribe
+        subscribe(_on_turn)
+
+    @app.on_event("shutdown")
+    async def _ws_shutdown() -> None:
+        from helpers.events import unsubscribe
+        unsubscribe(_on_turn)
+
+    @app.websocket("/api/ws")
+    async def websocket_turns(ws: WebSocket) -> None:
+        await ws.accept()
+        _ws_clients.add(ws)
+        try:
+            while True:
+                # Keep the connection alive; client sends pings or we just wait
+                await ws.receive_text()
+        except WebSocketDisconnect:
+            pass
+        finally:
+            _ws_clients.discard(ws)
 
     # Static files (built React app)
     _dist = os.path.join(os.path.dirname(os.path.dirname(__file__)), "web", "dist")

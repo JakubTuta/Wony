@@ -416,6 +416,166 @@ def send_agent_messages(
     raise Exception("Invalid client type.")
 
 
+def stream_text_response(
+    client: typing.Optional[
+        typing.Union[genai.Client, anthropic.Anthropic, ollama.Client]
+    ],
+    messages: typing.List[typing.Dict[str, typing.Any]],
+    system_instructions: typing.Optional[str] = None,
+) -> typing.Generator[str, None, None]:
+    """
+    Stream the final text response (no tool calls) as delta chunks.
+
+    Converts the neutral agent message list to the provider's native format and
+    streams the response. Tool-call steps stay non-streaming; call this only
+    for the narration/summary turn where no tools will be invoked.
+
+    Yields str chunks as they arrive from the model.
+    """
+    if client is None:
+        yield "Error: AI client not initialized."
+        return
+
+    if isinstance(client, anthropic.Anthropic):
+        anthropic_messages = []
+        i = 0
+        while i < len(messages):
+            msg = messages[i]
+            role = msg["role"]
+            if role == "user":
+                anthropic_messages.append({"role": "user", "content": str(msg["content"])})
+            elif role == "assistant":
+                anthropic_messages.append({"role": "assistant", "content": str(msg["content"])})
+            elif role == "tool_call":
+                tool_uses = []
+                while i < len(messages) and messages[i]["role"] == "tool_call":
+                    tc = messages[i]
+                    tool_uses.append({
+                        "type": "tool_use",
+                        "id": tc.get("id", f"tool_{i}"),
+                        "name": tc["name"],
+                        "input": tc.get("args", {}),
+                    })
+                    i += 1
+                anthropic_messages.append({"role": "assistant", "content": tool_uses})
+                tool_results = []
+                while i < len(messages) and messages[i]["role"] == "tool_result":
+                    tr = messages[i]
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": tr.get("id", f"tool_{i}"),
+                        "content": str(tr["content"]),
+                    })
+                    i += 1
+                if tool_results:
+                    anthropic_messages.append({"role": "user", "content": tool_results})
+                continue
+            i += 1
+
+        from helpers.config import Config
+        max_tokens = int(Config.get("ai.max_tokens", 8192))
+
+        try:
+            with client.messages.stream(
+                model=_get_anthropic_model(client),
+                max_tokens=max_tokens,
+                messages=anthropic_messages,
+                system=system_instructions if system_instructions else anthropic.NOT_GIVEN,
+            ) as stream:
+                for chunk in stream.text_stream:
+                    if chunk:
+                        yield chunk
+        except Exception as exc:
+            yield f"[streaming error: {exc}]"
+
+    elif isinstance(client, genai.Client):
+        contents: typing.List[typing.Any] = []
+        for msg in messages:
+            role = msg["role"]
+            if role == "user":
+                contents.append(
+                    genai_types.Content(
+                        role="user",
+                        parts=[genai_types.Part.from_text(text=str(msg["content"]))],
+                    )
+                )
+            elif role == "assistant":
+                contents.append(
+                    genai_types.Content(
+                        role="model",
+                        parts=[genai_types.Part.from_text(text=str(msg["content"]))],
+                    )
+                )
+            elif role == "tool_call":
+                raw_content = msg.get("_gemini_content")
+                if raw_content is not None:
+                    contents.append(raw_content)
+                else:
+                    from google.genai.types import FunctionCall
+                    fc = FunctionCall(name=msg["name"], args=msg.get("args", {}))
+                    contents.append(
+                        genai_types.Content(role="model", parts=[genai_types.Part(function_call=fc)])
+                    )
+            elif role == "tool_result":
+                from google.genai.types import FunctionResponse
+                fr = FunctionResponse(
+                    name=msg["name"],
+                    response={"result": str(msg["content"])},
+                )
+                contents.append(
+                    genai_types.Content(role="user", parts=[genai_types.Part(function_response=fr)])
+                )
+
+        config = genai_types.GenerateContentConfig(
+            system_instruction=system_instructions,
+        ) if system_instructions else None
+
+        try:
+            for chunk in client.models.generate_content_stream(
+                model=_get_gemini_model(client),
+                contents=contents,
+                config=config,
+            ):
+                if chunk.text:
+                    yield chunk.text
+        except Exception as exc:
+            yield f"[streaming error: {exc}]"
+
+    elif isinstance(client, ollama.Client):
+        ollama_messages: typing.List[typing.Dict[str, typing.Any]] = []
+        if system_instructions:
+            ollama_messages.append({"role": "system", "content": system_instructions})
+        for msg in messages:
+            role = msg["role"]
+            if role in ("user", "assistant"):
+                ollama_messages.append({"role": role, "content": str(msg["content"])})
+            elif role == "tool_call":
+                ollama_messages.append({
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{"function": {"name": msg["name"], "arguments": msg.get("args", {})}}],
+                })
+            elif role == "tool_result":
+                ollama_messages.append({"role": "tool", "content": str(msg["content"])})
+
+        from helpers.config import Config
+        model = Config.get("ai.ollama_model") or os.getenv("AI_MODEL")
+        if not model:
+            yield "Error: Ollama model not configured."
+            return
+
+        try:
+            for chunk in client.chat(model=model, messages=ollama_messages, stream=True):
+                content = chunk.message.content
+                if content:
+                    yield content
+        except Exception as exc:
+            yield f"[streaming error: {exc}]"
+
+    else:
+        yield "Error: Unknown client type."
+
+
 def get_text_from_response(
     response: typing.Union[
         genai_types.GenerateContentResponse,

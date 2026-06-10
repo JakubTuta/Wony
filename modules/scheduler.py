@@ -220,6 +220,107 @@ class Scheduler:
 
     @capture_response
     @method_job
+    def edit_reminder(self, id_or_text: str = "", new_when: str = "", new_text: str = "") -> str:
+        """
+        [SCHEDULER JOB] Edits an existing reminder — change its time, message, or both.
+
+        Use this job when the user wants to:
+        - Change when a reminder fires
+        - Update the message of a scheduled reminder
+        - Reschedule a reminder
+
+        Keywords: edit reminder, update reminder, change reminder, reschedule reminder,
+                 modify reminder, change reminder time, update reminder text
+
+        Args:
+            id_or_text (str): The reminder id (8-char code) or part of the reminder text. (required)
+            new_when (str): New schedule (e.g. "tomorrow at 9am", "every day at 8am"). Optional.
+            new_text (str): New reminder message. Optional.
+
+        Returns:
+            str: Confirmation with new schedule, or error if not found.
+        """
+        if not id_or_text:
+            return "Error: Provide reminder id or text to identify it."
+        if not new_when and not new_text:
+            return "Error: Provide at least new_when or new_text."
+
+        # Resolve the reminder
+        rid = None
+        if id_or_text in self._reminders:
+            rid = id_or_text
+        else:
+            needle = id_or_text.lower()
+            for r_id, meta in self._reminders.items():
+                if needle in meta.get("text", "").lower() or needle in meta.get("when_str", "").lower():
+                    rid = r_id
+                    break
+
+        if rid is None:
+            return f"No reminder found matching '{id_or_text}'."
+
+        meta = self._reminders[rid]
+        text = new_text.strip() if new_text else meta.get("text", "")
+        when_str = new_when.strip() if new_when else meta.get("when_str", "")
+
+        if new_when:
+            trigger_type, trigger_kw, error = _parse_trigger(new_when)
+            if error:
+                return f"Error: {error}"
+        else:
+            trigger_type = meta.get("trigger_type")
+            trigger_kw = dict(meta.get("trigger_kwargs", {}))
+            if trigger_type == "date" and "run_date" in trigger_kw:
+                trigger_kw["run_date"] = datetime.fromisoformat(trigger_kw["run_date"])
+
+        # Remove old job
+        try:
+            self._sched.remove_job(rid)
+        except Exception:
+            pass
+
+        def _fire(r=rid, msg=text):
+            self._fire_reminder(r, msg)
+
+        try:
+            if trigger_type == "date":
+                run_date = trigger_kw["run_date"]
+                self._sched.add_job(_fire, "date", run_date=run_date, id=rid, replace_existing=True)
+                trigger_display = run_date.strftime("%H:%M %d %b %Y")
+                persist_kw = {"run_date": run_date.isoformat()}
+            elif trigger_type == "cron":
+                self._sched.add_job(_fire, "cron", id=rid, replace_existing=True, **trigger_kw)
+                trigger_display = f"recurring ({when_str})"
+                persist_kw = trigger_kw
+            else:
+                self._sched.add_job(_fire, "interval", id=rid, replace_existing=True, **trigger_kw)
+                unit, n = next(iter(trigger_kw.items()))
+                trigger_display = f"every {n} {unit}"
+                persist_kw = trigger_kw
+        except Exception as e:
+            return f"Error rescheduling reminder: {e}"
+
+        new_meta = {
+            "id": rid,
+            "text": text,
+            "when_str": when_str,
+            "trigger_type": trigger_type,
+            "trigger_kwargs": {
+                k: (v.isoformat() if isinstance(v, datetime) else v)
+                for k, v in persist_kw.items()
+            },
+        }
+        self._reminders[rid] = new_meta
+        try:
+            from helpers.memory_db import save_reminder
+            save_reminder(new_meta)
+        except Exception as e:
+            logger.log_error(str(e), "scheduler.edit_reminder.db_save")
+
+        return f"Reminder [{rid}] updated: '{text}' — {trigger_display}"
+
+    @capture_response
+    @method_job
     def cancel_reminder(self, id_or_text: str = "") -> str:
         """
         [SCHEDULER JOB] Cancels a scheduled reminder by id or partial text match.

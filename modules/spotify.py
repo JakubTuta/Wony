@@ -318,9 +318,10 @@ class Spotify:
         self._make_spotify_request("post", url)
         return "Playing previous song."
 
+    @capture_response
     @retry_on_unauthorized("_refresh_access_token")
     @method_job
-    def volume_up(self) -> None:
+    def volume_up(self) -> str:
         """
         [SPOTIFY SERVICE METHOD] Increases Spotify playback volume by 10% increments.
         This service method adjusts the volume control through Spotify API, making the music
@@ -343,15 +344,16 @@ class Spotify:
         """
         playback_state = self._get_playback_state()
         if not playback_state:
-            return
+            return "No active Spotify device."
 
         current_volume = playback_state.get("device", {}).get("volume_percent", 50)
         new_volume = min(current_volume + 10, 100)
         return self.set_volume(volume=new_volume)
 
+    @capture_response
     @retry_on_unauthorized("_refresh_access_token")
     @method_job
-    def volume_down(self) -> None:
+    def volume_down(self) -> str:
         """
         Decreases Spotify playback volume by 10%.
 
@@ -365,12 +367,13 @@ class Spotify:
         """
         playback_state = self._get_playback_state()
         if not playback_state:
-            return
+            return "No active Spotify device."
 
         current_volume = playback_state.get("device", {}).get("volume_percent", 50)
         new_volume = max(current_volume - 10, 0)
         return self.set_volume(volume=new_volume)
 
+    @capture_response
     @retry_on_unauthorized("_refresh_access_token")
     @method_job
     def max_volume(self) -> str:
@@ -612,10 +615,16 @@ class Spotify:
         self._make_spotify_request("put", url, json={"context_uri": match["uri"]})
         return f"Playing playlist {match['name']}."
 
+    @capture_response
     @retry_on_unauthorized("_refresh_access_token")
-    def toggle_shuffle(self, **kwargs) -> None:
+    @method_job
+    def toggle_shuffle(self) -> str:
         """
-        Toggles shuffle mode on or off for Spotify playback.
+        [SPOTIFY JOB] Toggles shuffle mode on or off for Spotify playback.
+
+        Use this job when the user wants to:
+        - Toggle shuffle mode on or off
+        - Enable/disable random playback
 
         Keywords: shuffle, random, mix, spotify, playback
 
@@ -623,22 +632,19 @@ class Spotify:
             None
 
         Returns:
-            None
+            str: Confirmation of new shuffle state.
         """
-
-        state = kwargs.get("state", None)
-        if state is None:
-            playback_state = self._get_playback_state()
-            if not playback_state:
-                return
-            state = not playback_state.get("shuffle_state", False)
+        playback_state = self._get_playback_state()
+        if not playback_state:
+            return "No active Spotify device."
+        state = not playback_state.get("shuffle_state", False)
 
         base_url = (
             f"https://api.spotify.com/v1/me/player/shuffle?state={str(state).lower()}"
         )
         url = self._build_url_with_device(base_url, "&")
-
         self._make_spotify_request("put", url)
+        return f"Shuffle {'enabled' if state else 'disabled'}."
 
     def _get_current_track_id(self) -> typing.Optional[str]:
         state = self._get_playback_state()

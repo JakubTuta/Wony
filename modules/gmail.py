@@ -1383,3 +1383,240 @@ class Gmail:
 
         count = self._batch_modify(svc, [r["id"] for r in refs], add_labels=[], remove_labels=["UNREAD"])
         return f"Marked {count} message(s) as read."
+
+    @capture_response
+    @method_job
+    def delete_email(
+        self,
+        query: str = "",
+        sender: str = "",
+        subject: str = "",
+        account: str = "",
+    ) -> str:
+        """
+        [EMAIL MANAGEMENT JOB] Moves matching emails to Trash.
+
+        Use this job when the user wants to:
+        - Delete an email
+        - Move a message to trash
+        - Remove emails matching a search
+
+        Keywords: delete email, trash email, remove email, move to trash, delete message,
+                 discard email, throw away email
+
+        Args:
+            query (str): Gmail search query to find emails to delete.
+            sender (str): Filter by sender address or name.
+            subject (str): Subject or partial subject to filter.
+            account (str): Google account to use (default: primary).
+
+        Returns:
+            str: Confirmation with count of messages moved to trash.
+        """
+        if not query and not sender and not subject:
+            return "Error: Provide at least one of query, sender, or subject."
+
+        cfg = Config.module_settings("gmail")
+        if not cfg.get("allow_send", False):
+            return (
+                "Email deletion is disabled (allow_send: false). "
+                "Set modules.gmail.allow_send: true in config.yaml to enable write operations."
+            )
+
+        svc = self._svc(account)
+        q_parts = []
+        if query:
+            q_parts.append(query)
+        if sender:
+            q_parts.append(f"from:{sender}")
+        if subject:
+            q_parts.append(f"subject:{subject}")
+
+        try:
+            refs = self._list_ids(svc, self._scope(" ".join(q_parts)), 100)
+        except Exception as e:
+            return f"Error searching for messages: {e}"
+
+        if not refs:
+            return "No messages matched."
+
+        count = 0
+        for ref in refs:
+            try:
+                svc.users().messages().trash(userId="me", id=ref["id"]).execute()
+                count += 1
+            except Exception:
+                pass
+        return f"Moved {count} message(s) to trash."
+
+    # ------------------------------------------------------------------
+    # Jobs — draft CRUD
+    # ------------------------------------------------------------------
+
+    @capture_response
+    @method_job
+    def list_drafts(self, account: str = "") -> str:
+        """
+        [EMAIL MANAGEMENT JOB] Lists all Gmail drafts.
+
+        Use this job when the user wants to:
+        - See saved email drafts
+        - Review unsent emails
+        - Check what drafts exist
+
+        Keywords: list drafts, show drafts, my drafts, email drafts, saved drafts, unsent emails
+
+        Args:
+            account (str): Google account to use (default: primary).
+
+        Returns:
+            str: All drafts with id, subject, and recipient.
+        """
+        svc = self._svc(account)
+        try:
+            result = svc.users().drafts().list(userId="me", maxResults=20).execute()
+        except Exception as e:
+            return f"Error listing drafts: {e}"
+
+        drafts = result.get("drafts", [])
+        if not drafts:
+            return "No drafts found."
+
+        lines = [f"Drafts ({len(drafts)}):"]
+        for d in drafts:
+            draft_id = d.get("id", "")
+            try:
+                detail = svc.users().drafts().get(userId="me", id=draft_id, format="metadata").execute()
+                msg = detail.get("message", {})
+                headers = {h["name"].lower(): h["value"] for h in msg.get("payload", {}).get("headers", [])}
+                subj = headers.get("subject", "(no subject)")
+                to = headers.get("to", "")
+                lines.append(f"  [{draft_id}] To: {to}  Subject: {subj}")
+            except Exception:
+                lines.append(f"  [{draft_id}]")
+        return "\n".join(lines)
+
+    @capture_response
+    @method_job
+    def create_draft(
+        self,
+        to: str,
+        subject: str = "",
+        body: str = "",
+        account: str = "",
+    ) -> str:
+        """
+        [EMAIL MANAGEMENT JOB] Creates a new Gmail draft.
+
+        Use this job when the user wants to:
+        - Save an email as a draft without sending
+        - Create a draft to review later
+        - Start composing an email
+
+        Keywords: create draft, save draft, new draft, compose draft, write draft, draft email
+
+        Args:
+            to (str): Recipient email address. (required)
+            subject (str): Email subject line.
+            body (str): Plain text body of the email.
+            account (str): Google account to use (default: primary).
+
+        Returns:
+            str: Confirmation with the draft id.
+        """
+        if not to:
+            return "Error: Recipient address (to) is required."
+        if not subject and not body:
+            return "Error: Draft must have a subject or body."
+        try:
+            draft_id = self._save_draft(account, to, subject or "(no subject)", body or "")
+        except Exception as e:
+            return f"Failed to create draft: {e}"
+        return f"Draft created (id: {draft_id}) — To: {to}, Subject: '{subject or '(no subject)'}'."
+
+    @capture_response
+    @method_job
+    def edit_draft(
+        self,
+        draft_id: str,
+        to: str = "",
+        subject: str = "",
+        body: str = "",
+        account: str = "",
+    ) -> str:
+        """
+        [EMAIL MANAGEMENT JOB] Updates an existing Gmail draft.
+
+        Use this job when the user wants to:
+        - Edit a saved draft
+        - Change the recipient, subject, or body of a draft
+        - Update an unsent email
+
+        Keywords: edit draft, update draft, change draft, modify draft, revise draft
+
+        Args:
+            draft_id (str): The id of the draft to edit (from list_drafts). (required)
+            to (str): New recipient (leave empty to keep current).
+            subject (str): New subject (leave empty to keep current).
+            body (str): New body (leave empty to keep current).
+            account (str): Google account to use (default: primary).
+
+        Returns:
+            str: Confirmation of the update.
+        """
+        if not draft_id:
+            return "Error: draft_id is required."
+
+        svc = self._svc(account)
+        try:
+            existing = svc.users().drafts().get(userId="me", id=draft_id, format="metadata").execute()
+            msg = existing.get("message", {})
+            headers = {h["name"].lower(): h["value"] for h in msg.get("payload", {}).get("headers", [])}
+            current_to = headers.get("to", "")
+            current_subject = headers.get("subject", "")
+        except Exception as e:
+            return f"Failed to fetch draft: {e}"
+
+        new_to = to.strip() or current_to
+        new_subject = subject.strip() or current_subject
+        new_body = body  # empty string is fine as updated body
+
+        sender_email = GoogleAccounts.record(GoogleAccounts.resolve(account or None)).get("email", "")
+        msg_dict = _build_mime_raw(sender_email, new_to, new_subject or "(no subject)", new_body)
+
+        try:
+            svc.users().drafts().update(
+                userId="me", id=draft_id, body={"message": msg_dict}
+            ).execute()
+        except Exception as e:
+            return f"Failed to update draft: {e}"
+        return f"Draft [{draft_id}] updated — To: {new_to}, Subject: '{new_subject}'."
+
+    @capture_response
+    @method_job
+    def delete_draft(self, draft_id: str, account: str = "") -> str:
+        """
+        [EMAIL MANAGEMENT JOB] Deletes a Gmail draft permanently.
+
+        Use this job when the user wants to:
+        - Delete a draft
+        - Remove an unsent email
+        - Discard a saved draft
+
+        Keywords: delete draft, remove draft, discard draft, trash draft, cancel draft
+
+        Args:
+            draft_id (str): The id of the draft to delete (from list_drafts). (required)
+            account (str): Google account to use (default: primary).
+
+        Returns:
+            str: Confirmation of deletion.
+        """
+        if not draft_id:
+            return "Error: draft_id is required."
+        svc = self._svc(account)
+        try:
+            svc.users().drafts().delete(userId="me", id=draft_id).execute()
+        except Exception as e:
+            return f"Failed to delete draft: {e}"
+        return f"Draft [{draft_id}] deleted."

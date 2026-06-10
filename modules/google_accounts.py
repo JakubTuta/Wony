@@ -208,6 +208,52 @@ class GoogleAccountsService:
 
     @capture_response
     @method_job
+    def edit_google_account(self, name: str, new_name: str = "", set_primary: bool = False) -> str:
+        """
+        [GOOGLE ACCOUNTS JOB] Edits a Google account — rename it or make it the primary.
+
+        Use this job when the user wants to:
+        - Rename a Google account label
+        - Change the default account to a specific one
+        - Update account settings
+
+        Keywords: rename account, edit account, update account, change account name,
+                 make primary, set primary, rename google account
+
+        Args:
+            name (str): The account name to edit. (required)
+            new_name (str): New label for the account (leave empty to keep current).
+            set_primary (bool): If true, make this account the primary/default.
+
+        Returns:
+            str: Confirmation of the change, or an error message.
+        """
+        if not name:
+            return "Error: Account name is required."
+        if not new_name and not set_primary:
+            return "Error: Provide new_name or set set_primary=true."
+
+        messages = []
+
+        if new_name and new_name.strip() != name:
+            try:
+                safe = GoogleAccounts.rename_account(name, new_name)
+                messages.append(f"Account renamed: '{name}' → '{safe}'.")
+                name = safe  # use new name for subsequent set_primary
+            except ValueError as e:
+                return str(e)
+
+        if set_primary:
+            try:
+                GoogleAccounts.set_primary(name)
+                messages.append(f"Primary account set to '{name}'.")
+            except ValueError as e:
+                return str(e)
+
+        return " ".join(messages) if messages else "No changes made."
+
+    @capture_response
+    @method_job
     def set_primary_account(self, name: str) -> str:
         """
         [GOOGLE ACCOUNTS JOB] Sets the primary (default) Google account used when

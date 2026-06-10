@@ -19,6 +19,18 @@ modules, preserving the invariant that Config.load() precedes Employer import.
 import argparse
 import sys
 
+# Force UTF-8 stdout/stderr on Windows so non-ASCII chars in responses don't crash.
+if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if sys.stderr and hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # ── Subcommand handlers ───────────────────────────────────────────────────────
 
 

@@ -18,15 +18,28 @@ DEFAULTS: typing.Dict[str, typing.Any] = {
         "stt": {
             "start_timeout": 4.0,
             "max_seconds": 12.0,
-            "silence_ms": 500,
+            "silence_ms": 700,
             "vad_aggressiveness": 2,
+        },
+        "conversation": {
+            "enabled": True,
+            "follow_up_timeout": 4.0,
+        },
+        "streaming": {
+            "enabled": True,
+        },
+        "barge_in": {
+            "enabled": False,
+            "resume_phrases": ["continue", "go on", "keep going", "go ahead"],
         },
         "wake_word": {
             "enabled": False,
-            "phrase": "hey jarvis",    # built-in model name; ignored when model_path is set
-            "model_path": None,        # path to a custom .onnx model (optional)
-            "threshold": 0.5,          # detection score cutoff 0..1
+            "phrase": "hey jarvis",
+            "model_path": None,
+            "threshold": 0.5,
             "cooldown_seconds": 2.0,
+            "vad_threshold": 0.5,
+            "noise_suppression": False,
         },
     },
     "ai": {
@@ -42,7 +55,6 @@ DEFAULTS: typing.Dict[str, typing.Any] = {
         },
         "agent": {
             "max_steps": 5,
-            "narrate": True,
         },
     },
     "enabled_modules": ["ai", "status", "basics", "weather", "spotify", "screen"],
@@ -67,18 +79,12 @@ DEFAULTS: typing.Dict[str, typing.Any] = {
             "work_end_hour": 18,
             "allow_write": False,
         },
-        "scheduler": {
-            "daily_briefing_time": None,
-        },
         "web": {
             "max_content_chars": 3000,
         },
         "desktop": {
             "allow_actions": False,
             "file_search_root": "~",
-        },
-        "memory": {
-            "max_history_days": 90,
         },
     },
 }

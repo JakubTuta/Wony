@@ -16,12 +16,22 @@ import socket
 import sys
 import typing
 
-# pythonw.exe has no console; redirect stdout/stderr to devnull so print()
-# calls from modules don't raise AttributeError.
+# pythonw.exe has no console; redirect stdout/stderr to a UTF-8 null sink so
+# print() calls don't raise AttributeError or UnicodeEncodeError.
 if sys.stdout is None:
-    sys.stdout = open(os.devnull, "w")
+    sys.stdout = open(os.devnull, "w", encoding="utf-8", errors="replace")
+elif hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 if sys.stderr is None:
-    sys.stderr = open(os.devnull, "w")
+    sys.stderr = open(os.devnull, "w", encoding="utf-8", errors="replace")
+elif hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 _TRAY_LOCK_PORT = 10923  # ephemeral port used as single-instance mutex
 _lock_socket: typing.Optional[socket.socket] = None

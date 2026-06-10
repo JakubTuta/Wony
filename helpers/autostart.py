@@ -23,18 +23,59 @@ TASK_NAME = "WonyAssistant"
 
 
 def _pythonw() -> str:
-    """Resolve pythonw.exe from the current Python executable."""
-    exe = sys.executable
-    base = os.path.dirname(exe)
-    candidates = [
-        os.path.join(base, "pythonw.exe"),
-        os.path.join(base, "Scripts", "pythonw.exe"),
+    """Resolve pythonw.exe, preferring the repo venv over the global interpreter.
+
+    Order:
+      1. <repo>/venv/Scripts/pythonw.exe
+      2. <repo>/.venv/Scripts/pythonw.exe
+      3. $VIRTUAL_ENV/Scripts/pythonw.exe
+      4. sys.executable directory (current interpreter)
+    """
+    repo_root = os.path.dirname(_wony_script())
+    venv_candidates = [
+        os.path.join(repo_root, "venv", "Scripts", "pythonw.exe"),
+        os.path.join(repo_root, ".venv", "Scripts", "pythonw.exe"),
     ]
-    for c in candidates:
+    virtual_env = os.environ.get("VIRTUAL_ENV", "")
+    if virtual_env:
+        venv_candidates.append(os.path.join(virtual_env, "Scripts", "pythonw.exe"))
+
+    for c in venv_candidates:
         if os.path.isfile(c):
             return c
-    # Fallback: replace python.exe with pythonw.exe in-place
+
+    # Fall back to interpreter-adjacent pythonw.exe
+    exe = sys.executable
+    base = os.path.dirname(exe)
+    for c in [
+        os.path.join(base, "pythonw.exe"),
+        os.path.join(base, "Scripts", "pythonw.exe"),
+    ]:
+        if os.path.isfile(c):
+            return c
     return exe.replace("python.exe", "pythonw.exe")
+
+
+def _check_deps(pythonw: str) -> None:
+    """Warn if the chosen interpreter is missing required packages."""
+    python_exe = os.path.join(os.path.dirname(pythonw), "python.exe")
+    if not os.path.isfile(python_exe):
+        python_exe = pythonw  # best-effort
+    try:
+        result = subprocess.run(
+            [python_exe, "-c", "import pystray, PIL, fastapi, uvicorn"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            missing = result.stderr.strip().split("'")
+            pkg = missing[1] if len(missing) > 1 else "unknown"
+            print(f"[autostart] WARNING: '{python_exe}' is missing package '{pkg}'.")
+            print(f"[autostart] Run: \"{python_exe}\" -m pip install -r requirements/tray.txt")
+            print("[autostart] Task was installed but will crash at login.")
+    except Exception:
+        pass  # non-fatal — we still install the task
 
 
 def _wony_script() -> str:
@@ -60,6 +101,8 @@ def install() -> None:
     if not os.path.isfile(pythonw):
         print(f"[autostart] Warning: pythonw.exe not found at {pythonw}")
         print("[autostart] The task will be created but may not run silently.")
+    else:
+        _check_deps(pythonw)
 
     username = os.environ.get("USERNAME", "")
 
@@ -118,8 +161,10 @@ def install() -> None:
 
     if result.returncode == 0:
         print(f"[autostart] Task '{TASK_NAME}' installed.")
+        print(f"  Interpreter:   {pythonw}")
         print(f"  Runs at logon: {pythonw} \"{wony}\" tray")
         print("  Wony will start automatically and silently on next login.")
+        print("  Tip: if this interpreter changed, run 'autostart uninstall' then 'autostart install' again.")
     else:
         print(f"[autostart] Failed to install task (exit {result.returncode}):")
         if result.stdout:

@@ -117,3 +117,34 @@ class GoogleAccounts:
         if name in data["accounts"]:
             data["accounts"][name]["email"] = email
             cls._save()
+
+    @classmethod
+    def rename_account(cls, old_name: str, new_name: str) -> str:
+        """Rename an account. Returns the normalized new name."""
+        data = cls._load()
+        if old_name not in data["accounts"]:
+            raise ValueError(f"Account '{old_name}' not found.")
+        safe = new_name.strip().replace(" ", "_").lower()
+        if safe == old_name:
+            return old_name
+        if safe in data["accounts"]:
+            raise ValueError(f"Account '{safe}' already exists.")
+
+        rec = data["accounts"].pop(old_name)
+
+        # Rename token files on disk
+        for key in ("gmail_token", "calendar_token"):
+            old_path = rec.get(key, "")
+            if old_path and os.path.exists(old_path):
+                new_path = old_path.replace(f"_{old_name}.", f"_{safe}.")
+                try:
+                    os.rename(old_path, new_path)
+                    rec[key] = new_path
+                except OSError:
+                    pass
+
+        data["accounts"][safe] = rec
+        if data.get("primary") == old_name:
+            data["primary"] = safe
+        cls._save()
+        return safe

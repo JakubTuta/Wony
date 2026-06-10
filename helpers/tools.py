@@ -132,6 +132,16 @@ def _parse_signature(
     return description, properties, required
 
 
+def _mcp_schema(func: typing.Callable) -> typing.Optional[typing.Dict]:
+    """Return the raw MCP inputSchema if this callable is an MCP tool wrapper, else None."""
+    raw = getattr(func, "_tool_schema", None)
+    if raw is None:
+        return None
+    if hasattr(raw, "model_dump"):
+        return raw.model_dump()
+    return dict(raw)
+
+
 def function_to_schema(func: typing.Callable) -> typing.Dict[str, typing.Any]:
     model = helpers_model.get_model()
     if model is None:
@@ -145,11 +155,20 @@ def function_to_schema(func: typing.Callable) -> typing.Dict[str, typing.Any]:
     if provider == "anthropic":
         return function_to_schema_anthropic(func)
 
-
     raise Exception(f"Unsupported model type: {provider}")
 
 
 def function_to_schema_ollama(func: typing.Callable) -> typing.Dict[str, typing.Any]:
+    schema = _mcp_schema(func)
+    if schema is not None:
+        return {
+            "type": "function",
+            "function": {
+                "name": func.__name__,
+                "description": func.__doc__ or func.__name__,
+                "parameters": schema,
+            },
+        }
     description, properties, required = _parse_signature(func)
     return {
         "type": "function",
@@ -166,6 +185,13 @@ def function_to_schema_ollama(func: typing.Callable) -> typing.Dict[str, typing.
 
 
 def function_to_schema_gemini(func: typing.Callable) -> typing.Dict[str, typing.Any]:
+    schema = _mcp_schema(func)
+    if schema is not None:
+        return {
+            "name": func.__name__,
+            "description": func.__doc__ or func.__name__,
+            "parameters": schema,
+        }
     description, properties, required = _parse_signature(func)
     return {
         "name": func.__name__,
@@ -179,6 +205,13 @@ def function_to_schema_gemini(func: typing.Callable) -> typing.Dict[str, typing.
 
 
 def function_to_schema_anthropic(func: typing.Callable) -> typing.Dict[str, typing.Any]:
+    schema = _mcp_schema(func)
+    if schema is not None:
+        return {
+            "name": func.__name__,
+            "description": func.__doc__ or func.__name__,
+            "input_schema": schema,
+        }
     description, properties, required = _parse_signature(func)
     return {
         "name": func.__name__,

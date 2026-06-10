@@ -1,192 +1,118 @@
-# config.example.yaml — copy to config.yaml and edit.
+# config.example.yaml — copy to config.yaml and fill in your values.
 # Secrets (API keys) go in .env, not here.
-# config.yaml is gitignored; this file is the reference template.
-# Run `python wony.py doctor` to validate your full setup.
+# Run `python wony.py doctor` to validate your setup.
 
 assistant:
   name: "Wony"
   owner_name: "User"
   # Free-form text injected into AI system prompts.
   personality: "Friendly and concise."
-  # Language for AI responses and TTS. Use BCP-47 codes, e.g. "en", "pl".
+  # Language for AI responses and TTS. BCP-47 codes, e.g. "en", "pl".
   language: "en"
 
 voice:
-  # Kokoro voice name. Common choices:
-  #   af_heart, af_sarah, af_nicole  (American female)
-  #   am_michael, am_adam            (American male)
-  #   bf_emma, bf_alice              (British female)
-  #   bm_george, bm_daniel           (British male)
-  # Run `python -c "from kokoro_onnx import Kokoro; k=Kokoro('models/kokoro-v1.0.onnx','models/voices-v1.0.bin'); print(k.get_voices())"` to list all.
-  tts_voice: "af_heart"
-  speed: 1.0    # 0.5–2.0 speaking rate
-  volume: 0.6   # output gain (0.0–1.0)
-  # Kokoro model files (auto-downloaded to models/ on first run if missing).
+  # Run `python -c "from kokoro_onnx import Kokoro; k=Kokoro('models/kokoro-v1.0.onnx','models/voices-v1.0.bin'); print(k.get_voices())"` to list all voices.
+  tts_voice: "af_heart"   # af_heart, af_sarah, am_michael, bf_emma, bm_george …
+  speed: 1.0              # 0.5–2.0 speaking rate
+  volume: 0.6             # 0.0–1.0 output gain
   model_path: "models/kokoro-v1.0.onnx"
   voices_path: "models/voices-v1.0.bin"
 
-  # Speech-to-text capture. Recording uses VAD endpointing: it starts when you
-  # speak and stops on trailing silence — no fixed window. Requires webrtcvad
-  # (in requirements/voice.txt); falls back to a 3 s window if missing.
   stt:
-    max_seconds: 12        # hard cap on a single command's length
-    start_timeout: 4       # give up if no speech starts within this many seconds
-    silence_ms: 700        # trailing silence (ms) that ends the command
-    vad_aggressiveness: 2  # 0–3; higher = more aggressively treat audio as non-speech
+    start_timeout: 4      # give up if no speech starts within this many seconds
+    silence_ms: 700       # trailing silence (ms) that ends the command
 
-  # Continuous conversation mode. After each response the mic reopens automatically
-  # so follow-up questions and chained commands need no re-activation. Session ends
-  # on silence or a stop phrase.
+  # Continuous conversation: mic reopens after each response for chained commands.
+  # Session ends on silence or a stop phrase ("stop", "thanks", "done", …).
   conversation:
     enabled: true
-    # Seconds to wait for speech after a completed (non-question) turn before
-    # closing the session and returning to the wake-word listener.
-    follow_up_timeout: 4.0
+    follow_up_timeout: 4.0  # seconds of silence before closing the session
 
-  # Wake-word listener (hands-free trigger). Works in voice mode and tray mode.
-  # Requires: pip install -r requirements/wakeword.txt
-  # No account or API key needed — fully local and free.
+  # Start speaking before the full answer is ready; text is split into sentences as it streams.
+  streaming:
+    enabled: true
+
+  # Detect speech during playback and stop the assistant mid-sentence.
+  barge_in:
+    enabled: true
+    resume_phrases:
+      - "continue"
+      - "go on"
+      - "keep going"
+      - "go ahead"
+
+  # Hands-free trigger. Requires: pip install -r requirements/wakeword.txt
   wake_word:
     enabled: false
-    # Built-in model to use when model_path is not set.
-    # Valid built-in names: "hey jarvis", "alexa", "hey mycroft", "hey rhasspy"
+    # Built-in phrase names: "hey jarvis", "alexa", "hey mycroft", "hey rhasspy"
     phrase: "hey jarvis"
-    # Path to a custom .onnx model file (optional).
-    # Use training/train_hey_wony.ipynb (Colab) or training/train_hey_wony.sh (WSL) to train,
-    # then place the result at models/hey_wony.onnx and set the path below.
-    model_path: null  # e.g. "models/hey_wony.onnx"
+    # Path to a custom .onnx model (overrides phrase).
+    # Train with training/train_hey_wony.ipynb (Colab) or training/train_hey_wony.sh (WSL).
+    model_path: null
     threshold: 0.5        # 0.0–1.0 detection score cutoff (lower = more sensitive)
-    cooldown_seconds: 2.0 # ignore re-triggers within this window after detection
-    vad_threshold: 0.5    # Silero VAD pre-gate; raise to cut noise false-triggers
-    # Far-field noise suppression (Speex). Linux-only dependency (speexdsp-ns);
-    # ignored automatically on Windows/macOS.
-    noise_suppression: false
 
 ai:
-  # Which AI provider to use. Options: anthropic | gemini | ollama | null (auto-detect from keys).
+  # Options: anthropic | gemini | ollama | null (auto-detect from .env keys).
   provider: null
-  # Set Anthropic model, leave null for newest
-  anthropic_model: null
-  # Set Gemini model, leave null for newest
-  gemini_model: null
-  # Ollama model name; also readable from AI_MODEL env var as fallback.
-  # REQUIRED when provider is 'ollama' — app will not start without this set.
-  ollama_model: "llama3.1"
-  # Max tokens in a single AI response (applies to Anthropic; Gemini/Ollama use their defaults).
+  anthropic_model: null   # null = latest
+  gemini_model: null      # null = latest
+  ollama_model: "llama3.1"  # required when provider is 'ollama'
   max_tokens: 8192
   history:
-    # Enable conversation history (multi-turn memory within a session).
-    enabled: true
-    # Number of past exchanges (user+assistant pairs) to keep in context (~10 messages).
-    max_turns: 5
-    # Auto-clear history after this many minutes of inactivity.
-    idle_timeout_minutes: 10
-  agent:
-    # Maximum tool round-trips the agent may take for a single user request.
-    max_steps: 5
-    # If true, the agent writes a concise final answer from tool results instead of
-    # printing raw tool output. Set to false to see raw tool output (useful for debugging).
-    narrate: true
+    max_turns: 5          # past exchanges (user+assistant pairs) kept in context
 
-# Only modules listed here will load. A module still won't run if its
-# credentials/deps are missing — it will show as misconfigured/unavailable.
+# Only listed modules load. A module still won't run if credentials/deps are missing.
 # Run "check setup" to see what each broken module needs.
 enabled_modules:
   - ai             # always-on: conversation, history, AI provider routing
   - status         # always-on: module health and setup diagnostics
-  - basics         # time, date, timers, shutdown, daily briefing (no setup needed)
-  - weather        # current weather and forecasts by city
+  - basics         # time, date, timers, shutdown, daily briefing
+  - weather        # current weather and forecasts
   # - spotify        # playback control (play, pause, skip, search, volume)
   # - screen         # screenshot capture and OCR text extraction
-  # Uncomment to enable:
   # - gmail          # read, search, and monitor Gmail (requires Google OAuth)
   # - calendar       # read Google Calendar events and check availability (requires Google OAuth)
-  # - google_accounts  # manage multiple Google accounts (add, remove, set primary)
+  # - google_accounts  # manage multiple Google accounts
   # - league         # League of Legends player stats and match history
   # - shelly         # Shelly smart home device control (requires local device)
   # - scheduler      # Persistent reminders and recurring notifications (pip install -r requirements/scheduler.txt)
-  # - web            # Web search and URL fetch for live information (pip install -r requirements/web.txt)
-  # - desktop        # Desktop control: open apps, windows, clipboard, file search (pip install -r requirements/desktop.txt)
+  # - web            # Web search and URL fetch (pip install -r requirements/web.txt)
+  # - desktop        # Desktop control: open apps, windows, clipboard (pip install -r requirements/desktop.txt)
+  # - mcp            # MCP client: connect external tool servers (pip install mcp)
 
 # Per-module non-secret settings.
 modules:
   shelly:
-    # IP or hostname of your Shelly device on the local network.
     base_url: "http://192.168.18.53"
   weather:
-    default_units: "metric"
+    default_units: "metric"   # metric | imperial
   gmail:
-    # How often (minutes) to check for new emails when background polling is active.
-    poll_interval_minutes: 15
-    # Max emails returned per query.
     max_results: 20
-    # Max characters of email body to speak in audio (TTS) mode.
-    max_body_chars: 1500
-    # Safety gate — set to true to allow sending emails (send_email, reply_to_email).
+    # Safety gate — set to true to allow sending/replying to emails.
     allow_send: false
-    # Set to true to have AI summarize email lists instead of returning raw data.
-    # Note: sends email content (sender, subject, body) to your configured AI provider.
+    # Set to true to have AI summarize email lists (sends content to your AI provider).
     use_ai: false
-    # Max emails fed to AI per summarize call (bounds token usage).
-    ai_summary_max_emails: 30
   calendar:
-    # How often (minutes) to check for new events when background polling is active.
-    poll_interval_minutes: 15
-    # How far ahead (hours) to look for upcoming events.
-    lookahead_hours: 24
-    # Max number of events to return per query.
+    lookahead_hours: 24       # how far ahead to look for upcoming events
     max_results: 10
-    # Search window for search_events job.
-    search_days_back: 30
-    search_days_ahead: 90
-    # Working hours for find_free_slots.
-    work_start_hour: 9
+    work_start_hour: 9        # used by find_free_slots
     work_end_hour: 18
     # Safety gate — set to true to allow creating, editing, and deleting events.
-    # Note: also requires re-authentication after upgrading from the old readonly scope.
+    # Note: requires re-authentication after upgrading from the old readonly scope.
     allow_write: false
-  scheduler:
-    # Set to a time string (e.g. "07:30") to auto-run the daily greeting every morning.
-    # Leave null to disable the automatic briefing.
-    daily_briefing_time: null
   web:
-    # Maximum characters of page content returned by fetch_url.
-    max_content_chars: 3000
-    # Optional: add TAVILY_API_KEY to .env for higher-quality search (free tier available).
-    # Without it, DuckDuckGo is used automatically — no key needed.
+    max_content_chars: 3000   # max page content returned by fetch_url
+    # Add TAVILY_API_KEY to .env for higher-quality search (free tier available).
+    # Without it, DuckDuckGo is used automatically.
   desktop:
     # Safety gate — set to true to enable type/click/clipboard-write/file-open actions.
-    # list_windows, get_clipboard, and find_file are always available (read-only).
     allow_actions: false
-    # Root directory for find_file searches. Defaults to home directory (~).
-    file_search_root: "~"
-  memory:
-    # How many days of conversation history to keep in the database.
-    max_history_days: 90
-  # How often (minutes) the background health watcher retries failed modules.
-  # Set to 0 to disable. Useful for modules like Spotify that may not be ready at boot.
-  health_check_interval_minutes: 5
+    file_search_root: "~"     # root dir for find_file searches
 
 tray:
-  # Show a system tray balloon when Wony finishes starting up.
   notify_on_ready: true
-  # Automatically open the web UI in your browser when tray mode starts.
   open_browser_on_start: false
 
 server:
-  # Host and port for the web server (python wony.py web).
   host: "127.0.0.1"
   port: 8000
-  # Jobs that show a confirm dialog in the web UI before executing.
-  # Defaults to the list below if not set.
-  # destructive_jobs:
-  #   - exit
-  #   - close_computer
-  #   - stop_active_jobs
-  #   - cancel_timers
-  #   - send_email
-  #   - reply_to_email
-  #   - mark_as_read
-  #   - create_event
-  #   - edit_event
-  #   - delete_event

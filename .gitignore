@@ -1,7 +1,6 @@
 __pycache__/
 credentials/
 cache.json
-profile.json
 venv/
 .env
 config.yaml

@@ -141,6 +141,7 @@ def bootstrap(
         except Exception:
             pass
 
+    _reconnect_mcp_servers(Config, quiet)
     _start_health_watcher(Config, quiet)
 
     if not quiet:
@@ -151,6 +152,17 @@ def bootstrap(
         print()
 
     return employer
+
+
+def _reconnect_mcp_servers(Config: typing.Any, quiet: bool) -> None:
+    if not Config.is_module_enabled("mcp"):
+        return
+    try:
+        from helpers.mcp_client import reconnect_enabled_servers
+        reconnect_enabled_servers()
+    except Exception as exc:
+        if not quiet:
+            print(f"[mcp] Startup reconnect failed (non-fatal): {exc}")
 
 
 def _start_health_watcher(Config: typing.Any, quiet: bool) -> None:

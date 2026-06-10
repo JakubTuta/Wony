@@ -13,6 +13,7 @@ from helpers.cache import Cache
 from helpers.config import Config
 from helpers.decorators import capture_response
 from helpers.jobs import BackgroundJobs
+from helpers.timeutil import local_tz, local_tz_name, now_local
 from helpers.logger import logger
 from helpers.registry import method_job, register_service
 from helpers.requirements import Requirement
@@ -94,7 +95,7 @@ class Calendar:
             max_results = int(cfg.get("max_results", 10))
 
         service = self._service_for(account)
-        now = datetime.now(timezone.utc)
+        now = now_local()
 
         if time_min and time_max:
             t_min = time_min
@@ -123,7 +124,8 @@ class Calendar:
         return response.get("items", [])
 
     def _fetch_events_for_day(self, day: datetime, account: str = "", calendar_id: str = "primary") -> typing.List[dict]:
-        start = day.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
+        tz = local_tz()
+        start = day.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=tz)
         end = start + timedelta(days=1)
         service = self._service_for(account)
         response = (
@@ -220,7 +222,8 @@ class Calendar:
         return dt.strftime("%Y-%m-%d %H:%M")
 
     def _parse_date(self, date_str: str) -> datetime:
-        today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        tz = local_tz()
+        today = now_local().replace(hour=0, minute=0, second=0, microsecond=0)
         s = date_str.strip().lower()
         if not s or s == "today":
             return today
@@ -229,7 +232,10 @@ class Calendar:
         if s == "yesterday":
             return today - timedelta(days=1)
         try:
-            return datetime.fromisoformat(date_str).replace(tzinfo=timezone.utc)
+            dt = datetime.fromisoformat(date_str)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=tz)
+            return dt
         except ValueError:
             return today
 
@@ -248,7 +254,10 @@ class Calendar:
             hour += 12
         elif is_am and hour == 12:
             hour = 0
-        return base_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        dt = base_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=local_tz())
+        return dt
 
     def _resolve_calendar_id(self, calendar_name: str, account: str) -> typing.Optional[str]:
         service = self._service_for(account)
@@ -555,7 +564,7 @@ class Calendar:
         days_back = days_back or int(cfg.get("search_days_back", 30))
         days_ahead = days_ahead or int(cfg.get("search_days_ahead", 90))
 
-        now = datetime.now(timezone.utc)
+        now = now_local()
         t_min = (now - timedelta(days=days_back)).isoformat()
         t_max = (now + timedelta(days=days_ahead)).isoformat()
 
@@ -689,6 +698,8 @@ class Calendar:
             t_start = self._parse_time(start_time, base)
         else:
             t_start = base.replace(hour=9, minute=0, second=0, microsecond=0)
+            if t_start.tzinfo is None:
+                t_start = t_start.replace(tzinfo=local_tz())
         if end_time:
             t_end = self._parse_time(end_time, base)
         else:
@@ -765,16 +776,21 @@ class Calendar:
                     end_raw = e.get("end", {}).get("dateTime") or e.get("end", {}).get("date")
                     if start_raw and end_raw:
                         try:
-                            s = datetime.fromisoformat(start_raw).replace(tzinfo=timezone.utc)
-                            en = datetime.fromisoformat(end_raw).replace(tzinfo=timezone.utc)
+                            s = datetime.fromisoformat(start_raw.replace("Z", "+00:00"))
+                            en = datetime.fromisoformat(end_raw.replace("Z", "+00:00"))
+                            if s.tzinfo is None:
+                                s = s.replace(tzinfo=local_tz())
+                            if en.tzinfo is None:
+                                en = en.replace(tzinfo=local_tz())
                             busy_blocks.append((s, en))
                         except ValueError:
                             pass
             except Exception:
                 pass
 
-        day_start = target.replace(hour=work_start, minute=0, second=0, microsecond=0)
-        day_end = target.replace(hour=work_end, minute=0, second=0, microsecond=0)
+        tz = local_tz()
+        day_start = target.replace(hour=work_start, minute=0, second=0, microsecond=0, tzinfo=tz)
+        day_end = target.replace(hour=work_end, minute=0, second=0, microsecond=0, tzinfo=tz)
 
         busy_blocks.sort(key=lambda x: x[0])
         merged: typing.List[typing.Tuple[datetime, datetime]] = []
@@ -832,7 +848,7 @@ class Calendar:
             str: All events scheduled for today.
         """
         audio = Cache.get_audio()
-        today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        today = now_local().replace(hour=0, minute=0, second=0, microsecond=0)
         events = self._fetch_events_for_day(today, account=account)
         return self._render_events(
             events,
@@ -928,13 +944,15 @@ class Calendar:
         if not date and not start_time:
             return "Error: At least a date or start time is required."
 
-        base = self._parse_date(date) if date else datetime.now(timezone.utc).replace(
+        base = self._parse_date(date) if date else now_local().replace(
             hour=0, minute=0, second=0, microsecond=0
         )
         if start_time:
             start_dt = self._parse_time(start_time, base)
         else:
             start_dt = base.replace(hour=9, minute=0, second=0, microsecond=0)
+            if start_dt.tzinfo is None:
+                start_dt = start_dt.replace(tzinfo=local_tz())
 
         if end_time:
             end_dt = self._parse_time(end_time, base)
@@ -965,10 +983,17 @@ class Calendar:
             if resolved:
                 calendar_id = resolved
 
+        tz_name = local_tz_name()
+        start_entry: typing.Dict[str, str] = {"dateTime": start_dt.isoformat()}
+        end_entry: typing.Dict[str, str] = {"dateTime": end_dt.isoformat()}
+        if tz_name:
+            start_entry["timeZone"] = tz_name
+            end_entry["timeZone"] = tz_name
+
         event_body: typing.Dict[str, typing.Any] = {
             "summary": title,
-            "start": {"dateTime": start_dt.isoformat(), "timeZone": "UTC"},
-            "end": {"dateTime": end_dt.isoformat(), "timeZone": "UTC"},
+            "start": start_entry,
+            "end": end_entry,
         }
         if description:
             event_body["description"] = description
@@ -1057,8 +1082,10 @@ class Calendar:
             old_start_str = event.get("start", {}).get("dateTime") or event.get("start", {}).get("date", "")
             try:
                 old_start = datetime.fromisoformat(old_start_str.replace("Z", "+00:00"))
+                if old_start.tzinfo is None:
+                    old_start = old_start.replace(tzinfo=local_tz())
             except Exception:
-                old_start = datetime.now(timezone.utc)
+                old_start = now_local()
 
             base = self._parse_date(new_date) if new_date else old_start.replace(
                 hour=0, minute=0, second=0, microsecond=0
@@ -1074,8 +1101,14 @@ class Calendar:
                 except Exception:
                     end_dt = start_dt + timedelta(hours=1)
 
-            patch["start"] = {"dateTime": start_dt.isoformat(), "timeZone": "UTC"}
-            patch["end"] = {"dateTime": end_dt.isoformat(), "timeZone": "UTC"}
+            tz_name = local_tz_name()
+            start_entry: typing.Dict[str, str] = {"dateTime": start_dt.isoformat()}
+            end_entry: typing.Dict[str, str] = {"dateTime": end_dt.isoformat()}
+            if tz_name:
+                start_entry["timeZone"] = tz_name
+                end_entry["timeZone"] = tz_name
+            patch["start"] = start_entry
+            patch["end"] = end_entry
 
         if not patch:
             return "Nothing to update — provide at least one new value."
