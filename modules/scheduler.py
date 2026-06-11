@@ -379,7 +379,9 @@ class Scheduler:
             msg = f"Reminder: {text}"
         audio = Cache.get_audio()
         if audio:
-            Audio.text_to_speech(msg)
+            from helpers.ducking import duck_others
+            with duck_others():
+                Audio.text_to_speech(msg)
         logger.log_system_event("reminder_fired", msg)
         meta = self._reminders.get(reminder_id, {})
         if missed_at or meta.get("trigger_type") == "date":

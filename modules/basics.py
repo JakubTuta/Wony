@@ -67,7 +67,9 @@ def _timer_worker(minutes: float, label: str) -> None:
     msg = f"Timer done: {label}." if label else f"{int(minutes)}-minute timer is done."
     audio = Cache.get_audio()
     if audio:
-        Audio.text_to_speech(msg)
+        from helpers.ducking import duck_others
+        with duck_others():
+            Audio.text_to_speech(msg)
     logger.log_system_event("timer_fired", msg)
 
 

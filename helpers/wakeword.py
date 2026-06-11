@@ -304,24 +304,26 @@ class WakeWordListener:
 
     def _handle_detection(self) -> None:
         from helpers.audio import Audio
+        from helpers.ducking import duck_others
 
-        Audio.play_cached("Yes?")  # non-blocking WAV if rendered, else live TTS
+        with duck_others():
+            Audio.play_cached("Yes?")  # non-blocking WAV if rendered, else live TTS
 
-        from helpers.recognizer import Recognizer
+            from helpers.recognizer import Recognizer
 
-        text = Recognizer.recognize_speech_from_mic()
-        if not text:
-            return
+            text = Recognizer.recognize_speech_from_mic()
+            if not text:
+                return
 
-        try:
-            self._employer.handle_utterance(text)
-        except SystemExit:
-            from modules.employer import Employer
+            try:
+                self._employer.handle_utterance(text)
+            except SystemExit:
+                from modules.employer import Employer
 
-            if Employer._exit_hook is not None:
-                Employer._exit_hook()
-            elif self._exit_event is not None:
-                self._stop_event.set()
-                self._exit_event.set()
-        except Exception as e:
-            print(f"[wakeword] utterance error: {e}")
+                if Employer._exit_hook is not None:
+                    Employer._exit_hook()
+                elif self._exit_event is not None:
+                    self._stop_event.set()
+                    self._exit_event.set()
+            except Exception as e:
+                print(f"[wakeword] utterance error: {e}")

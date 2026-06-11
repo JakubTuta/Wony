@@ -12,6 +12,10 @@ faster-whisper
 # webrtcvad-wheels ships prebuilt Windows/macOS/Linux wheels (import name: webrtcvad).
 webrtcvad-wheels
 
+# Audio ducking — lower other apps' volume while Wony is speaking/listening.
+# Windows-only; silently no-ops if missing. comtypes pulled in automatically.
+pycaw
+
 # GPU (optional, NVIDIA only) — uncomment for CUDA acceleration:
 # nvidia-cublas-cu12
 # nvidia-cudnn-cu12

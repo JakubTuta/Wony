@@ -125,12 +125,14 @@ def cmd_voice(args: argparse.Namespace) -> None:
 
     def _do_speak() -> None:
         from helpers.logger import logger
+        from helpers.ducking import duck_others
 
         logger.log_system_event("hotkey_fired", "ctrl+l")
         print("[voice] Ctrl+L — listening")
         ww.pause()
         try:
-            employer.speak()
+            with duck_others():
+                employer.speak()
         except SystemExit:
             _stop.set()
         finally:
