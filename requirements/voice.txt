@@ -1,8 +1,22 @@
 # Voice input/output dependencies.
 # Required for --audio mode (speech recognition + text-to-speech).
+
+# onnxruntime-gpu ships both CPU and GPU providers.
+# The CUDA provider DLL links the full CUDA 12 runtime stack, so cuDNN/cuBLAS
+# alone are NOT enough — it also needs cudart, cuFFT and cuRAND. These wheels
+# supply every DLL so no system CUDA toolkit is required.
+# On machines without a CUDA-capable GPU the wheels install but are never loaded;
+# the app auto-selects CPUExecutionProvider at runtime.
+onnxruntime-gpu ; platform_system != "Darwin"
+onnxruntime ; platform_system == "Darwin"
+nvidia-cuda-runtime-cu12>=12.0,<13 ; platform_system == "Windows"
+nvidia-cudnn-cu12>=9.0,<10 ; platform_system == "Windows"
+nvidia-cublas-cu12>=12.0,<13 ; platform_system == "Windows"
+nvidia-cufft-cu12>=11.0,<12 ; platform_system == "Windows"
+nvidia-curand-cu12>=10.0,<11 ; platform_system == "Windows"
+
 kokoro-onnx
 espeakng-loader
-onnxruntime
 sounddevice
 soundfile
 soxr
@@ -15,7 +29,6 @@ webrtcvad-wheels
 # Audio ducking — lower other apps' volume while Wony is speaking/listening.
 # Windows-only; silently no-ops if missing. comtypes pulled in automatically.
 pycaw
-
-# GPU (optional, NVIDIA only) — uncomment for CUDA acceleration:
-# nvidia-cublas-cu12
-# nvidia-cudnn-cu12
+# psutil is a transitive dep via pycaw but pinned here: ducking.py uses it directly
+# to skip audiodg.exe / system processes when enumerating audio sessions.
+psutil

@@ -1,14 +1,11 @@
 """
-Shared audio I/O layer.
-
-Always uses the system default input/output device — works with any physical
-or virtual device regardless of native sample rate.
+Shared audio I/O layer. Always uses the system default input/output device.
 
 Single-input-stream contract: only one input stream may be open at a time.
 WakeWordListener enforces this via pause()/resume() before STT records.
 """
+import collections
 import threading
-import time
 import typing
 
 import numpy as np
@@ -41,6 +38,20 @@ def to_16k_mono_f32(samples: np.ndarray, in_rate: int) -> np.ndarray:
         ).astype(np.float32)
 
 
+def _play(data: np.ndarray, sr: int, blocking: bool) -> None:
+    if blocking:
+        sd.play(data, sr)
+        sd.wait()
+    else:
+        def _bg() -> None:
+            try:
+                sd.play(data, sr)
+                sd.wait()
+            except Exception as e:
+                print(f"[mic] playback failed: {e}")
+        threading.Thread(target=_bg, daemon=True).start()
+
+
 def play_wav(filename: str, blocking: bool = False) -> None:
     """Play a WAV file on the system default output device.
 
@@ -48,37 +59,16 @@ def play_wav(filename: str, blocking: bool = False) -> None:
     blocking=True: blocks until playback finishes.
     """
     data, sr = sf.read(filename, dtype="float32", always_2d=False)
-    if blocking:
-        sd.play(data, sr)
-        sd.wait()
-    else:
-        def _play() -> None:
-            try:
-                sd.play(data, sr)
-                sd.wait()
-            except Exception as e:
-                print(f"[mic] playback failed: {e}")
-        threading.Thread(target=_play, daemon=True).start()
+    _play(data, sr, blocking)
 
 
 def play_array(samples: np.ndarray, sr: int, blocking: bool = True) -> None:
     """Play a numpy float32 audio array on the system default output device.
 
-    blocking=True (default): blocks until playback finishes (required for TTS
-    so the mic is not opened while the assistant is still speaking).
+    blocking=True (default): blocks until playback finishes.
     blocking=False: spawns a daemon thread and returns immediately.
     """
-    if blocking:
-        sd.play(samples, sr)
-        sd.wait()
-    else:
-        def _play() -> None:
-            try:
-                sd.play(samples, sr)
-                sd.wait()
-            except Exception as e:
-                print(f"[mic] playback failed: {e}")
-        threading.Thread(target=_play, daemon=True).start()
+    _play(samples, sr, blocking)
 
 
 def record_native(seconds: float) -> typing.Tuple[np.ndarray, int]:
@@ -98,6 +88,49 @@ def record_16k(seconds: float) -> np.ndarray:
     """Record from the default input and resample to 16 kHz mono float32."""
     raw, rate = record_native(seconds)
     return to_16k_mono_f32(raw, rate)
+
+
+def vad_frame_stream(
+    stop_event: threading.Event,
+    vad_aggressiveness: int = 2,
+) -> typing.Generator[typing.Tuple[bool, np.ndarray], None, None]:
+    """Yield (is_speech, frame_16k_float32) for each 30ms mic frame until stop_event is set.
+
+    Opens and owns a single InputStream; closes it on exit (GeneratorExit or StopIteration).
+    Caller must ensure no other input stream is open (single-stream contract).
+    Silently returns immediately if webrtcvad is not installed.
+    """
+    try:
+        import webrtcvad
+    except ImportError:
+        return
+
+    vad = webrtcvad.Vad(int(vad_aggressiveness))
+    native = default_input_rate()
+    frame_ms = 30
+    out_frame = int(_SR_TARGET * frame_ms / 1000)  # 480 samples @16k
+    native_block = int(round(native * out_frame / _SR_TARGET))
+
+    stream = sd.InputStream(
+        samplerate=native, channels=1, dtype="float32", blocksize=native_block
+    )
+    stream.start()
+    try:
+        while not stop_event.is_set():
+            data, _ = stream.read(native_block)
+            f16 = to_16k_mono_f32(data[:, 0], native)
+            if len(f16) < out_frame:
+                f16 = np.pad(f16, (0, out_frame - len(f16)))
+            else:
+                f16 = f16[:out_frame]
+            pcm16 = np.clip(f16 * 32768.0, -32768, 32767).astype(np.int16)
+            yield vad.is_speech(pcm16.tobytes(), _SR_TARGET), f16
+    finally:
+        try:
+            stream.stop()
+            stream.close()
+        except Exception:
+            pass
 
 
 def record_until_silence(
@@ -125,49 +158,32 @@ def record_until_silence(
     """
     try:
         import webrtcvad
+        del webrtcvad
     except ImportError:
         return record_16k(3)
 
-    from collections import deque
-
-    vad = webrtcvad.Vad(int(vad_aggressiveness))
-    native = default_input_rate()
-    frame_ms = 30  # webrtcvad accepts 10/20/30 ms frames only
-    out_frame = int(_SR_TARGET * frame_ms / 1000)  # 480 samples @16k
-    native_block = int(round(native * out_frame / _SR_TARGET))
-
+    frame_ms = 30
     preroll_frames = max(1, int(preroll_ms / frame_ms))
     silence_frames_needed = max(1, int(silence_ms / frame_ms))
+    max_frames = int(max_seconds * 1000 / frame_ms)
+    timeout_frames = int(start_timeout * 1000 / frame_ms)
 
-    ring: typing.Deque[np.ndarray] = deque(maxlen=preroll_frames)
+    ring: typing.Deque[np.ndarray] = collections.deque(maxlen=preroll_frames)
     voiced: typing.List[np.ndarray] = []
     started = False
     silence_run = 0
-    start_deadline = time.monotonic() + start_timeout
-    max_deadline = time.monotonic() + max_seconds
+    frames_seen = 0
 
-    stream = sd.InputStream(
-        samplerate=native, channels=1, dtype="float32", blocksize=native_block
-    )
-    stream.start()
+    stop = threading.Event()
+    gen = vad_frame_stream(stop, vad_aggressiveness)
     try:
-        while True:
-            now = time.monotonic()
-            if now > max_deadline:
-                break
-            if not started and now > start_deadline:
-                break
+        for is_speech, f16 in gen:
+            frames_seen += 1
 
-            data, _overflowed = stream.read(native_block)
-            f16 = to_16k_mono_f32(data[:, 0], native)
-            # webrtcvad needs an exact 480-sample frame
-            if len(f16) < out_frame:
-                f16 = np.pad(f16, (0, out_frame - len(f16)))
-            else:
-                f16 = f16[:out_frame]
-
-            pcm16 = np.clip(f16 * 32768.0, -32768, 32767).astype(np.int16)
-            is_speech = vad.is_speech(pcm16.tobytes(), _SR_TARGET)
+            if frames_seen > max_frames:
+                break
+            if not started and frames_seen > timeout_frames:
+                break
 
             if not started:
                 ring.append(f16)
@@ -185,11 +201,8 @@ def record_until_silence(
                     if silence_run >= silence_frames_needed:
                         break
     finally:
-        try:
-            stream.stop()
-            stream.close()
-        except Exception:
-            pass
+        gen.close()
+        stop.set()
 
     if not voiced:
         return np.zeros(0, dtype=np.float32)

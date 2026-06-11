@@ -22,10 +22,28 @@ export interface HealthModule {
   hint: string;
 }
 
+export interface Compute {
+  stt_device: 'GPU' | 'CPU' | string;
+  tts_device: 'GPU' | 'CPU' | string;
+  cuda_ok: boolean;
+  hint: string;
+}
+
+export interface Diagnostic {
+  type: 'diagnostic';
+  level: 'info' | 'warning' | 'error';
+  source: string;
+  message: string;
+  hint: string;
+  ts: string;
+}
+
 export interface HealthResponse {
   provider: string;
   model: string | null;
   modules: Record<string, HealthModule>;
+  compute?: Compute;
+  diagnostics?: Diagnostic[];
 }
 
 export interface JobsResponse {
@@ -112,9 +130,14 @@ export async function fetchHistory(limit = 50): Promise<HistoryTurn[]> {
   return data.turns ?? [];
 }
 
-export function connectTurnsSocket(
-  onTurn: (turn: HistoryTurn) => void,
-): () => void {
+export type WsEvent =
+  | ({ type: 'turn' } & HistoryTurn)
+  | Diagnostic;
+
+export function connectEventSocket(handlers: {
+  onTurn?: (turn: HistoryTurn) => void;
+  onDiagnostic?: (d: Diagnostic) => void;
+}): () => void {
   const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws`;
   let ws: WebSocket | null = null;
   let closed = false;
@@ -125,8 +148,12 @@ export function connectTurnsSocket(
     ws = new WebSocket(wsUrl);
     ws.onmessage = (ev) => {
       try {
-        const turn: HistoryTurn = JSON.parse(ev.data);
-        onTurn(turn);
+        const data = JSON.parse(ev.data) as WsEvent;
+        if (data.type === 'diagnostic') {
+          handlers.onDiagnostic?.(data as Diagnostic);
+        } else {
+          handlers.onTurn?.(data as HistoryTurn);
+        }
       } catch {
         // ignore malformed
       }
@@ -146,4 +173,10 @@ export function connectTurnsSocket(
     if (retryTimeout) clearTimeout(retryTimeout);
     ws?.close();
   };
+}
+
+export function connectTurnsSocket(
+  onTurn: (turn: HistoryTurn) => void,
+): () => void {
+  return connectEventSocket({ onTurn });
 }

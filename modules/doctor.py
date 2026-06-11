@@ -1,4 +1,3 @@
-import importlib.util
 import os
 
 from helpers.decorators import capture_response
@@ -12,14 +11,12 @@ def run_doctor(voice_mode: bool = False) -> str:
 
     lines = ["Setup diagnostics:"]
 
-    # .env file
     if os.path.exists(".env"):
         lines.append("  ✓ .env file found.")
     else:
         lines.append("  ✗ .env file missing — create it in the project root.")
         lines.append("    Add at least one of: ANTHROPIC_API_KEY, GEMINI_API_KEY")
 
-    # config.yaml vs example
     if os.path.exists("config.yaml"):
         lines.append("  ✓ config.yaml found.")
     else:
@@ -28,12 +25,10 @@ def run_doctor(voice_mode: bool = False) -> str:
             "    Copy it: Copy-Item config.example.yaml config.yaml"
         )
 
-    # AI readiness
     ai_ok, ai_msg = describe_readiness()
     prefix = "✓" if ai_ok else "✗"
     lines.append(f"  {prefix} AI: {ai_msg}")
 
-    # Per-module checks
     module_checks = [
         (
             "Weather",
@@ -118,6 +113,27 @@ def run_doctor(voice_mode: bool = False) -> str:
                 setup_hint="Set modules.shelly.base_url in config.yaml to your device IP.",
             ),
         ),
+        (
+            "Shazam",
+            Requirement(
+                pip_modules=["shazamio", "pyaudiowpatch", "soundfile"],
+                setup_hint="pip install -r requirements/shazam.txt",
+            ),
+        ),
+        (
+            "MCP client",
+            Requirement(
+                pip_modules=["mcp"],
+                setup_hint="pip install -r requirements/mcp.txt",
+            ),
+        ),
+        (
+            "Semantic memory",
+            Requirement(
+                pip_modules=["fastembed"],
+                setup_hint="pip install -r requirements/semantic.txt",
+            ),
+        ),
     ]
 
     if voice_mode:
@@ -159,10 +175,20 @@ def run_doctor(voice_mode: bool = False) -> str:
             if req.setup_hint:
                 lines.append(f"    Fix: {req.setup_hint}")
 
+    lines.extend(_compute_selftest())
+
     if voice_mode:
         lines.extend(_audio_selftest())
 
     return "\n".join(lines)
+
+
+def _compute_selftest() -> list:
+    try:
+        from helpers.compute import describe_compute
+        return describe_compute()
+    except Exception as e:
+        return [f"\n  Compute devices: unavailable ({e})"]
 
 
 def _audio_selftest() -> list:
@@ -175,7 +201,6 @@ def _audio_selftest() -> list:
         lines.append(f"  ✗ Audio self-test unavailable: {e}")
         return lines
 
-    # Show resolved default devices
     try:
         in_idx = sd.default.device[0]
         out_idx = sd.default.device[1]
@@ -187,14 +212,12 @@ def _audio_selftest() -> list:
         lines.append(f"  ✗ Could not query devices: {e}")
         return lines
 
-    # Output test
     try:
         mic.play_wav("voice/bot/ready.wav", blocking=True)
         lines.append("    ✓ Output test — did you hear the ready sound?")
     except Exception as e:
         lines.append(f"    ✗ Output test failed: {e}")
 
-    # Input test (2s recording + RMS level)
     try:
         lines.append("    Recording 2s from mic...")
         sig = mic.record_16k(2)

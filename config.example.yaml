@@ -20,7 +20,9 @@ voice:
 
   stt:
     start_timeout: 4      # give up if no speech starts within this many seconds
+    max_seconds: 12       # hard cap on total capture length
     silence_ms: 700       # trailing silence (ms) that ends the command
+    vad_aggressiveness: 2 # webrtcvad 0–3 (higher = more aggressive filtering)
 
   # Continuous conversation: mic reopens after each response for chained commands.
   # Session ends on silence or a stop phrase ("stop", "thanks", "done", …).
@@ -32,14 +34,25 @@ voice:
   streaming:
     enabled: true
 
+  # TTS inference device. 'auto' picks CUDA if onnxruntime-gpu detects a GPU,
+  # falls back to CPU automatically on machines without CUDA. Force with 'cuda' or 'cpu'.
+  tts_device: auto
+
   # Detect speech during playback and stop the assistant mid-sentence.
   barge_in:
     enabled: true
+    sustain_frames: 15   # consecutive VAD frames (~30ms each) of speech required to trigger
+                        # increase to reduce false triggers from speaker echo (e.g. 7–10)
     resume_phrases:
       - "continue"
       - "go on"
       - "keep going"
       - "go ahead"
+
+  # Lower other apps' volume while Wony speaks or listens (Windows-only; no-ops elsewhere).
+  ducking:
+    enabled: true
+    level: 0.15   # other apps drop to this fraction (15%) while Wony is active; restored after
 
   # Hands-free trigger. Requires: pip install -r requirements/wakeword.txt
   wake_word:
@@ -49,7 +62,10 @@ voice:
     # Path to a custom .onnx model (overrides phrase).
     # Train with training/train_hey_wony.ipynb (Colab) or training/train_hey_wony.sh (WSL).
     model_path: null
-    threshold: 0.5        # 0.0–1.0 detection score cutoff (lower = more sensitive)
+    threshold: 0.5          # 0.0–1.0 detection score cutoff (lower = more sensitive)
+    cooldown_seconds: 2.0   # minimum seconds between consecutive wake-word triggers
+    vad_threshold: 0.5      # VAD confidence required before passing audio to wake word model
+    noise_suppression: false
 
 ai:
   # Options: anthropic | gemini | ollama | null (auto-detect from .env keys).
@@ -60,6 +76,8 @@ ai:
   max_tokens: 8192
   history:
     max_turns: 5          # past exchanges (user+assistant pairs) kept in context
+  agent:
+    max_steps: 5          # maximum tool-call iterations per request
 
 # Only listed modules load. A module still won't run if credentials/deps are missing.
 # Run "check setup" to see what each broken module needs.
@@ -87,14 +105,20 @@ modules:
   weather:
     default_units: "metric"   # metric | imperial
   gmail:
+    poll_interval_minutes: 15
     max_results: 20
+    max_body_chars: 1500
     # Safety gate — set to true to allow sending/replying to emails.
     allow_send: false
     # Set to true to have AI summarize email lists (sends content to your AI provider).
     use_ai: false
+    ai_summary_max_emails: 30
   calendar:
+    poll_interval_minutes: 15
     lookahead_hours: 24       # how far ahead to look for upcoming events
     max_results: 10
+    search_days_back: 30
+    search_days_ahead: 90
     work_start_hour: 9        # used by find_free_slots
     work_end_hour: 18
     # Safety gate — set to true to allow creating, editing, and deleting events.

@@ -1,3 +1,4 @@
+import importlib.util
 import typing
 
 from helpers.registry import ModuleStatus, ServiceRegistry
@@ -37,6 +38,11 @@ def print_startup_summary(voice_mode: bool = False) -> None:
         print(f"  ✓ AI: {ai_msg}")
     else:
         print(f"  ✗ AI: {ai_msg}")
+        try:
+            from helpers.diagnostics import add as diag
+            diag("error", "AI", ai_msg, hint="Check .env for ANTHROPIC_API_KEY / GEMINI_API_KEY, or set ai.provider: ollama in config.yaml.")
+        except Exception:
+            pass
 
     if ready:
         print(f"  ✓ Modules ready: {', '.join(ready)}")
@@ -45,12 +51,30 @@ def print_startup_summary(voice_mode: bool = False) -> None:
         print("  Modules with issues:")
         for line in problems:
             print(line)
+        try:
+            from helpers.diagnostics import add as diag
+            for line in problems:
+                msg = line.lstrip().lstrip("✗ ").split("\n")[0].strip()
+                if msg:
+                    diag("warning", "Module", msg)
+        except Exception:
+            pass
 
     if voice_mode:
         missing_voice = _check_voice_deps()
         if missing_voice:
             print(f"  ✗ Voice: missing pip packages: {', '.join(missing_voice)}")
             print("    Fix: pip install -r requirements/voice.txt")
+            try:
+                from helpers.diagnostics import add as diag
+                diag(
+                    "error",
+                    "Voice",
+                    f"Missing pip packages: {', '.join(missing_voice)}",
+                    hint="Run: pip install -r requirements/voice.txt",
+                )
+            except Exception:
+                pass
         else:
             print("  ✓ Voice: dependencies present.")
 
@@ -58,7 +82,5 @@ def print_startup_summary(voice_mode: bool = False) -> None:
 
 
 def _check_voice_deps() -> typing.List[str]:
-    import importlib.util
-
     required = ["kokoro_onnx", "espeakng_loader", "sounddevice", "soundfile", "soxr", "faster_whisper", "pynput"]
     return [m for m in required if importlib.util.find_spec(m) is None]

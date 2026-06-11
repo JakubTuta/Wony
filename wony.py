@@ -31,6 +31,55 @@ if sys.stderr and hasattr(sys.stderr, "reconfigure"):
     except Exception:
         pass
 
+# ── Setup gate ────────────────────────────────────────────────────────────────
+
+
+def _require_setup() -> None:
+    """Block the app until setup.py has run.
+
+    setup.py writes .wony_setup on success, recording the interpreter it set up.
+    We refuse to start if that marker is missing, or if the app is being launched
+    with a different interpreter than the one set up (e.g. global python when the
+    packages live in the project venv) — which would otherwise fail with cryptic
+    ImportErrors.
+    """
+    import json
+    import os
+
+    root = os.path.dirname(os.path.abspath(__file__))
+    marker = os.path.join(root, ".wony_setup")
+    setup_cmd = "python setup.py"
+
+    if not os.path.exists(marker):
+        print(
+            "\nWony is not set up yet.\n"
+            f"Run the setup script first:\n\n    {setup_cmd}\n\n"
+            "It installs dependencies, creates .env / config.yaml, and unlocks the app.\n"
+        )
+        sys.exit(1)
+
+    try:
+        # utf-8-sig: tolerate a BOM (PowerShell may write one).
+        with open(marker, "r", encoding="utf-8-sig") as fh:
+            data = json.load(fh)
+    except Exception:
+        data = {}
+
+    want_dir = data.get("python_dir")
+    have_dir = os.path.dirname(os.path.abspath(sys.executable))
+    if want_dir and os.path.normcase(os.path.abspath(want_dir)) != os.path.normcase(have_dir):
+        want_py = data.get("python", os.path.join(want_dir, "python.exe"))
+        print(
+            "\nWrong Python interpreter for Wony.\n"
+            f"Setup installed everything for:\n    {want_py}\n"
+            f"but you launched with:\n    {sys.executable}\n\n"
+            f"Run instead:\n    {want_py} {os.path.basename(__file__)} "
+            f"{' '.join(sys.argv[1:])}\n"
+            "(or re-run setup.py to target this interpreter.)\n"
+        )
+        sys.exit(1)
+
+
 # ── Subcommand handlers ───────────────────────────────────────────────────────
 
 
@@ -261,6 +310,11 @@ def main() -> None:
     p_auto.set_defaults(func=cmd_autostart)
 
     args = parser.parse_args()
+
+    # Gate everything that starts the assistant. `doctor` stays open so users can
+    # still diagnose, but it is not the app itself.
+    if args.subcommand != "doctor":
+        _require_setup()
 
     if args.subcommand is None:
         cmd_tray(args)

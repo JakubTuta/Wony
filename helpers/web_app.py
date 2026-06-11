@@ -163,7 +163,27 @@ def build_app() -> FastAPI:
                 "hint": hints.get(name, ""),
             }
 
-        return {"provider": provider, "model": model_name, "modules": modules_out}
+        compute: typing.Dict[str, typing.Any] = {}
+        try:
+            from helpers.compute import compute_status
+            compute = compute_status()
+        except Exception:
+            pass
+
+        diagnostics: typing.List[typing.Dict] = []
+        try:
+            from helpers.diagnostics import get_all
+            diagnostics = get_all()
+        except Exception:
+            pass
+
+        return {
+            "provider": provider,
+            "model": model_name,
+            "modules": modules_out,
+            "compute": compute,
+            "diagnostics": diagnostics,
+        }
 
     @app.get("/api/jobs")
     def list_jobs() -> typing.Dict[str, typing.Any]:
@@ -303,10 +323,6 @@ def build_app() -> FastAPI:
             ]
         }
 
-    # ------------------------------------------------------------------
-    # WebSocket — live turn push
-    # ------------------------------------------------------------------
-
     _ws_clients: typing.Set[WebSocket] = set()
     _ws_loop: typing.Optional[asyncio.AbstractEventLoop] = None
 
@@ -320,12 +336,12 @@ def build_app() -> FastAPI:
         for ws in dead:
             _ws_clients.discard(ws)
 
-    def _on_turn(turn: dict) -> None:
+    def _on_event(payload: dict) -> None:
         loop = _ws_loop
         if loop is None or not _ws_clients:
             return
         try:
-            asyncio.run_coroutine_threadsafe(_ws_broadcast(turn), loop)
+            asyncio.run_coroutine_threadsafe(_ws_broadcast(payload), loop)
         except Exception:
             pass
 
@@ -334,12 +350,12 @@ def build_app() -> FastAPI:
         nonlocal _ws_loop
         _ws_loop = asyncio.get_running_loop()
         from helpers.events import subscribe
-        subscribe(_on_turn)
+        subscribe(_on_event)
 
     @app.on_event("shutdown")
     async def _ws_shutdown() -> None:
         from helpers.events import unsubscribe
-        unsubscribe(_on_turn)
+        unsubscribe(_on_event)
 
     @app.websocket("/api/ws")
     async def websocket_turns(ws: WebSocket) -> None:
@@ -354,7 +370,6 @@ def build_app() -> FastAPI:
         finally:
             _ws_clients.discard(ws)
 
-    # Static files (built React app)
     _dist = os.path.join(os.path.dirname(os.path.dirname(__file__)), "web", "dist")
 
     if os.path.isdir(_dist):

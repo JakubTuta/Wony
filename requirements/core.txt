@@ -1,6 +1,8 @@
 # Core dependencies — required to run the assistant in text mode with any AI provider.
 python-dotenv
 PyYAML
+pydantic
+pydantic-settings
 requests
 numpy
 Pillow

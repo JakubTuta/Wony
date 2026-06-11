@@ -69,7 +69,7 @@ class Spotify:
 
     PORT = 8888
     REDIRECT_URI = f"http://127.0.0.1:{PORT}/callback"
-    SCOPE = "user-read-playback-state user-modify-playback-state playlist-read-private playlist-read-collaborative user-library-modify user-library-read"
+    SCOPE = "user-read-playback-state user-modify-playback-state playlist-read-private playlist-read-collaborative playlist-modify-public playlist-modify-private user-library-modify user-library-read"
 
     def __init__(self):
         self.albums = {}
@@ -614,6 +614,112 @@ class Spotify:
         url = self._build_url_with_device("https://api.spotify.com/v1/me/player/play")
         self._make_spotify_request("put", url, json={"context_uri": match["uri"]})
         return f"Playing playlist {match['name']}."
+
+    @capture_response
+    @retry_on_unauthorized("_refresh_access_token")
+    @method_job
+    def add_to_playlist(self, playlist_name: str, title: str = "", artist: str = "") -> str:
+        """
+        [SPOTIFY SERVICE METHOD] Adds a song to a user playlist by name.
+        If no song is specified, adds the currently playing track.
+
+        Use this method when the user wants to:
+        - Add a song to a playlist
+        - Save a track to a specific playlist
+        - Add current song to a playlist
+        - Add a song by artist to a playlist
+
+        Keywords: add to playlist, save to playlist, put in playlist, add song to playlist,
+                 add this to playlist, add current to playlist, add track to playlist
+
+        Args:
+            playlist_name (str): Full or partial name of the target playlist. (required)
+            title (str): Title of the song to add. If empty, adds currently playing track.
+            artist (str): Artist of the song, used to narrow search. Leave empty if not specified.
+
+        Returns:
+            str: Confirmation message or error.
+        """
+        playlists = self._get_user_playlists()
+        name_lower = playlist_name.lower()
+        playlist = next((p for p in playlists if name_lower in p["name"].lower()), None)
+        if not playlist:
+            return f"Playlist '{playlist_name}' not found."
+
+        if title:
+            search_response = self._search(query=title, artist=artist, content_type="track")
+            if not search_response:
+                return f"Could not find '{title}'" + (f" by {artist}" if artist else "") + "."
+            uris = self._get_songs_from_search(search_response)
+            track_label = f"{search_response['name']} by {search_response['artist']}"
+        else:
+            track_id = self._get_current_track_id()
+            if not track_id:
+                return "Nothing is currently playing."
+            state = self._get_playback_state()
+            item = state.get("item", {}) if state else {}
+            track_label = item.get("name", "Current track")
+            uris = [f"spotify:track:{track_id}"]
+
+        self._make_spotify_request(
+            "post",
+            f"https://api.spotify.com/v1/playlists/{playlist['id']}/tracks",
+            json={"uris": uris},
+        )
+        return f"Added {track_label} to {playlist['name']}."
+
+    @capture_response
+    @retry_on_unauthorized("_refresh_access_token")
+    @method_job
+    def remove_from_playlist(self, playlist_name: str, title: str = "", artist: str = "") -> str:
+        """
+        [SPOTIFY SERVICE METHOD] Removes a song from a user playlist by name.
+        If no song is specified, removes the currently playing track.
+
+        Use this method when the user wants to:
+        - Remove a song from a playlist
+        - Delete a track from a specific playlist
+        - Remove current song from a playlist
+        - Take a song out of a playlist
+
+        Keywords: remove from playlist, delete from playlist, take out of playlist,
+                 remove song from playlist, remove current from playlist, remove track from playlist
+
+        Args:
+            playlist_name (str): Full or partial name of the target playlist. (required)
+            title (str): Title of the song to remove. If empty, removes currently playing track.
+            artist (str): Artist of the song, used to narrow search. Leave empty if not specified.
+
+        Returns:
+            str: Confirmation message or error.
+        """
+        playlists = self._get_user_playlists()
+        name_lower = playlist_name.lower()
+        playlist = next((p for p in playlists if name_lower in p["name"].lower()), None)
+        if not playlist:
+            return f"Playlist '{playlist_name}' not found."
+
+        if title:
+            search_response = self._search(query=title, artist=artist, content_type="track")
+            if not search_response:
+                return f"Could not find '{title}'" + (f" by {artist}" if artist else "") + "."
+            uris = self._get_songs_from_search(search_response)
+            track_label = f"{search_response['name']} by {search_response['artist']}"
+        else:
+            track_id = self._get_current_track_id()
+            if not track_id:
+                return "Nothing is currently playing."
+            state = self._get_playback_state()
+            item = state.get("item", {}) if state else {}
+            track_label = item.get("name", "Current track")
+            uris = [f"spotify:track:{track_id}"]
+
+        self._make_spotify_request(
+            "delete",
+            f"https://api.spotify.com/v1/playlists/{playlist['id']}/tracks",
+            json={"tracks": [{"uri": uri} for uri in uris]},
+        )
+        return f"Removed {track_label} from {playlist['name']}."
 
     @capture_response
     @retry_on_unauthorized("_refresh_access_token")

@@ -6,10 +6,43 @@ decorator-based job registration reads config gates at import time.
 """
 
 import atexit
+import os
 import signal
 import sys
 import threading
 import typing
+
+# On Windows, pip-installed nvidia packages (nvidia-cudnn-cu12, nvidia-cublas-cu12)
+# place DLLs in site-packages/nvidia/*/bin/ which is NOT on the DLL search path by
+# default. Register those dirs before anything imports onnxruntime so the CUDA
+# provider can find cudnn64_9.dll / cublas64_12.dll without a system-wide install.
+#
+# add_dll_directory alone is not enough: onnxruntime loads onnxruntime_providers_cuda.dll
+# with a search flag that does NOT resolve that DLL's transitive cudnn64_9.dll dependency
+# from user-added dirs. Prepending to PATH covers that path (this is why TTS, which set
+# PATH, loaded CUDA while fastembed, which did not, failed with "cudnn64_9.dll missing").
+if sys.platform == "win32":
+    import site
+
+    for _sp in site.getsitepackages():
+        _nvidia = os.path.join(_sp, "nvidia")
+        if os.path.isdir(_nvidia):
+            for _pkg in os.listdir(_nvidia):
+                _bin = os.path.join(_nvidia, _pkg, "bin")
+                if os.path.isdir(_bin):
+                    os.add_dll_directory(_bin)
+                    if _bin.lower() not in os.environ.get("PATH", "").lower():
+                        os.environ["PATH"] = _bin + os.pathsep + os.environ.get("PATH", "")
+
+# Silence onnxruntime's benign "Some nodes were not assigned to the preferred execution
+# providers" warning (shape ops on CPU is intentional). Set before any ORT session is
+# built by fastembed (semantic) or kokoro_onnx (TTS). 3 = ERROR.
+try:
+    import onnxruntime as _ort
+
+    _ort.set_default_logger_severity(3)
+except Exception:
+    pass
 
 _shutdown_done = False
 _shutdown_lock = threading.Lock()
@@ -54,6 +87,20 @@ def shutdown() -> None:
         from helpers.memory_db import close as db_close
 
         db_close()
+    except Exception:
+        pass
+
+    try:
+        import sounddevice as sd
+
+        sd.stop()
+    except Exception:
+        pass
+
+    try:
+        from helpers import audio as _audio
+
+        _audio.cleanup()
     except Exception:
         pass
 
@@ -117,22 +164,22 @@ def bootstrap(
             print(f"\nReceived signal {signum}, shutting down...")
             sys.exit(0)
 
+        signal.signal(signal.SIGINT, _signal_handler)
         signal.signal(signal.SIGTERM, _signal_handler)
         if hasattr(signal, "SIGBREAK"):
             signal.signal(signal.SIGBREAK, _signal_handler)
 
     if seed_conversation:
         try:
-            from helpers.config import Config as _Cfg
-            from helpers.conversation import Conversation as _Conv
-            from helpers.memory_db import recent_turns as _recent_turns
+            from helpers.conversation import Conversation
+            from helpers.memory_db import recent_turns
 
-            _max = int(_Cfg.get("ai.history.max_turns", 5))
-            for _t in _recent_turns(_max):
-                _Conv._turns.append(
+            max_turns = int(Config.get("ai.history.max_turns", 5))
+            for turn in recent_turns(max_turns):
+                Conversation._turns.append(
                     {
-                        "user": _t["user_text"],
-                        "assistant": _t["assistant_text"],
+                        "user": turn["user_text"],
+                        "assistant": turn["assistant_text"],
                     }
                 )
         except Exception:

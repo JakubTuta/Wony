@@ -1,16 +1,22 @@
-import asyncio
+import importlib
 import os
+import re
+import sys
 import threading
 import typing
+import urllib.request
 
 import numpy as np
+
+import helpers.diagnostics
+from helpers.compute import _GPU_FIX_HINT
+from helpers.config import Config
+from helpers.decorators import is_agent_active
 
 _tts_warned = False
 _tts_lock = threading.Lock()  # Kokoro is not re-entrant; serialize calls
 _tts_singleton: typing.Optional["TTS_Engine"] = None
 
-# Fixed-text clips rendered to WAV by scripts/render_voice_clips.py.
-# Keys = exact text passed to play_cached(); values = WAV file paths.
 CACHED_CLIPS: dict[str, str] = {
     "Yes?": "voice/bot/yes.wav",
     "I'm ready!": "voice/bot/ready.wav",
@@ -28,7 +34,6 @@ CACHED_CLIPS: dict[str, str] = {
     "Closing League of Legends...": "voice/bot/close_league.wav",
 }
 
-# Map BCP-47 language codes to Kokoro lang codes.
 _LANG_MAP: dict[str, str] = {
     "en": "en-us",
     "en-us": "en-us",
@@ -46,7 +51,6 @@ _LANG_MAP: dict[str, str] = {
     "hi": "hi",
 }
 
-# Languages not supported by Kokoro v1.0 — fall back to en-us with a warning.
 _UNSUPPORTED_LANG_WARNING_SHOWN = False
 
 
@@ -55,7 +59,6 @@ def _resolve_kokoro_lang(bcp47: str) -> str:
     lang = bcp47.lower()
     if lang in _LANG_MAP:
         return _LANG_MAP[lang]
-    # Try prefix match (e.g. "pl" → no match → fallback)
     prefix = lang.split("-")[0]
     if prefix in _LANG_MAP:
         return _LANG_MAP[prefix]
@@ -70,8 +73,6 @@ def _resolve_kokoro_lang(bcp47: str) -> str:
 
 def _download_model_files(onnx_path: str, voices_path: str) -> None:
     """Download Kokoro model files if absent."""
-    import urllib.request
-
     base_url = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/"
     files = {
         onnx_path: "kokoro-v1.0.onnx",
@@ -87,6 +88,48 @@ def _download_model_files(onnx_path: str, voices_path: str) -> None:
         print(f"[TTS] Downloaded {name}.")
 
 
+def _add_nvidia_dll_dirs() -> None:
+    """Register nvidia pip-wheel DLL dirs so onnxruntime's CUDA loader finds them.
+
+    Must be called before onnxruntime/kokoro_onnx are imported.
+    nvidia.* are namespace packages (__file__ is None); use __path__ to locate them.
+    """
+    for pkg_name in ("nvidia.cudnn", "nvidia.cublas", "nvidia.cuda_runtime"):
+        try:
+            pkg = importlib.import_module(pkg_name)
+            pkg_root = next(iter(getattr(pkg, "__path__", [])), None)
+            if not pkg_root:
+                continue
+            dll_dir = os.path.join(pkg_root, "bin")
+            if not os.path.isdir(dll_dir):
+                continue
+            os.add_dll_directory(dll_dir)
+            if dll_dir.lower() not in os.environ.get("PATH", "").lower():
+                os.environ["PATH"] = dll_dir + os.pathsep + os.environ.get("PATH", "")
+        except (ImportError, StopIteration, OSError):
+            pass
+
+
+def _setup_onnx_provider() -> None:
+    """Set ONNX_PROVIDER env var before Kokoro() construction.
+
+    Must be called before constructing Kokoro() since the ONNX session is built inside its constructor.
+    """
+    try:
+        import onnxruntime as ort
+    except ImportError:
+        return
+
+    device = str(Config.get("voice.tts_device", "auto")).lower()
+    if device != "cpu" and "CUDAExecutionProvider" in ort.get_available_providers():
+        os.environ["ONNX_PROVIDER"] = "CUDAExecutionProvider"
+        helpers.diagnostics.add("info", "TTS", "Using CUDAExecutionProvider (GPU).")
+    else:
+        os.environ.pop("ONNX_PROVIDER", None)
+        if device == "cuda":
+            helpers.diagnostics.add("warning", "TTS", "CUDA requested but CUDAExecutionProvider unavailable — using CPU.", hint=_GPU_FIX_HINT)
+
+
 def _get_tts_singleton() -> "TTS_Engine":
     global _tts_singleton
     if _tts_singleton is None:
@@ -94,13 +137,55 @@ def _get_tts_singleton() -> "TTS_Engine":
     return _tts_singleton
 
 
+def _play_samples(
+    samples: np.ndarray,
+    sr: int,
+    interrupt_event: typing.Optional[threading.Event] = None,
+    out_stream=None,
+) -> bool:
+    """Play samples in 50ms chunks. Returns True if fully played, False if interrupted.
+
+    If out_stream is provided, caller owns its lifecycle; on interrupt it is aborted.
+    """
+    import sounddevice as sd
+
+    own_stream = out_stream is None
+    if own_stream:
+        out_stream = sd.OutputStream(samplerate=sr, channels=1, dtype="float32")
+        out_stream.start()
+
+    chunk_size = int(sr * 0.05)  # 50ms chunks for responsive interruption
+    completed = True
+    try:
+        for i in range(0, len(samples), chunk_size):
+            if interrupt_event is not None and interrupt_event.is_set():
+                out_stream.abort()  # discard buffered audio immediately
+                completed = False
+                break
+            out_stream.write(samples[i : i + chunk_size])
+    except Exception:
+        completed = False
+
+    if own_stream:
+        if completed:
+            try:
+                out_stream.stop()  # drain remaining buffered audio
+            except Exception:
+                pass
+        out_stream.close()
+
+    return completed
+
+
 class TTS_Engine:
     def __init__(self) -> None:
+        # Must register nvidia DLL dirs before kokoro_onnx/onnxruntime import.
+        if sys.platform == "win32":
+            _add_nvidia_dll_dirs()
+
         import espeakng_loader
         from kokoro_onnx import Kokoro
         from kokoro_onnx.config import EspeakConfig
-
-        from helpers.config import Config
 
         self._voice = Config.get("voice.tts_voice", "af_heart")
         self._speed = float(Config.get("voice.speed", 1.0))
@@ -117,58 +202,62 @@ class TTS_Engine:
             lib_path=espeakng_loader.get_library_path(),
             data_path=espeakng_loader.get_data_path(),
         )
-        self._kokoro = Kokoro(onnx_path, voices_path, espeak_config=espeak_cfg)
 
-    async def _stream_async(self, text: str) -> None:
-        import sounddevice as sd
+        # Store for inference-time CPU fallback (cuDNN errors surface on first create() call,
+        # not during session construction, so we need to be able to rebuild here too).
+        self._onnx_path = onnx_path
+        self._voices_path = voices_path
+        self._espeak_cfg = espeak_cfg
 
-        out_stream: typing.Optional[sd.OutputStream] = None
+        _setup_onnx_provider()
         try:
-            async for samples, sr in self._kokoro.create_stream(
-                text,
-                voice=self._voice,
-                speed=self._speed,
-                lang=self._lang,
-            ):
-                if self._volume != 1.0:
-                    samples = (samples * self._volume).astype(np.float32)
-                if out_stream is None:
-                    out_stream = sd.OutputStream(
-                        samplerate=sr, channels=1, dtype="float32"
-                    )
-                    out_stream.start()
-                out_stream.write(samples)
-        finally:
-            if out_stream is not None:
-                out_stream.stop()
-                out_stream.close()
+            self._kokoro = Kokoro(onnx_path, voices_path, espeak_config=espeak_cfg)
+        except Exception as e:
+            if os.environ.get("ONNX_PROVIDER", ""):
+                helpers.diagnostics.add("warning", "TTS", f"GPU provider init failed ({e}) — retrying on CPU.", hint=_GPU_FIX_HINT)
+                os.environ.pop("ONNX_PROVIDER", None)
+                self._kokoro = Kokoro(onnx_path, voices_path, espeak_config=espeak_cfg)
+            else:
+                raise
 
-    def text_to_speech(self, text: str) -> None:
-        from helpers import mic
+    def _rebuild_on_cpu(self, reason: str) -> None:
+        from kokoro_onnx import Kokoro
 
+        helpers.diagnostics.add("warning", "TTS", f"CUDA inference failed ({reason}) — rebuilt on CPU.", hint=_GPU_FIX_HINT)
+        os.environ.pop("ONNX_PROVIDER", None)
+        self._kokoro = Kokoro(self._onnx_path, self._voices_path, espeak_config=self._espeak_cfg)
+
+    def synthesize(self, text: str) -> typing.Tuple[np.ndarray, int]:
         try:
-            asyncio.get_running_loop()
-            # Already in an event loop — sync fallback
             samples, sr = self._kokoro.create(
                 text, voice=self._voice, speed=self._speed, lang=self._lang
             )
-            if self._volume != 1.0:
-                samples = (samples * self._volume).astype(np.float32)
-            mic.play_array(samples, sr, blocking=True)
-        except RuntimeError:
-            asyncio.run(self._stream_async(text))
+        except Exception as e:
+            # cuDNN errors surface on first inference when nvidia-cudnn-cu12 is missing.
+            if os.environ.get("ONNX_PROVIDER", "") or "cuda" in str(e).lower() or "cudnn" in str(e).lower():
+                self._rebuild_on_cpu(type(e).__name__)
+                samples, sr = self._kokoro.create(
+                    text, voice=self._voice, speed=self._speed, lang=self._lang
+                )
+            else:
+                raise
+        if self._volume != 1.0:
+            samples = (samples * self._volume).astype(np.float32)
+        return samples, sr
+
+    def text_to_speech(
+        self,
+        text: str,
+        interrupt_event: typing.Optional[threading.Event] = None,
+    ) -> bool:
+        """Synthesize and play through a short-lived stream. Returns False if interrupted."""
+        samples, sr = self.synthesize(text)
+        return _play_samples(samples, sr, interrupt_event)
 
     def save_to_file(self, text: str, filename: str) -> None:
         import soundfile as sf
 
-        samples, sr = self._kokoro.create(
-            text,
-            voice=self._voice,
-            speed=self._speed,
-            lang=self._lang,
-        )
-        if self._volume != 1.0:
-            samples = (samples * self._volume).astype(np.float32)
+        samples, sr = self.synthesize(text)
         os.makedirs(os.path.dirname(filename) or ".", exist_ok=True)
         sf.write(filename, samples, sr)
 
@@ -193,14 +282,7 @@ class Audio:
 
     @staticmethod
     def play_cached(text: str, blocking: bool = False) -> None:
-        """Play a pre-rendered WAV clip for text if available, else live TTS.
-
-        Non-blocking by default — returns immediately after starting playback.
-        Run scripts/render_voice_clips.py to generate the WAV files.
-        Falls back to live TTS (blocking) if the clip is missing.
-        """
-        from helpers.decorators import is_agent_active
-
+        """Play a pre-rendered WAV clip if available, else live TTS. Run scripts/render_voice_clips.py to generate clips."""
         if is_agent_active():
             return
 
@@ -217,16 +299,17 @@ class Audio:
         Audio.text_to_speech(text)
 
     @staticmethod
-    def text_to_speech(text: str) -> None:
-        from helpers.decorators import is_agent_active
-
+    def text_to_speech(
+        text: str,
+        interrupt_event: typing.Optional[threading.Event] = None,
+    ) -> None:
         if is_agent_active():
             return
         global _tts_warned
         with _tts_lock:
             try:
                 engine = _get_tts_singleton()
-                engine.text_to_speech(text)
+                engine.text_to_speech(text, interrupt_event=interrupt_event)
             except ImportError:
                 if not _tts_warned:
                     print(
@@ -253,17 +336,8 @@ class Audio:
 
     @staticmethod
     def record_command(start_timeout: typing.Optional[float] = None) -> np.ndarray:
-        """Record a spoken command with VAD endpointing (stops on silence).
-
-        Returns float32 @16kHz mono. Empty array if no speech was detected.
-        Tunable via voice.stt.* in config.yaml.
-
-        Args:
-            start_timeout: override the config start_timeout (seconds to wait
-                for speech before giving up). Useful for shorter follow-up windows.
-        """
+        """Record a spoken command with VAD endpointing. Returns float32 @16kHz mono."""
         from helpers import mic
-        from helpers.config import Config
 
         cfg = Config.get("voice.stt", {}) or {}
         effective_timeout = (
@@ -280,9 +354,6 @@ class Audio:
 
 
 def _split_sentences(text: str) -> typing.List[str]:
-    """Split text into speakable sentences. Keeps abbreviations intact."""
-    import re
-    # Split on sentence-ending punctuation followed by whitespace or end of string
     parts = re.split(r"(?<=[.!?])\s+", text.strip())
     return [p.strip() for p in parts if p.strip()]
 
@@ -290,18 +361,23 @@ def _split_sentences(text: str) -> typing.List[str]:
 class BargeinListener:
     """
     Lightweight VAD listener that monitors the mic during TTS playback.
-    When speech is detected, sets `interrupt_event` so the caller can stop TTS.
-    Captures the speech audio for later transcription (stored in `captured`).
+    When sustained speech is detected, sets `interrupt_event` so the caller
+    can stop TTS immediately.
 
-    Respects the single-input-stream contract: closes its stream before signalling,
-    so the caller can open a fresh stream for full STT.
+    Respects the single-input-stream contract: the vad_frame_stream generator
+    closes its stream before _listen returns, so the caller can open a fresh
+    stream for STT.
+
+    Echo guard: requires `sustain_frames` consecutive speech frames (default 5,
+    ~150ms) to avoid false triggers from speaker bleed. Configurable via
+    voice.barge_in.sustain_frames in config.yaml.
     """
 
     def __init__(self, interrupt_event: threading.Event) -> None:
         self._interrupt = interrupt_event
         self._stop = threading.Event()
         self._thread: typing.Optional[threading.Thread] = None
-        self.captured: typing.Optional[str] = None  # transcribed text, set after capture
+        self.captured: typing.Optional[str] = None
 
     def start(self) -> None:
         self._stop.clear()
@@ -315,52 +391,28 @@ class BargeinListener:
 
     def _listen(self) -> None:
         try:
-            import webrtcvad
+            from helpers import mic
         except ImportError:
             return
 
-        import sounddevice as sd
+        cfg = Config.get("voice.barge_in", {}) or {}
+        sustain_frames = int(cfg.get("sustain_frames", 15))
 
+        speech_frames = 0
+        gen = mic.vad_frame_stream(self._stop, vad_aggressiveness=2)
         try:
-            from helpers import mic as _mic
-
-            vad = webrtcvad.Vad(2)
-            native = _mic.default_input_rate()
-            frame_ms = 30
-            out_frame = int(16000 * frame_ms / 1000)  # 480 samples @16k
-            native_block = int(round(native * out_frame / 16000))
-
-            stream = sd.InputStream(
-                samplerate=native, channels=1, dtype="float32", blocksize=native_block
-            )
-            stream.start()
-            speech_frames = 0
-            try:
-                while not self._stop.is_set():
-                    data, _ = stream.read(native_block)
-                    f16 = _mic.to_16k_mono_f32(data[:, 0], native)
-                    if len(f16) < out_frame:
-                        import numpy as _np
-                        f16 = _np.pad(f16, (0, out_frame - len(f16)))
-                    else:
-                        f16 = f16[:out_frame]
-                    import numpy as _np
-                    pcm16 = _np.clip(f16 * 32768.0, -32768, 32767).astype(_np.int16)
-                    if vad.is_speech(pcm16.tobytes(), 16000):
-                        speech_frames += 1
-                        if speech_frames >= 3:  # ~90ms sustained speech
-                            self._interrupt.set()
-                            break
-                    else:
-                        speech_frames = max(0, speech_frames - 1)
-            finally:
-                try:
-                    stream.stop()
-                    stream.close()
-                except Exception:
-                    pass
+            for is_speech, _ in gen:
+                if is_speech:
+                    speech_frames += 1
+                    if speech_frames >= sustain_frames:
+                        self._interrupt.set()
+                        break
+                else:
+                    speech_frames = max(0, speech_frames - 1)
         except Exception:
             pass
+        finally:
+            gen.close()
 
 
 def stream_text_to_speech(
@@ -370,61 +422,88 @@ def stream_text_to_speech(
     """
     Stream model text deltas to TTS sentence-by-sentence.
 
-    Accumulates chunks until a sentence boundary is detected, then renders and
-    plays that sentence immediately. Checks `interrupt_event` between sentences.
+    Accumulates chunks until a sentence boundary is detected, then synthesizes
+    and plays that sentence immediately. Uses a single persistent OutputStream
+    across all sentences — no gaps or device re-init between sentences.
+
+    Checks interrupt_event every 50ms during playback so the assistant can be
+    stopped mid-sentence, not just between sentences.
 
     Returns:
         (spoken_text, remaining_sentences)
         spoken_text: everything that was actually spoken aloud
         remaining_sentences: unspoken sentences buffered when interrupted
     """
+    import sounddevice as sd
+
     if interrupt_event is None:
         interrupt_event = threading.Event()
 
     spoken_parts: typing.List[str] = []
     pending: typing.List[str] = []
     buffer = ""
+    out_stream = None  # opened on first sentence, reused for the whole turn
+    was_interrupted = False
 
     def _flush_sentence(sentence: str) -> bool:
-        """Render and play one sentence. Returns False if interrupted."""
+        """Synthesize and play one sentence. Returns False if interrupted."""
+        nonlocal out_stream, was_interrupted
         with _tts_lock:
             try:
                 engine = _get_tts_singleton()
-                engine.text_to_speech(sentence)
+                samples, sr = engine.synthesize(sentence)
+                if out_stream is None:
+                    out_stream = sd.OutputStream(samplerate=sr, channels=1, dtype="float32")
+                    out_stream.start()
+                completed = _play_samples(samples, sr, interrupt_event, out_stream=out_stream)
+            except Exception:
+                return True  # treat synthesis/playback error as not-interrupted
+        if not completed:
+            was_interrupted = True
+        return completed
+
+    try:
+        for chunk in text_gen:
+            if interrupt_event.is_set():
+                buffer += chunk
+                continue
+
+            buffer += chunk
+            sentences = _split_sentences(buffer)
+
+            if len(sentences) > 1:
+                complete = sentences[:-1]
+                buffer = sentences[-1]
+                for s in complete:
+                    if interrupt_event.is_set():
+                        pending.append(s)
+                    else:
+                        if _flush_sentence(s):
+                            spoken_parts.append(s)
+                        else:
+                            pending.append(s)
+
+        # Flush remainder
+        if buffer.strip():
+            if interrupt_event.is_set():
+                pending.append(buffer.strip())
+            else:
+                if _flush_sentence(buffer.strip()):
+                    spoken_parts.append(buffer.strip())
+                else:
+                    pending.append(buffer.strip())
+
+    finally:
+        if out_stream is not None:
+            if not was_interrupted:
+                try:
+                    out_stream.stop()  # drain remaining buffered audio before closing
+                except Exception:
+                    pass
+            try:
+                out_stream.close()
             except Exception:
                 pass
-        return not interrupt_event.is_set()
-
-    for chunk in text_gen:
-        if interrupt_event.is_set():
-            # Collect remaining chunks as pending (for resume)
-            buffer += chunk
-            continue
-
-        buffer += chunk
-        sentences = _split_sentences(buffer)
-
-        # Keep the last element as the accumulating fragment (may be incomplete)
-        if len(sentences) > 1:
-            complete = sentences[:-1]
-            buffer = sentences[-1]
-            for s in complete:
-                if interrupt_event.is_set():
-                    pending.append(s)
-                else:
-                    if not _flush_sentence(s):
-                        pending.append(s)
-                        spoken_parts.append(s)
-                    else:
-                        spoken_parts.append(s)
-
-    # Flush remainder
-    if buffer.strip():
-        if interrupt_event.is_set():
-            pending.append(buffer.strip())
-        else:
-            spoken_parts.append(buffer.strip())
-            _flush_sentence(buffer.strip())
 
     return " ".join(spoken_parts), pending
 
@@ -433,25 +512,14 @@ def preload_tts() -> None:
     """Warm the TTS engine at startup so the first response has no cold-start lag."""
     try:
         engine = _get_tts_singleton()
-
-        async def _warm_stream() -> None:
-            async for _samples, _sr in engine._kokoro.create_stream(
-                "warm up",
-                voice=engine._voice,
-                speed=engine._speed,
-                lang=engine._lang,
-            ):
-                break
-
-        try:
-            asyncio.run(_warm_stream())
-        except RuntimeError:
-            engine._kokoro.create(
-                "warm up",
-                voice=engine._voice,
-                speed=engine._speed,
-                lang=engine._lang,
-            )
+        engine.synthesize("warm up")  # loads ONNX session into memory, no playback needed
         print("TTS engine loaded.")
     except Exception as e:
         print(f"[TTS] Preload failed (non-fatal): {e}")
+
+
+def cleanup() -> None:
+    """Release TTS resources on shutdown. Safe to call multiple times."""
+    global _tts_singleton
+    with _tts_lock:
+        _tts_singleton = None

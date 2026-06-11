@@ -1,6 +1,8 @@
 import typing
 
+import helpers.diagnostics
 from helpers.audio import Audio
+from helpers.compute import _GPU_FIX_HINT, ctranslate2_cuda_count
 from helpers.config import Config
 
 _model: typing.Any = None
@@ -12,15 +14,16 @@ def _build_model() -> typing.Any:
 
     language = str(Config.get("assistant.language", "en")).lower()
 
-    if ctranslate2.get_cuda_device_count() > 0:
+    if ctranslate2_cuda_count() > 0:
         try:
             print("Loading speech model (first run downloads ~1 GB, please wait)...")
             return WhisperModel("large-v3", device="cuda", compute_type="float16")
-        except Exception:
-            pass
+        except Exception as e:
+            helpers.diagnostics.add("warning", "STT", f"CUDA detected but model load failed ({e}) — falling back to CPU", hint=_GPU_FIX_HINT)
 
-    # CPU: distil-small.en is faster AND more accurate than small, but is
-    # English-only. Fall back to multilingual small for non-English.
+    helpers.diagnostics.add("warning", "STT", "No CUDA GPU — using CPU speech model (slower).", hint=_GPU_FIX_HINT)
+
+    # distil-small.en is faster and more accurate than small but English-only.
     if language.startswith("en"):
         try:
             print("Loading speech model (first run downloads ~0.5 GB, please wait)...")
@@ -46,15 +49,12 @@ class Recognizer:
     @staticmethod
     def recognize_speech_from_mic(start_timeout: typing.Optional[float] = None) -> str:
         try:
-            audio = Audio.record_command(
-                start_timeout=start_timeout
-            )  # np.float32 @16kHz mono, VAD-trimmed
+            audio = Audio.record_command(start_timeout=start_timeout)
             if audio is None or len(audio) == 0:
                 return ""
             language = Config.get("assistant.language", "en")
             model = _get_model()
-            # no vad_filter — record_command already endpoints with webrtcvad;
-            # a second Silero VAD pass over-trims short clips.
+            # no vad_filter: record_command already endpoints with webrtcvad; a second pass over-trims short clips.
             segments, _ = model.transcribe(
                 audio,
                 language=language,

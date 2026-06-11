@@ -1,125 +1,205 @@
 import os
 import typing
 
-DEFAULTS: typing.Dict[str, typing.Any] = {
-    "assistant": {
-        "name": "Wony",
-        "owner_name": "User",
-        "personality": "Friendly and concise.",
-        "language": "en",
-    },
-    "voice": {
-        "enabled": False,
-        "tts_voice": "af_heart",
-        "speed": 1.0,
-        "volume": 0.6,
-        "model_path": "models/kokoro-v1.0.onnx",
-        "voices_path": "models/voices-v1.0.bin",
-        "stt": {
-            "start_timeout": 4.0,
-            "max_seconds": 12.0,
-            "silence_ms": 700,
-            "vad_aggressiveness": 2,
-        },
-        "conversation": {
-            "enabled": True,
-            "follow_up_timeout": 4.0,
-        },
-        "streaming": {
-            "enabled": True,
-        },
-        "barge_in": {
-            "enabled": False,
-            "resume_phrases": ["continue", "go on", "keep going", "go ahead"],
-        },
-        "wake_word": {
-            "enabled": False,
-            "phrase": "hey jarvis",
-            "model_path": None,
-            "threshold": 0.5,
-            "cooldown_seconds": 2.0,
-            "vad_threshold": 0.5,
-            "noise_suppression": False,
-        },
-    },
-    "ai": {
-        "provider": None,
-        "anthropic_model": None,
-        "gemini_model": None,
-        "ollama_model": "llama3.1",
-        "max_tokens": 8192,
-        "history": {
-            "enabled": True,
-            "max_turns": 5,
-        },
-        "agent": {
-            "max_steps": 5,
-        },
-    },
-    "enabled_modules": ["ai", "status", "basics", "weather", "spotify", "screen"],
-    "modules": {
-        "shelly": {"base_url": "http://192.168.18.53"},
-        "weather": {"default_units": "metric"},
-        "gmail": {
-            "poll_interval_minutes": 15,
-            "max_results": 20,
-            "max_body_chars": 1500,
-            "allow_send": False,
-            "use_ai": False,
-            "ai_summary_max_emails": 30,
-        },
-        "calendar": {
-            "poll_interval_minutes": 15,
-            "lookahead_hours": 24,
-            "max_results": 10,
-            "search_days_back": 30,
-            "search_days_ahead": 90,
-            "work_start_hour": 9,
-            "work_end_hour": 18,
-            "allow_write": False,
-        },
-        "web": {
-            "max_content_chars": 3000,
-        },
-        "desktop": {
-            "allow_actions": False,
-            "file_search_root": "~",
-        },
-    },
-}
+from pydantic import BaseModel, ConfigDict, Field
+from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
+from pydantic_settings.sources import YamlConfigSettingsSource
+
+_MISSING = object()
 
 
-def _deep_merge(base: dict, override: dict) -> dict:
-    result = base.copy()
-    for key, value in override.items():
-        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-            result[key] = _deep_merge(result[key], value)
-        else:
-            result[key] = value
-    return result
+class AssistantSettings(BaseModel):
+    name: str = "Wony"
+    owner_name: str = "User"
+    personality: str = "Friendly and concise."
+    language: str = "en"
+
+
+class SttSettings(BaseModel):
+    start_timeout: float = 4.0
+    max_seconds: float = 12.0
+    silence_ms: int = 700
+    vad_aggressiveness: int = 2
+
+
+class DuckingSettings(BaseModel):
+    enabled: bool = True
+    level: float = 0.15
+
+
+class ConversationSettings(BaseModel):
+    enabled: bool = True
+    follow_up_timeout: float = 4.0
+
+
+class StreamingSettings(BaseModel):
+    enabled: bool = True
+
+
+class BargeInSettings(BaseModel):
+    enabled: bool = False
+    sustain_frames: int = 15
+    resume_phrases: list[str] = Field(
+        default_factory=lambda: ["continue", "go on", "keep going", "go ahead"]
+    )
+
+
+class WakeWordSettings(BaseModel):
+    enabled: bool = False
+    phrase: str = "hey jarvis"
+    model_path: typing.Optional[str] = None
+    threshold: float = 0.5
+    cooldown_seconds: float = 2.0
+    vad_threshold: float = 0.5
+    noise_suppression: bool = False
+
+
+class VoiceSettings(BaseModel):
+    enabled: bool = False
+    tts_voice: str = "af_heart"
+    speed: float = 1.0
+    volume: float = 0.6
+    model_path: str = "models/kokoro-v1.0.onnx"
+    voices_path: str = "models/voices-v1.0.bin"
+    tts_device: str = "auto"
+    stt: SttSettings = Field(default_factory=SttSettings)
+    ducking: DuckingSettings = Field(default_factory=DuckingSettings)
+    conversation: ConversationSettings = Field(default_factory=ConversationSettings)
+    streaming: StreamingSettings = Field(default_factory=StreamingSettings)
+    barge_in: BargeInSettings = Field(default_factory=BargeInSettings)
+    wake_word: WakeWordSettings = Field(default_factory=WakeWordSettings)
+
+
+class HistorySettings(BaseModel):
+    enabled: bool = True
+    max_turns: int = 5
+
+
+class AgentSettings(BaseModel):
+    max_steps: int = 5
+
+
+class AiSettings(BaseModel):
+    provider: typing.Optional[str] = None
+    anthropic_model: typing.Optional[str] = None
+    gemini_model: typing.Optional[str] = None
+    ollama_model: str = "llama3.1"
+    max_tokens: int = 8192
+    history: HistorySettings = Field(default_factory=HistorySettings)
+    agent: AgentSettings = Field(default_factory=AgentSettings)
+
+
+class TraySettings(BaseModel):
+    notify_on_ready: bool = True
+    open_browser_on_start: bool = False
+
+
+class ServerSettings(BaseModel):
+    host: str = "127.0.0.1"
+    port: int = 8000
+
+
+class ShellySettings(BaseModel):
+    base_url: str = "http://192.168.18.53"
+
+
+class WeatherSettings(BaseModel):
+    default_units: str = "metric"
+
+
+class GmailSettings(BaseModel):
+    poll_interval_minutes: int = 15
+    max_results: int = 20
+    max_body_chars: int = 1500
+    allow_send: bool = False
+    use_ai: bool = False
+    ai_summary_max_emails: int = 30
+
+
+class CalendarSettings(BaseModel):
+    poll_interval_minutes: int = 15
+    lookahead_hours: int = 24
+    max_results: int = 10
+    search_days_back: int = 30
+    search_days_ahead: int = 90
+    work_start_hour: int = 9
+    work_end_hour: int = 18
+    allow_write: bool = False
+
+
+class WebSettings(BaseModel):
+    max_content_chars: int = 3000
+
+
+class DesktopSettings(BaseModel):
+    allow_actions: bool = False
+    file_search_root: str = "~"
+
+
+class ModulesSettings(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    shelly: ShellySettings = Field(default_factory=ShellySettings)
+    weather: WeatherSettings = Field(default_factory=WeatherSettings)
+    gmail: GmailSettings = Field(default_factory=GmailSettings)
+    calendar: CalendarSettings = Field(default_factory=CalendarSettings)
+    web: WebSettings = Field(default_factory=WebSettings)
+    desktop: DesktopSettings = Field(default_factory=DesktopSettings)
+
+
+class AppSettings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_prefix="WONY_",
+        env_nested_delimiter="__",
+        extra="ignore",
+        nested_model_default_partial_update=True,
+    )
+
+    # Set before instantiation to control which YAML file is loaded.
+    _yaml_file: typing.ClassVar[typing.Optional[str]] = None
+
+    assistant: AssistantSettings = Field(default_factory=AssistantSettings)
+    voice: VoiceSettings = Field(default_factory=VoiceSettings)
+    ai: AiSettings = Field(default_factory=AiSettings)
+    enabled_modules: list[str] = Field(
+        default_factory=lambda: ["ai", "status", "basics", "weather", "spotify", "screen"]
+    )
+    modules: ModulesSettings = Field(default_factory=ModulesSettings)
+    tray: TraySettings = Field(default_factory=TraySettings)
+    server: ServerSettings = Field(default_factory=ServerSettings)
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,  # noqa: ARG003
+        file_secret_settings: PydanticBaseSettingsSource,  # noqa: ARG003
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        sources: list[PydanticBaseSettingsSource] = [init_settings, env_settings]
+        if cls._yaml_file:
+            sources.append(
+                YamlConfigSettingsSource(settings_cls, yaml_file=cls._yaml_file, yaml_file_encoding="utf-8")
+            )
+        return tuple(sources)
+
+
+def _resolve_yaml_path(path: str) -> typing.Optional[str]:
+    for candidate in [path, "config.example.yaml"]:
+        if os.path.exists(candidate):
+            return candidate
+    return None
 
 
 class Config:
-    _data: typing.Dict = {}
+    _settings: typing.Optional[AppSettings] = None
     _loaded: bool = False
 
     @classmethod
     def load(cls, path: str = "config.yaml") -> None:
-        import yaml
-
-        data: dict = {}
-        for candidate in [path, "config.example.yaml"]:
-            if os.path.exists(candidate):
-                try:
-                    with open(candidate, "r", encoding="utf-8") as f:
-                        loaded = yaml.safe_load(f)
-                        if loaded and isinstance(loaded, dict):
-                            data = loaded
-                except Exception:
-                    pass
-                break
-
-        cls._data = _deep_merge(DEFAULTS, data)
+        AppSettings._yaml_file = _resolve_yaml_path(path)
+        cls._settings = AppSettings()
         cls._loaded = True
 
     @classmethod
@@ -130,18 +210,26 @@ class Config:
     @classmethod
     def get(cls, dotted_key: str, default: typing.Any = None) -> typing.Any:
         cls._ensure_loaded()
+        assert cls._settings is not None
         keys = dotted_key.split(".")
-        node: typing.Any = cls._data
+        node: typing.Any = cls._settings
         for key in keys:
-            if not isinstance(node, dict) or key not in node:
-                return default
-            node = node[key]
+            val = getattr(node, key, _MISSING)
+            if val is _MISSING:
+                if isinstance(node, dict):
+                    val = node.get(key, _MISSING)
+                if val is _MISSING:
+                    return default
+            node = val
+        if isinstance(node, BaseModel):
+            return node.model_dump()
         return node
 
     @classmethod
     def enabled_modules(cls) -> typing.Set[str]:
         cls._ensure_loaded()
-        mods = cls._data.get("enabled_modules", DEFAULTS["enabled_modules"])
+        assert cls._settings is not None
+        mods = cls._settings.enabled_modules
         return set(mods) if isinstance(mods, list) else set()
 
     @classmethod
@@ -153,5 +241,12 @@ class Config:
     @classmethod
     def module_settings(cls, module_name: str) -> typing.Dict:
         cls._ensure_loaded()
-        modules = cls._data.get("modules", {})
-        return modules.get(module_name, {})
+        assert cls._settings is not None
+        mod = getattr(cls._settings.modules, module_name, None)
+        if mod is None:
+            return {}
+        if isinstance(mod, BaseModel):
+            return mod.model_dump()
+        if isinstance(mod, dict):
+            return mod
+        return {}

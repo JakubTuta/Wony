@@ -1,7 +1,4 @@
-"""Lightweight in-process pub/sub for broadcasting conversation turns.
-
-Decouples conversation.py from the web layer to avoid circular imports.
-"""
+"""In-process pub/sub for broadcasting events. Decouples conversation/diagnostics from the web layer."""
 import threading
 import typing
 
@@ -22,11 +19,19 @@ def unsubscribe(fn: typing.Callable[[typing.Dict], None]) -> None:
             pass
 
 
-def emit_turn(turn: typing.Dict) -> None:
+def emit(payload: typing.Dict) -> None:
+    """Broadcast any payload dict to all subscribers."""
     with _lock:
         listeners = list(_listeners)
     for fn in listeners:
         try:
-            fn(turn)
+            fn(payload)
         except Exception:
             pass
+
+
+def emit_turn(turn: typing.Dict) -> None:
+    """Broadcast a conversation turn (tags payload with type='turn')."""
+    tagged = dict(turn)
+    tagged.setdefault("type", "turn")
+    emit(tagged)

@@ -4,6 +4,8 @@ cache.json
 venv/
 .env
 config.yaml
+config.yaml.bak
+.wony_setup
 *test*
 screenshots/
 logs/
