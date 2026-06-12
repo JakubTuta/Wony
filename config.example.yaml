@@ -42,11 +42,6 @@ voice:
     enabled: true
     sustain_frames: 15   # consecutive VAD frames (~30ms each) of speech required to trigger
                         # increase to reduce false triggers from speaker echo (e.g. 7–10)
-    resume_phrases:
-      - "continue"
-      - "go on"
-      - "keep going"
-      - "go ahead"
 
   # Lower other apps' volume while Wony speaks or listens (Windows-only; no-ops elsewhere).
   ducking:
@@ -74,11 +69,10 @@ ai:
   ollama_model: "llama3.1"  # required when provider is 'ollama'
   max_tokens: 8192
   # Reasoning policy (all providers):
-  #   auto (default) — think only on direct knowledge questions; never on
-  #                    tool-using steps, so voice replies stay fast.
-  #   off            — never think anywhere (lowest latency).
-  #   on             — same as auto (tool steps can't think safely).
-  thinking: "auto"
+  #   on (default) — think only on direct knowledge questions; never on
+  #                  tool-using steps, so voice replies stay fast.
+  #   off          — never think anywhere (lowest latency).
+  thinking: "on"
   history:
     max_turns: 5          # past exchanges (user+assistant pairs) kept in context
   agent:

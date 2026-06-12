@@ -35,9 +35,6 @@ class ConversationSettings(BaseModel):
 class BargeInSettings(BaseModel):
     enabled: bool = False
     sustain_frames: int = 15
-    resume_phrases: list[str] = Field(
-        default_factory=lambda: ["continue", "go on", "keep going", "go ahead"]
-    )
 
 
 class WakeWordSettings(BaseModel):
@@ -80,10 +77,10 @@ class AiSettings(BaseModel):
     gemini_model: typing.Optional[str] = None
     ollama_model: str = "llama3.1"
     max_tokens: int = 8192
-    # Reasoning policy: "auto" (default) thinks only on direct knowledge
+    # Reasoning policy: "on" (default) thinks only on direct knowledge
     # questions, never on tool-dispatch steps (keeps voice latency low);
-    # "off" disables thinking everywhere; "on" behaves like "auto".
-    thinking: str = "auto"
+    # "off" disables thinking everywhere.
+    thinking: str = "on"
     history: HistorySettings = Field(default_factory=HistorySettings)
     agent: AgentSettings = Field(default_factory=AgentSettings)
 

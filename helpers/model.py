@@ -71,9 +71,9 @@ def _get_anthropic_model(client: "anthropic.Anthropic") -> str:
 def _should_think(has_tools: bool) -> bool:
     """Whether the model should think (reason) for this call.
 
-    Policy (config key ai.thinking: "auto" | "off" | "on"):
+    Policy (config key ai.thinking: "on" | "off"):
       - "off": never think — lowest latency everywhere.
-      - "auto" (default) / "on": think only on pure-generation calls
+      - "on" (default): think only on pure-generation calls
         (no tools). Tool-dispatch steps never think, because:
           1. They're in the voice critical path — thinking delays the first
              spoken word or the tool call with no user-visible benefit.
@@ -86,7 +86,7 @@ def _should_think(has_tools: bool) -> bool:
     """
     from helpers.config import Config
 
-    mode = str(Config.get("ai.thinking", "auto")).lower()
+    mode = str(Config.get("ai.thinking", "on")).lower()
     if mode in ("off", "false", "none", "disabled"):
         return False
     return not has_tools

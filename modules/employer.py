@@ -86,10 +86,7 @@ class Employer:
         ]
 
         barge_in_enabled = bool(Config.get("voice.barge_in.enabled", False))
-        resume_phrases = list(
-            Config.get("voice.barge_in.resume_phrases", None)
-            or ["continue", "go on", "keep going", "go ahead"]
-        )
+        resume_phrases = ["continue", "go on", "keep going", "go ahead"]
 
         text = first_text
         while text:
