@@ -21,6 +21,14 @@ import os
 import subprocess
 import sys
 
+if sys.version_info < (3, 10):
+    print(
+        "\nWony requires Python 3.10 or newer — you are running %s.\n"
+        "Install a newer Python from https://www.python.org/downloads/ and re-run:\n\n"
+        "    python setup.py\n" % sys.version.split()[0]
+    )
+    sys.exit(1)
+
 # Legacy Windows consoles crash on ✓/❯ glyphs — force UTF-8 + enable ANSI.
 for _stream in (sys.stdout, sys.stderr):
     try:
@@ -338,7 +346,7 @@ def choose_env():
         else os.path.join(VENV_DIR, "bin", "python")
 
     if os.path.exists(venv_py):
-        print(c("  Found existing project venv (.venv) — using it.", "32"))
+        print(c("  Found existing project venv (./venv) — using it.", "32"))
         return venv_py, True
 
     print(c("\n  Where should packages install?", "1"))
@@ -468,20 +476,91 @@ def install(chosen, detected):
             if run_pip(["-r", os.path.join(REQ, rf)]) != 0:
                 print(c(f"  ✗ {rf} failed — continuing.", "31"))
 
-    # GPU guarantee: only when voice is newly added (others pull CPU onnxruntime
-    # and clobber the GPU build). Skipped if voice was already set up.
-    if any(f["key"] == "voice" for f in new):
-        print(c("\n  Securing GPU onnxruntime build...", "1;36"))
-        subprocess.call([sys.executable, "-m", "pip", "uninstall", "-y",
-                         "onnxruntime", "onnxruntime-gpu"])
-        run_pip(["--no-deps", "onnxruntime-gpu"])
+    _ensure_gpu_onnxruntime(chosen, new)
 
-        # Download Kokoro model files then pre-render cached voice clips.
+    # Download Kokoro model files then pre-render cached voice clips.
+    if any(f["key"] == "voice" for f in new):
         for script in ("download_kokoro.py", "render_voice_clips.py"):
             path = os.path.join(ROOT, "scripts", script)
             if os.path.exists(path):
                 print(c(f"\n  Running {script}...", "1;36"))
                 subprocess.call([sys.executable, path])
+
+
+def _dist_installed(name):
+    import importlib.metadata
+    try:
+        importlib.metadata.version(name)
+        return True
+    except importlib.metadata.PackageNotFoundError:
+        return False
+
+
+def _has_nvidia_gpu():
+    import shutil
+    return shutil.which("nvidia-smi") is not None
+
+
+def _ensure_gpu_onnxruntime(chosen, new):
+    """Keep the GPU onnxruntime build when it makes sense; CPU everywhere else.
+
+    Other feature requirements (wakeword, semantic, screen) pull the plain CPU
+    `onnxruntime` package, which clobbers `onnxruntime-gpu`'s provider. When
+    voice is selected on a CUDA machine, reinstall the GPU build whenever the
+    CPU package has crept in. macOS has no CUDA build at all — never touch it.
+    """
+    if sys.platform == "darwin":
+        return
+    voice_selected = any(f["key"] == "voice" for f in chosen)
+    if not voice_selected:
+        return
+
+    if not _has_nvidia_gpu():
+        if any(f["key"] == "voice" for f in new):
+            print(c("  . No NVIDIA GPU detected — voice will run on CPU "
+                    "(fully supported, just slower).", "90"))
+        return
+
+    voice_new = any(f["key"] == "voice" for f in new)
+    cpu_clobber = _dist_installed("onnxruntime") and _dist_installed("onnxruntime-gpu")
+    if not voice_new and not cpu_clobber:
+        return
+
+    print(c("\n  Securing GPU onnxruntime build...", "1;36"))
+    subprocess.call([sys.executable, "-m", "pip", "uninstall", "-y",
+                     "onnxruntime", "onnxruntime-gpu"])
+    if run_pip(["--no-deps", "onnxruntime-gpu"]) != 0:
+        print(c("  ✗ onnxruntime-gpu install failed — falling back to CPU build.", "31"))
+        run_pip(["onnxruntime"])
+
+
+def verify_install(chosen):
+    """Probe each selected feature's key import and report what works."""
+    import importlib
+    import importlib.util
+
+    importlib.invalidate_caches()
+    print(c("\n  Verifying installed features", "1;36"))
+    print("  " + "-" * 50)
+    failures = []
+    for f in chosen:
+        probe = PROBE.get(f["key"])
+        if not probe:
+            print(f"  {c('✓', '32')} {f['label']} (no packages needed)")
+            continue
+        try:
+            ok = importlib.util.find_spec(probe) is not None
+        except Exception:
+            ok = False
+        if ok:
+            print(f"  {c('✓', '32')} {f['label']}")
+        else:
+            failures.append(f)
+            reqs = ", ".join(f["reqs"]) or "—"
+            print(f"  {c('✗', '31')} {f['label']} — package '{probe}' missing.")
+            print(c(f"      fix: pip install -r requirements/{f['reqs'][0]}" if f["reqs"]
+                    else f"      fix: re-run python setup.py ({reqs})", "90"))
+    return failures
 
 
 def write_marker(use_venv):
@@ -549,6 +628,7 @@ def main():
 
     install(chosen, detected)
     apply_enabled_modules(chosen)
+    verify_install(chosen)
     write_marker(use_venv)
     next_steps(chosen, use_venv)
 

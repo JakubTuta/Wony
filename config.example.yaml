@@ -30,9 +30,8 @@ voice:
     enabled: true
     follow_up_timeout: 4.0  # seconds of silence before closing the session
 
-  # Start speaking before the full answer is ready; text is split into sentences as it streams.
-  streaming:
-    enabled: true
+  # Note: streaming is always on now — the assistant starts speaking as soon as
+  # the first sentence is ready (and the web/console UIs stream too). No toggle.
 
   # TTS inference device. 'auto' picks CUDA if onnxruntime-gpu detects a GPU,
   # falls back to CPU automatically on machines without CUDA. Force with 'cuda' or 'cpu'.
@@ -74,6 +73,12 @@ ai:
   gemini_model: null      # null = latest
   ollama_model: "llama3.1"  # required when provider is 'ollama'
   max_tokens: 8192
+  # Reasoning policy (all providers):
+  #   auto (default) — think only on direct knowledge questions; never on
+  #                    tool-using steps, so voice replies stay fast.
+  #   off            — never think anywhere (lowest latency).
+  #   on             — same as auto (tool steps can't think safely).
+  thinking: "auto"
   history:
     max_turns: 5          # past exchanges (user+assistant pairs) kept in context
   agent:

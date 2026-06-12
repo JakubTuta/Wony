@@ -10,7 +10,7 @@ import typing
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -123,7 +123,43 @@ class ChatRequest(BaseModel):
 
 def build_app() -> FastAPI:
     """Build and return the FastAPI application. Must be called after bootstrap()."""
-    app = FastAPI(title="Wony Web API")
+    from contextlib import asynccontextmanager
+
+    _ws_clients: typing.Set[WebSocket] = set()
+    _ws_loop: typing.Optional[asyncio.AbstractEventLoop] = None
+
+    async def _ws_broadcast(message: dict) -> None:
+        dead: typing.List[WebSocket] = []
+        for ws in list(_ws_clients):
+            try:
+                await ws.send_json(message)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            _ws_clients.discard(ws)
+
+    def _on_event(payload: dict) -> None:
+        loop = _ws_loop
+        if loop is None or not _ws_clients:
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(_ws_broadcast(payload), loop)
+        except Exception:
+            pass
+
+    @asynccontextmanager
+    async def _lifespan(app: FastAPI):
+        nonlocal _ws_loop
+        _ws_loop = asyncio.get_running_loop()
+        from helpers.events import subscribe, unsubscribe
+
+        subscribe(_on_event)
+        try:
+            yield
+        finally:
+            unsubscribe(_on_event)
+
+    app = FastAPI(title="Wony Web API", lifespan=_lifespan)
 
     app.add_middleware(
         CORSMiddleware,
@@ -286,6 +322,76 @@ def build_app() -> FastAPI:
             logger.log_error(str(e), "web_chat")
             raise HTTPException(status_code=500, detail=str(e))
 
+    @app.post("/api/chat/stream")
+    async def chat_stream(req: ChatRequest) -> StreamingResponse:
+        """Stream the assistant reply as Server-Sent Events.
+
+        Emits `{"type":"delta","data":"<text>"}` frames as the model produces
+        text, then one `{"type":"final","data":{id,text,calls}}` frame (or
+        `{"type":"error","data":"..."}`). The agent runs in a worker thread; its
+        on_text callback pushes deltas onto a queue the async generator drains.
+        """
+        import json as _json
+        import queue as _queue
+        import threading as _threading
+
+        if not req.message or not req.message.strip():
+            raise HTTPException(status_code=400, detail="Message cannot be empty.")
+
+        q: "_queue.Queue" = _queue.Queue()
+
+        def _run() -> None:
+            from helpers.agent import run_agent
+            from helpers.bootstrap import get_ai_client
+            from helpers.conversation import Conversation
+            from helpers.decorators import agent_lock, set_agent_active
+            from helpers.logger import logger
+            from modules.ai import build_agent_system_prompt
+
+            try:
+                ai_client = get_ai_client()
+                system_prompt = build_agent_system_prompt()
+                history = Conversation.get_messages()
+                max_steps = int(Config.get("ai.agent.max_steps", 5))
+                all_jobs = ServiceRegistry.get_all_jobs()
+
+                with agent_lock:
+                    set_agent_active(True)
+                    try:
+                        result = run_agent(
+                            client=ai_client,
+                            user_input=req.message,
+                            available_jobs=all_jobs,
+                            system_instructions=system_prompt,
+                            history=history,
+                            max_steps=max_steps,
+                            on_text=lambda c: q.put(("delta", c)),
+                        )
+                    finally:
+                        set_agent_active(False)
+
+                safe_calls = _sanitize_calls(result.calls)
+                turn_id = Conversation.record_turn(req.message, result.text, calls=safe_calls)
+                q.put(("final", {"id": turn_id, "text": result.text, "calls": safe_calls}))
+            except Exception as e:
+                logger.log_error(str(e), "web_chat_stream")
+                q.put(("error", str(e)))
+            finally:
+                q.put(None)
+
+        _threading.Thread(target=_run, daemon=True, name="web-chat-stream").start()
+
+        async def _events() -> typing.AsyncGenerator[str, None]:
+            loop = asyncio.get_running_loop()
+            while True:
+                item = await loop.run_in_executor(None, q.get)
+                if item is None:
+                    break
+                kind, payload = item
+                yield f"data: {_json.dumps({'type': kind, 'data': payload})}\n\n"
+
+        return StreamingResponse(_events(), media_type="text/event-stream")
+
     @app.post("/api/chat/clear")
     def clear_chat() -> typing.Dict[str, str]:
         from helpers.conversation import Conversation
@@ -322,40 +428,6 @@ def build_app() -> FastAPI:
                 for t in turns
             ]
         }
-
-    _ws_clients: typing.Set[WebSocket] = set()
-    _ws_loop: typing.Optional[asyncio.AbstractEventLoop] = None
-
-    async def _ws_broadcast(message: dict) -> None:
-        dead: typing.List[WebSocket] = []
-        for ws in list(_ws_clients):
-            try:
-                await ws.send_json(message)
-            except Exception:
-                dead.append(ws)
-        for ws in dead:
-            _ws_clients.discard(ws)
-
-    def _on_event(payload: dict) -> None:
-        loop = _ws_loop
-        if loop is None or not _ws_clients:
-            return
-        try:
-            asyncio.run_coroutine_threadsafe(_ws_broadcast(payload), loop)
-        except Exception:
-            pass
-
-    @app.on_event("startup")
-    async def _ws_startup() -> None:
-        nonlocal _ws_loop
-        _ws_loop = asyncio.get_running_loop()
-        from helpers.events import subscribe
-        subscribe(_on_event)
-
-    @app.on_event("shutdown")
-    async def _ws_shutdown() -> None:
-        from helpers.events import unsubscribe
-        unsubscribe(_on_event)
 
     @app.websocket("/api/ws")
     async def websocket_turns(ws: WebSocket) -> None:

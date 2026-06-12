@@ -32,10 +32,6 @@ class ConversationSettings(BaseModel):
     follow_up_timeout: float = 4.0
 
 
-class StreamingSettings(BaseModel):
-    enabled: bool = True
-
-
 class BargeInSettings(BaseModel):
     enabled: bool = False
     sustain_frames: int = 15
@@ -65,7 +61,6 @@ class VoiceSettings(BaseModel):
     stt: SttSettings = Field(default_factory=SttSettings)
     ducking: DuckingSettings = Field(default_factory=DuckingSettings)
     conversation: ConversationSettings = Field(default_factory=ConversationSettings)
-    streaming: StreamingSettings = Field(default_factory=StreamingSettings)
     barge_in: BargeInSettings = Field(default_factory=BargeInSettings)
     wake_word: WakeWordSettings = Field(default_factory=WakeWordSettings)
 
@@ -85,6 +80,10 @@ class AiSettings(BaseModel):
     gemini_model: typing.Optional[str] = None
     ollama_model: str = "llama3.1"
     max_tokens: int = 8192
+    # Reasoning policy: "auto" (default) thinks only on direct knowledge
+    # questions, never on tool-dispatch steps (keeps voice latency low);
+    # "off" disables thinking everywhere; "on" behaves like "auto".
+    thinking: str = "auto"
     history: HistorySettings = Field(default_factory=HistorySettings)
     agent: AgentSettings = Field(default_factory=AgentSettings)
 

@@ -54,9 +54,15 @@ def _persona() -> str:
 
 
 def build_agent_system_prompt() -> str:
-    """System prompt for the multi-step agent loop."""
+    """System prompt for the multi-step agent loop. Rebuilt per request so the
+    injected date/time is always current."""
+    import datetime
+
+    now = datetime.datetime.now().astimezone()
     return (
         _persona()
+        + f"\n\nCurrent local date and time: {now.strftime('%A, %B %d, %Y, %H:%M')} ({now.tzname()})."
+        " Use this for any time, date, or scheduling reasoning — never guess the date."
         + "\n\nYou are an intelligent agent with access to tools for music (Spotify),"
         " email (Gmail), calendar (Google Calendar), web search, desktop control,"
         " persistent memory, reminders, and general knowledge."

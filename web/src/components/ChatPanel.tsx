@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { Send, Trash2, Database, ChevronDown, ChevronRight, Loader2, Bot, User } from 'lucide-react';
-import { sendChat, clearChat, wipeData, fetchHistory, connectTurnsSocket } from '../api';
+import { streamChat, clearChat, wipeData, fetchHistory, connectTurnsSocket } from '../api';
 import type { ChatCall, HistoryTurn } from '../api';
 
 interface Message {
@@ -78,20 +78,47 @@ export function ChatPanel() {
     setInput('');
     setMessages(prev => [...prev, { role: 'user', text }]);
     setLoading(true);
+
+    // Live assistant bubble: append an empty one, then grow it as deltas land.
+    const streamIdx = messages.length + 1;
+    setMessages(prev => [...prev, { role: 'assistant', text: '' }]);
+
     try {
-      const res = await sendChat(text);
+      const res = await streamChat(text, chunk => {
+        setMessages(prev => {
+          const next = [...prev];
+          const cur = next[streamIdx];
+          if (cur && cur.role === 'assistant') {
+            next[streamIdx] = { ...cur, text: cur.text + chunk };
+          }
+          return next;
+        });
+      });
       // WS frame may have already rendered this turn — dedup by id, not text.
-      if (res.id != null && seenTurnIds.current.has(res.id)) return;
+      if (res.id != null && seenTurnIds.current.has(res.id)) {
+        setMessages(prev => prev.filter((_, i) => i !== streamIdx));
+        return;
+      }
       if (res.id != null) seenTurnIds.current.add(res.id);
-      setMessages(prev => [
-        ...prev,
-        { role: 'assistant', text: res.text, calls: res.calls, turnId: res.id },
-      ]);
+      setMessages(prev => {
+        const next = [...prev];
+        next[streamIdx] = {
+          role: 'assistant',
+          text: res.text || next[streamIdx]?.text || '',
+          calls: res.calls,
+          turnId: res.id,
+        };
+        return next;
+      });
     } catch (e) {
-      setMessages(prev => [
-        ...prev,
-        { role: 'assistant', text: `Error: ${e instanceof Error ? e.message : String(e)}` },
-      ]);
+      setMessages(prev => {
+        const next = [...prev];
+        next[streamIdx] = {
+          role: 'assistant',
+          text: `Error: ${e instanceof Error ? e.message : String(e)}`,
+        };
+        return next;
+      });
     } finally {
       setLoading(false);
     }

@@ -194,6 +194,8 @@ Then run with `wony.py voice`.
 
 Speech-to-text uses [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (offline). GPU machines use `large-v3`; CPU-only machines use `distil-small.en` or `small`.
 
+**Low-latency streaming**: the assistant starts speaking as soon as the first sentence is ready — you don't wait for the full AI response. The same streaming applies to the web UI (live text bubble) and console output.
+
 ### Wake word (hands-free trigger)
 
 1. `pip install -r requirements/wakeword.txt`

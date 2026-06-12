@@ -106,6 +106,46 @@ export async function sendChat(message: string): Promise<ChatResponse> {
   return res.json();
 }
 
+// Streams the assistant reply. `onDelta` fires for each text chunk as it
+// arrives; the resolved value is the final turn (id + full text + calls).
+export async function streamChat(
+  message: string,
+  onDelta: (chunk: string) => void,
+): Promise<ChatResponse> {
+  const res = await fetch(`${BASE}/chat/stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message }),
+  });
+  if (!res.ok || !res.body) throw new Error(`Chat failed: ${res.status}`);
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let final: ChatResponse = { id: null, text: '', calls: [] };
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const frames = buffer.split('\n\n');
+    buffer = frames.pop() ?? '';
+    for (const frame of frames) {
+      const line = frame.trim();
+      if (!line.startsWith('data:')) continue;
+      const evt = JSON.parse(line.slice(5).trim()) as
+        | { type: 'delta'; data: string }
+        | { type: 'final'; data: ChatResponse }
+        | { type: 'error'; data: string };
+      if (evt.type === 'delta') onDelta(evt.data);
+      else if (evt.type === 'final') final = evt.data;
+      else if (evt.type === 'error') throw new Error(evt.data);
+    }
+  }
+  return final;
+}
+
 export async function clearChat(): Promise<void> {
   await fetch(`${BASE}/chat/clear`, { method: 'POST' });
 }

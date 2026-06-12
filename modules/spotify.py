@@ -133,7 +133,7 @@ class Spotify:
         songs = self._get_songs_from_search(search_response)
         url = self._build_url_with_device("https://api.spotify.com/v1/me/player/play")
 
-        self.toggle_shuffle(state=False)
+        self._set_shuffle(False)
         self._make_spotify_request("put", url, json={"uris": songs})
         return f"Playing {search_response['name']} by {search_response['artist']}."
 
@@ -317,6 +317,32 @@ class Spotify:
         )
         self._make_spotify_request("post", url)
         return "Playing previous song."
+
+    @capture_response
+    @retry_on_unauthorized("_refresh_access_token")
+    @method_job
+    def restart_song(self) -> str:
+        """
+        [SPOTIFY SERVICE METHOD] Restarts the currently playing track from the beginning.
+
+        Use this method when the user wants to:
+        - Restart the current song
+        - Play the song from the beginning
+        - Go back to the start of the track
+
+        Keywords: restart, replay, from beginning, start over, beginning, rewind song,
+                 restart song, play again, from start, back to beginning
+
+        Args:
+            None
+
+        Returns:
+            str: Confirmation message.
+        """
+        base_url = "https://api.spotify.com/v1/me/player/seek?position_ms=0"
+        url = self._build_url_with_device(base_url, "&")
+        self._make_spotify_request("put", url)
+        return "Restarted song from the beginning."
 
     @capture_response
     @retry_on_unauthorized("_refresh_access_token")
@@ -509,9 +535,7 @@ class Spotify:
         """
         track_id = self._get_current_track_id()
         if not track_id:
-            msg = "Nothing is currently playing"
-            self._announce_action(msg)
-            return msg
+            return "Nothing is currently playing."
 
         self._make_spotify_request(
             "delete",
@@ -744,7 +768,9 @@ class Spotify:
         if not playback_state:
             return "No active Spotify device."
         state = not playback_state.get("shuffle_state", False)
+        return self._set_shuffle(state)
 
+    def _set_shuffle(self, state: bool) -> str:
         base_url = (
             f"https://api.spotify.com/v1/me/player/shuffle?state={str(state).lower()}"
         )

@@ -45,8 +45,6 @@ def accept_game() -> str:
     if BackgroundJobs.is_running(_ACCEPT_JOB):
         return "Already watching for queue pop-up."
 
-    audio = Cache.get_audio()
-
     def _watch():
         mouse_controller = MouseController()
         deadline = time.time() + _MAX_ACCEPT_MINUTES * 60
@@ -57,8 +55,7 @@ def accept_game() -> str:
                 mouse_controller.go_to_center_of_bbox(accept_object)
                 mouse_controller.click_left_button()
                 msg = "Game accepted."
-                if audio:
-                    Audio.text_to_speech(msg)
+                Audio.notify(msg)
                 logger.log_system_event("league_accept", msg)
                 BackgroundJobs.stop(_ACCEPT_JOB)
                 return

@@ -142,20 +142,32 @@ def _mcp_schema(func: typing.Callable) -> typing.Optional[typing.Dict]:
     return dict(raw)
 
 
+# Schemas are derived from static docstrings/signatures — cache them so the
+# agent loop doesn't re-parse every job's docstring on every model call.
+_schema_cache: typing.Dict[typing.Tuple[str, typing.Callable], typing.Dict[str, typing.Any]] = {}
+
+
 def function_to_schema(func: typing.Callable) -> typing.Dict[str, typing.Any]:
     model = helpers_model.get_model()
     if model is None:
         raise Exception("Model is not initialized.")
 
     provider = model[0]
-    if provider == "ollama":
-        return function_to_schema_ollama(func)
-    if provider == "gemini":
-        return function_to_schema_gemini(func)
-    if provider == "anthropic":
-        return function_to_schema_anthropic(func)
+    key = (provider, func)
+    if key in _schema_cache:
+        return _schema_cache[key]
 
-    raise Exception(f"Unsupported model type: {provider}")
+    if provider == "ollama":
+        schema = function_to_schema_ollama(func)
+    elif provider == "gemini":
+        schema = function_to_schema_gemini(func)
+    elif provider == "anthropic":
+        schema = function_to_schema_anthropic(func)
+    else:
+        raise Exception(f"Unsupported model type: {provider}")
+
+    _schema_cache[key] = schema
+    return schema
 
 
 def function_to_schema_ollama(func: typing.Callable) -> typing.Dict[str, typing.Any]:

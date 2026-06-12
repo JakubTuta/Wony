@@ -1,6 +1,7 @@
 import base64
 import os
 import typing
+import uuid
 
 import anthropic
 import numpy as np
@@ -15,12 +16,21 @@ available_models = ["gemini", "anthropic", "ollama"]
 _FALLBACK_GEMINI_MODEL = "gemini-2.0-flash"
 _FALLBACK_ANTHROPIC_MODEL = "claude-sonnet-4-6"
 
+# Auto-resolved model ids, cached per process — resolving costs a models.list()
+# HTTP round-trip, which would otherwise be paid on every message.
+_resolved_model_cache: typing.Dict[str, str] = {}
+
+# Models that rejected thinking_config — don't retry it on them.
+_thinking_unsupported: typing.Set[str] = set()
+
 
 def _get_gemini_model(client: "genai.Client") -> str:
     from helpers.config import Config
 
     if user_model := Config.get("ai.gemini_model"):
         return user_model
+    if "gemini" in _resolved_model_cache:
+        return _resolved_model_cache["gemini"]
     try:
         models = list(client.models.list())
         candidates = [
@@ -31,7 +41,9 @@ def _get_gemini_model(client: "genai.Client") -> str:
         ]
         if candidates:
             candidates.sort(reverse=True)
-            return candidates[0].removeprefix("models/")
+            resolved = candidates[0].removeprefix("models/")
+            _resolved_model_cache["gemini"] = resolved
+            return resolved
     except Exception:
         pass
     return _FALLBACK_GEMINI_MODEL
@@ -42,14 +54,122 @@ def _get_anthropic_model(client: "anthropic.Anthropic") -> str:
 
     if user_model := Config.get("ai.anthropic_model"):
         return user_model
+    if "anthropic" in _resolved_model_cache:
+        return _resolved_model_cache["anthropic"]
     try:
         models = client.models.list()
         if models.data:
             sorted_models = sorted(models.data, key=lambda m: m.created_at, reverse=True)
-            return sorted_models[0].id
+            resolved = sorted_models[0].id
+            _resolved_model_cache["anthropic"] = resolved
+            return resolved
     except Exception:
         pass
     return _FALLBACK_ANTHROPIC_MODEL
+
+
+def _should_think(has_tools: bool) -> bool:
+    """Whether the model should think (reason) for this call.
+
+    Policy (config key ai.thinking: "auto" | "off" | "on"):
+      - "off": never think — lowest latency everywhere.
+      - "auto" (default) / "on": think only on pure-generation calls
+        (no tools). Tool-dispatch steps never think, because:
+          1. They're in the voice critical path — thinking delays the first
+             spoken word or the tool call with no user-visible benefit.
+          2. Anthropic requires thinking blocks to be echoed back unchanged in
+             a multi-turn tool loop; our provider-neutral message list doesn't
+             carry them, so thinking + tools would corrupt the next request.
+        Deep reasoning is reserved for direct knowledge questions
+        (ask_question / screenshot), where it improves the answer and there's
+        no tool loop to break.
+    """
+    from helpers.config import Config
+
+    mode = str(Config.get("ai.thinking", "auto")).lower()
+    if mode in ("off", "false", "none", "disabled"):
+        return False
+    return not has_tools
+
+
+def _gemini_can_disable_thinking(model: str) -> bool:
+    # Only flash/lite-class models accept thinking_budget=0; pro models reject it.
+    if model in _thinking_unsupported:
+        return False
+    m = model.lower()
+    return "flash" in m or "lite" in m
+
+
+def _gemini_config(
+    system_instructions: typing.Optional[str],
+    parsed_tools: typing.Optional[typing.List[dict]],
+    model: str,
+) -> typing.Optional["genai_types.GenerateContentConfig"]:
+    kwargs: typing.Dict[str, typing.Any] = {}
+    if system_instructions:
+        kwargs["system_instruction"] = system_instructions
+    if parsed_tools:
+        kwargs["tools"] = [
+            genai_types.Tool(
+                function_declarations=[
+                    genai_types.FunctionDeclaration(**x) for x in parsed_tools
+                ]
+            )
+        ]
+    # Disable thinking for tool-dispatch steps (and globally when off); leave the
+    # provider default (thinking on) for pure-generation calls.
+    if not _should_think(bool(parsed_tools)) and _gemini_can_disable_thinking(model):
+        kwargs["thinking_config"] = genai_types.ThinkingConfig(thinking_budget=0)
+    return genai_types.GenerateContentConfig(**kwargs) if kwargs else None
+
+
+def _anthropic_thinking(has_tools: bool, model: str) -> typing.Any:
+    """Return the Anthropic `thinking` arg, or NOT_GIVEN.
+
+    Adaptive thinking (4.6+) only; older claude-3 families reject it. Off for
+    tool calls (see _should_think) — also avoids the thinking-block echo
+    requirement that our neutral message list can't satisfy.
+    """
+    if not _should_think(has_tools):
+        return anthropic.NOT_GIVEN
+    if "claude-3" in model.lower():
+        return anthropic.NOT_GIVEN
+    return {"type": "adaptive"}
+
+
+def _ollama_think(has_tools: bool) -> typing.Optional[bool]:
+    """Return True to request Ollama thinking, or None to omit the kwarg.
+
+    Only thinking-capable local models accept `think`; callers retry without it
+    on error (see _ollama_chat)."""
+    return True if _should_think(has_tools) else None
+
+
+def _ollama_chat(client: "ollama.Client", *, think: typing.Optional[bool], **kwargs: typing.Any) -> typing.Any:
+    """client.chat with one retry dropping `think` if the model rejects it."""
+    if think is not None:
+        try:
+            return client.chat(think=think, **kwargs)
+        except Exception:
+            pass  # model likely doesn't support thinking — retry without
+    return client.chat(**kwargs)
+
+
+def _gemini_generate(
+    client: "genai.Client",
+    model: str,
+    contents: typing.Any,
+    config: typing.Optional["genai_types.GenerateContentConfig"],
+) -> "genai_types.GenerateContentResponse":
+    """generate_content with one retry without thinking_config if the model rejects it."""
+    try:
+        return client.models.generate_content(model=model, contents=contents, config=config)
+    except Exception:
+        if config is not None and config.thinking_config is not None:
+            _thinking_unsupported.add(model)
+            config.thinking_config = None
+            return client.models.generate_content(model=model, contents=contents, config=config)
+        raise
 
 
 def get_model() -> typing.Optional[
@@ -115,23 +235,8 @@ def send_message(
         base64_image = helpers_tools.numpy_image_to_base64_bytes(image)
 
     if isinstance(client, genai.Client):
-        config = None
-        if system_instructions or parsed_tools:
-            config = genai_types.GenerateContentConfig(
-                system_instruction=system_instructions,
-                tools=(
-                    [
-                        genai_types.Tool(
-                            function_declarations=[
-                                genai_types.FunctionDeclaration(**x)
-                                for x in parsed_tools
-                            ]
-                        )
-                    ]
-                    if parsed_tools
-                    else None
-                ),
-            )
+        model = _get_gemini_model(client)
+        config = _gemini_config(system_instructions, parsed_tools, model)
 
         current_parts: typing.List[typing.Any] = []
         if base64_image is not None:
@@ -158,13 +263,7 @@ def send_message(
         else:
             contents = current_parts if len(current_parts) > 1 else current_parts[0]
 
-        response = client.models.generate_content(
-            model=_get_gemini_model(client),
-            contents=contents,
-            config=config,
-        )
-
-        return response
+        return _gemini_generate(client, model, contents, config)
 
     elif isinstance(client, anthropic.Anthropic):
         messages_content: typing.Any = message
@@ -186,18 +285,27 @@ def send_message(
 
         from helpers.config import Config
         max_tokens = int(Config.get("ai.max_tokens", 8192))
+        model = _get_anthropic_model(client)
+        thinking = _anthropic_thinking(bool(parsed_tools), model)
 
-        response = client.messages.create(
-            model=_get_anthropic_model(client),
-            max_tokens=max_tokens,
-            messages=anthropic_messages,
-            system=(
-                system_instructions if system_instructions else anthropic.NOT_GIVEN
-            ),
-            tools=parsed_tools if parsed_tools else anthropic.NOT_GIVEN,  # type: ignore
-        )
+        def _create(think: typing.Any) -> typing.Any:
+            return client.messages.create(
+                model=model,
+                max_tokens=max_tokens,
+                messages=anthropic_messages,
+                system=(
+                    system_instructions if system_instructions else anthropic.NOT_GIVEN
+                ),
+                tools=parsed_tools if parsed_tools else anthropic.NOT_GIVEN,  # type: ignore
+                thinking=think,
+            )
 
-        return response
+        try:
+            return _create(thinking)
+        except Exception:
+            if thinking is not anthropic.NOT_GIVEN:
+                return _create(anthropic.NOT_GIVEN)  # model rejected adaptive thinking
+            raise
 
     elif isinstance(client, ollama.Client):
         ollama_messages: typing.List[typing.Dict[str, str]] = []
@@ -220,17 +328,143 @@ def send_message(
                 "Ollama model not configured. Set ai.ollama_model in config.yaml or AI_MODEL env var."
             )
 
-        response = client.chat(
+        return _ollama_chat(
+            client,
+            think=_ollama_think(bool(parsed_tools)),
             model=model,
             messages=messages,
             stream=False,
         )
 
-        return response
-
     raise Exception(
         "Invalid client type. Expected genai.Client, anthropic.Anthropic or ollama.Client."
     )
+
+
+def _to_gemini_contents(
+    messages: typing.List[typing.Dict[str, typing.Any]],
+) -> typing.List[typing.Any]:
+    """Convert the provider-neutral agent message list to Gemini contents."""
+    contents: typing.List[typing.Any] = []
+    seen_content_ids: typing.Set[int] = set()
+    for msg in messages:
+        role = msg["role"]
+        if role == "user":
+            contents.append(
+                genai_types.Content(
+                    role="user",
+                    parts=[genai_types.Part.from_text(text=str(msg["content"]))],
+                )
+            )
+        elif role == "assistant":
+            contents.append(
+                genai_types.Content(
+                    role="model",
+                    parts=[genai_types.Part.from_text(text=str(msg["content"]))],
+                )
+            )
+        elif role == "tool_call":
+            raw_content = msg.get("_gemini_content")
+            if raw_content is not None:
+                cid = id(raw_content)
+                if cid not in seen_content_ids:
+                    contents.append(raw_content)
+                    seen_content_ids.add(cid)
+            else:
+                fc = genai_types.FunctionCall(name=msg["name"], args=msg.get("args", {}))
+                contents.append(
+                    genai_types.Content(role="model", parts=[genai_types.Part(function_call=fc)])
+                )
+        elif role == "tool_result":
+            fr = genai_types.FunctionResponse(
+                name=msg["name"],
+                response={"result": str(msg["content"])},
+            )
+            contents.append(
+                genai_types.Content(role="user", parts=[genai_types.Part(function_response=fr)])
+            )
+    return contents
+
+
+def _to_anthropic_messages(
+    messages: typing.List[typing.Dict[str, typing.Any]],
+) -> typing.List[typing.Any]:
+    """Convert the provider-neutral agent message list to Anthropic messages."""
+    anthropic_messages: typing.List[typing.Any] = []
+    i = 0
+    while i < len(messages):
+        msg = messages[i]
+        role = msg["role"]
+
+        if role == "user":
+            anthropic_messages.append({"role": "user", "content": str(msg["content"])})
+        elif role == "assistant":
+            anthropic_messages.append({"role": "assistant", "content": str(msg["content"])})
+        elif role == "tool_call":
+            # Collect consecutive tool_calls + their tool_results into one assistant/user pair
+            tool_uses = []
+            while i < len(messages) and messages[i]["role"] == "tool_call":
+                tc = messages[i]
+                tool_uses.append({
+                    "type": "tool_use",
+                    "id": tc.get("id", f"tool_{i}"),
+                    "name": tc["name"],
+                    "input": tc.get("args", {}),
+                })
+                i += 1
+            anthropic_messages.append({"role": "assistant", "content": tool_uses})
+
+            # Corresponding tool_results
+            tool_results = []
+            while i < len(messages) and messages[i]["role"] == "tool_result":
+                tr = messages[i]
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": tr.get("id", f"tool_{i}"),
+                    "content": str(tr["content"]),
+                })
+                i += 1
+            if tool_results:
+                anthropic_messages.append({"role": "user", "content": tool_results})
+            continue
+        i += 1
+    return anthropic_messages
+
+
+def _to_ollama_messages(
+    messages: typing.List[typing.Dict[str, typing.Any]],
+    system_instructions: typing.Optional[str],
+) -> typing.List[typing.Dict[str, typing.Any]]:
+    """Convert the provider-neutral agent message list to Ollama messages."""
+    ollama_messages: typing.List[typing.Dict[str, typing.Any]] = []
+    if system_instructions:
+        ollama_messages.append({"role": "system", "content": system_instructions})
+    for msg in messages:
+        role = msg["role"]
+        if role in ("user", "assistant"):
+            ollama_messages.append({"role": role, "content": str(msg["content"])})
+        elif role == "tool_call":
+            ollama_messages.append({
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "function": {"name": msg["name"], "arguments": msg.get("args", {})}
+                }],
+            })
+        elif role == "tool_result":
+            ollama_messages.append({"role": "tool", "content": str(msg["content"])})
+    return ollama_messages
+
+
+def _require_ollama_model() -> str:
+    from helpers.config import Config
+
+    model = Config.get("ai.ollama_model") or os.getenv("AI_MODEL")
+    if not model:
+        raise Exception(
+            "Ollama model not configured. Set ai.ollama_model in config.yaml."
+        )
+    return model
 
 
 def send_agent_messages(
@@ -262,153 +496,26 @@ def send_agent_messages(
         ]
 
     if isinstance(client, genai.Client):
-        contents: typing.List[typing.Any] = []
-        _seen_gemini_content_ids: typing.Set[int] = set()
-        for msg in messages:
-            role = msg["role"]
-            if role == "user":
-                contents.append(
-                    genai_types.Content(
-                        role="user",
-                        parts=[genai_types.Part.from_text(text=str(msg["content"]))],
-                    )
-                )
-            elif role == "assistant":
-                contents.append(
-                    genai_types.Content(
-                        role="model",
-                        parts=[genai_types.Part.from_text(text=str(msg["content"]))],
-                    )
-                )
-            elif role == "tool_call":
-                raw_content = msg.get("_gemini_content")
-                if raw_content is not None:
-                    cid = id(raw_content)
-                    if cid not in _seen_gemini_content_ids:
-                        contents.append(raw_content)
-                        _seen_gemini_content_ids.add(cid)
-                else:
-                    from google.genai.types import FunctionCall
-                    fc = FunctionCall(name=msg["name"], args=msg.get("args", {}))
-                    contents.append(
-                        genai_types.Content(role="model", parts=[genai_types.Part(function_call=fc)])
-                    )
-            elif role == "tool_result":
-                from google.genai.types import FunctionResponse
-                fr = FunctionResponse(
-                    name=msg["name"],
-                    response={"result": str(msg["content"])},
-                )
-                contents.append(
-                    genai_types.Content(role="user", parts=[genai_types.Part(function_response=fr)])
-                )
-
-        config = None
-        if system_instructions or parsed_tools:
-            config = genai_types.GenerateContentConfig(
-                system_instruction=system_instructions,
-                tools=(
-                    [
-                        genai_types.Tool(
-                            function_declarations=[
-                                genai_types.FunctionDeclaration(**x)
-                                for x in parsed_tools
-                            ]
-                        )
-                    ]
-                    if parsed_tools
-                    else None
-                ),
-            )
-
-        return client.models.generate_content(
-            model=_get_gemini_model(client),
-            contents=contents,
-            config=config,
-        )
+        model = _get_gemini_model(client)
+        config = _gemini_config(system_instructions, parsed_tools, model)
+        return _gemini_generate(client, model, _to_gemini_contents(messages), config)
 
     elif isinstance(client, anthropic.Anthropic):
-        anthropic_messages: typing.List[typing.Any] = []
-        i = 0
-        while i < len(messages):
-            msg = messages[i]
-            role = msg["role"]
-
-            if role == "user":
-                anthropic_messages.append({"role": "user", "content": str(msg["content"])})
-            elif role == "assistant":
-                anthropic_messages.append({"role": "assistant", "content": str(msg["content"])})
-            elif role == "tool_call":
-                # Collect consecutive tool_calls + their tool_results into one assistant/user pair
-                tool_uses = []
-                while i < len(messages) and messages[i]["role"] == "tool_call":
-                    tc = messages[i]
-                    tool_uses.append({
-                        "type": "tool_use",
-                        "id": tc.get("id", f"tool_{i}"),
-                        "name": tc["name"],
-                        "input": tc.get("args", {}),
-                    })
-                    i += 1
-                anthropic_messages.append({"role": "assistant", "content": tool_uses})
-
-                # Corresponding tool_results
-                tool_results = []
-                while i < len(messages) and messages[i]["role"] == "tool_result":
-                    tr = messages[i]
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": tr.get("id", f"tool_{i}"),
-                        "content": str(tr["content"]),
-                    })
-                    i += 1
-                if tool_results:
-                    anthropic_messages.append({"role": "user", "content": tool_results})
-                continue
-            i += 1
-
         from helpers.config import Config
         max_tokens = int(Config.get("ai.max_tokens", 8192))
 
         return client.messages.create(
             model=_get_anthropic_model(client),
             max_tokens=max_tokens,
-            messages=anthropic_messages,
+            messages=_to_anthropic_messages(messages),
             system=system_instructions if system_instructions else anthropic.NOT_GIVEN,
             tools=parsed_tools if parsed_tools else anthropic.NOT_GIVEN,  # type: ignore
         )
 
     elif isinstance(client, ollama.Client):
-        ollama_messages: typing.List[typing.Dict[str, typing.Any]] = []
-
-        if system_instructions:
-            ollama_messages.append({"role": "system", "content": system_instructions})
-
-        for msg in messages:
-            role = msg["role"]
-            if role in ("user", "assistant"):
-                ollama_messages.append({"role": role, "content": str(msg["content"])})
-            elif role == "tool_call":
-                ollama_messages.append({
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [{
-                        "function": {"name": msg["name"], "arguments": msg.get("args", {})}
-                    }],
-                })
-            elif role == "tool_result":
-                ollama_messages.append({"role": "tool", "content": str(msg["content"])})
-
-        from helpers.config import Config
-        model = Config.get("ai.ollama_model") or os.getenv("AI_MODEL")
-        if not model:
-            raise Exception(
-                "Ollama model not configured. Set ai.ollama_model in config.yaml."
-            )
-
         return client.chat(
-            model=model,
-            messages=ollama_messages,
+            model=_require_ollama_model(),
+            messages=_to_ollama_messages(messages, system_instructions),
             tools=parsed_tools if parsed_tools else None,
             stream=False,
         )
@@ -416,164 +523,140 @@ def send_agent_messages(
     raise Exception("Invalid client type.")
 
 
-def stream_text_response(
+def stream_agent_step(
     client: typing.Optional[
         typing.Union[genai.Client, anthropic.Anthropic, ollama.Client]
     ],
     messages: typing.List[typing.Dict[str, typing.Any]],
     system_instructions: typing.Optional[str] = None,
-) -> typing.Generator[str, None, None]:
-    """
-    Stream the final text response (no tool calls) as delta chunks.
+    available_tools: typing.Optional[typing.List[typing.Callable]] = None,
+    on_text: typing.Optional[typing.Callable[[str], None]] = None,
+) -> typing.Tuple[str, typing.List[typing.Dict[str, typing.Any]]]:
+    """Run one agent step with streaming: text deltas are emitted through
+    on_text the moment they arrive, so TTS can start before the model finishes.
 
-    Converts the neutral agent message list to the provider's native format and
-    streams the response. Tool-call steps stay non-streaming; call this only
-    for the narration/summary turn where no tools will be invoked.
-
-    Yields str chunks as they arrive from the model.
+    Returns (text, tool_calls). tool_calls entries have the same shape as
+    helpers.agent._extract_all_tool_calls: {"id", "name", "args"} plus
+    "_gemini_content" on the first entry for faithful Gemini history replay
+    (preserves thought signatures, which Gemini 3 requires).
     """
     if client is None:
-        yield "Error: AI client not initialized."
-        return
+        raise Exception("AI client not initialized.")
+
+    emit = on_text if on_text is not None else (lambda _chunk: None)
+
+    parsed_tools = None
+    if available_tools:
+        parsed_tools = [
+            helpers_tools.function_to_schema(func) for func in available_tools
+        ]
 
     if isinstance(client, anthropic.Anthropic):
-        anthropic_messages = []
-        i = 0
-        while i < len(messages):
-            msg = messages[i]
-            role = msg["role"]
-            if role == "user":
-                anthropic_messages.append({"role": "user", "content": str(msg["content"])})
-            elif role == "assistant":
-                anthropic_messages.append({"role": "assistant", "content": str(msg["content"])})
-            elif role == "tool_call":
-                tool_uses = []
-                while i < len(messages) and messages[i]["role"] == "tool_call":
-                    tc = messages[i]
-                    tool_uses.append({
-                        "type": "tool_use",
-                        "id": tc.get("id", f"tool_{i}"),
-                        "name": tc["name"],
-                        "input": tc.get("args", {}),
-                    })
-                    i += 1
-                anthropic_messages.append({"role": "assistant", "content": tool_uses})
-                tool_results = []
-                while i < len(messages) and messages[i]["role"] == "tool_result":
-                    tr = messages[i]
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": tr.get("id", f"tool_{i}"),
-                        "content": str(tr["content"]),
-                    })
-                    i += 1
-                if tool_results:
-                    anthropic_messages.append({"role": "user", "content": tool_results})
-                continue
-            i += 1
-
         from helpers.config import Config
         max_tokens = int(Config.get("ai.max_tokens", 8192))
 
-        try:
-            with client.messages.stream(
-                model=_get_anthropic_model(client),
-                max_tokens=max_tokens,
-                messages=anthropic_messages,
-                system=system_instructions if system_instructions else anthropic.NOT_GIVEN,
-            ) as stream:
-                for chunk in stream.text_stream:
-                    if chunk:
-                        yield chunk
-        except Exception as exc:
-            yield f"[streaming error: {exc}]"
+        text_parts: typing.List[str] = []
+        with client.messages.stream(
+            model=_get_anthropic_model(client),
+            max_tokens=max_tokens,
+            messages=_to_anthropic_messages(messages),
+            system=system_instructions if system_instructions else anthropic.NOT_GIVEN,
+            tools=parsed_tools if parsed_tools else anthropic.NOT_GIVEN,  # type: ignore
+        ) as stream:
+            for chunk in stream.text_stream:
+                if chunk:
+                    text_parts.append(chunk)
+                    emit(chunk)
+            final = stream.get_final_message()
+
+        tool_calls = [
+            {
+                "id": getattr(block, "id", str(uuid.uuid4())[:16]),
+                "name": block.name.strip(),
+                "args": dict(block.input) if block.input else {},
+            }
+            for block in final.content
+            if getattr(block, "type", None) == "tool_use"
+        ]
+        return "".join(text_parts), tool_calls
 
     elif isinstance(client, genai.Client):
-        contents: typing.List[typing.Any] = []
-        for msg in messages:
-            role = msg["role"]
-            if role == "user":
-                contents.append(
-                    genai_types.Content(
-                        role="user",
-                        parts=[genai_types.Part.from_text(text=str(msg["content"]))],
-                    )
-                )
-            elif role == "assistant":
-                contents.append(
-                    genai_types.Content(
-                        role="model",
-                        parts=[genai_types.Part.from_text(text=str(msg["content"]))],
-                    )
-                )
-            elif role == "tool_call":
-                raw_content = msg.get("_gemini_content")
-                if raw_content is not None:
-                    contents.append(raw_content)
-                else:
-                    from google.genai.types import FunctionCall
-                    fc = FunctionCall(name=msg["name"], args=msg.get("args", {}))
-                    contents.append(
-                        genai_types.Content(role="model", parts=[genai_types.Part(function_call=fc)])
-                    )
-            elif role == "tool_result":
-                from google.genai.types import FunctionResponse
-                fr = FunctionResponse(
-                    name=msg["name"],
-                    response={"result": str(msg["content"])},
-                )
-                contents.append(
-                    genai_types.Content(role="user", parts=[genai_types.Part(function_response=fr)])
-                )
+        model = _get_gemini_model(client)
+        contents = _to_gemini_contents(messages)
+        config = _gemini_config(system_instructions, parsed_tools, model)
 
-        config = genai_types.GenerateContentConfig(
-            system_instruction=system_instructions,
-        ) if system_instructions else None
+        for attempt in range(2):
+            text_parts = []
+            raw_parts: typing.List[typing.Any] = []
+            tool_calls = []
+            try:
+                for chunk in client.models.generate_content_stream(
+                    model=model, contents=contents, config=config
+                ):
+                    try:
+                        parts = chunk.candidates[0].content.parts or []
+                    except (AttributeError, IndexError, TypeError):
+                        continue
+                    for part in parts:
+                        if getattr(part, "text", None):
+                            text_parts.append(part.text)
+                            emit(part.text)
+                            raw_parts.append(part)
+                        fc = getattr(part, "function_call", None)
+                        if fc and getattr(fc, "name", None):
+                            raw_parts.append(part)
+                            tool_calls.append({
+                                "id": str(uuid.uuid4())[:16],
+                                # Gemini sometimes pads names with whitespace,
+                                # which would fail the job-registry lookup.
+                                "name": fc.name.strip(),
+                                "args": dict(fc.args) if fc.args else {},
+                            })
+                break
+            except Exception:
+                # Retry once without thinking_config (model may reject it) —
+                # but only if nothing was emitted yet, so no text repeats.
+                can_retry = (
+                    attempt == 0
+                    and config is not None
+                    and config.thinking_config is not None
+                    and not text_parts
+                    and not tool_calls
+                )
+                if not can_retry:
+                    raise
+                _thinking_unsupported.add(model)
+                config.thinking_config = None
 
-        try:
-            for chunk in client.models.generate_content_stream(
-                model=_get_gemini_model(client),
-                contents=contents,
-                config=config,
-            ):
-                if chunk.text:
-                    yield chunk.text
-        except Exception as exc:
-            yield f"[streaming error: {exc}]"
+        if tool_calls:
+            tool_calls[0]["_gemini_content"] = genai_types.Content(
+                role="model", parts=raw_parts
+            )
+        return "".join(text_parts), tool_calls
 
     elif isinstance(client, ollama.Client):
-        ollama_messages: typing.List[typing.Dict[str, typing.Any]] = []
-        if system_instructions:
-            ollama_messages.append({"role": "system", "content": system_instructions})
-        for msg in messages:
-            role = msg["role"]
-            if role in ("user", "assistant"):
-                ollama_messages.append({"role": role, "content": str(msg["content"])})
-            elif role == "tool_call":
-                ollama_messages.append({
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [{"function": {"name": msg["name"], "arguments": msg.get("args", {})}}],
+        text_parts = []
+        tool_calls = []
+        for chunk in client.chat(
+            model=_require_ollama_model(),
+            messages=_to_ollama_messages(messages, system_instructions),
+            tools=parsed_tools if parsed_tools else None,
+            stream=True,
+        ):
+            content = chunk.message.content
+            if content:
+                text_parts.append(content)
+                emit(content)
+            for tc in getattr(chunk.message, "tool_calls", None) or []:
+                fn = tc.function
+                tool_calls.append({
+                    "id": str(uuid.uuid4())[:16],
+                    "name": fn.name.strip(),
+                    "args": dict(fn.arguments) if fn.arguments else {},
                 })
-            elif role == "tool_result":
-                ollama_messages.append({"role": "tool", "content": str(msg["content"])})
+        return "".join(text_parts), tool_calls
 
-        from helpers.config import Config
-        model = Config.get("ai.ollama_model") or os.getenv("AI_MODEL")
-        if not model:
-            yield "Error: Ollama model not configured."
-            return
-
-        try:
-            for chunk in client.chat(model=model, messages=ollama_messages, stream=True):
-                content = chunk.message.content
-                if content:
-                    yield content
-        except Exception as exc:
-            yield f"[streaming error: {exc}]"
-
-    else:
-        yield "Error: Unknown client type."
+    raise Exception("Invalid client type.")
 
 
 def get_text_from_response(

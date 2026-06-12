@@ -245,15 +245,6 @@ class TTS_Engine:
             samples = (samples * self._volume).astype(np.float32)
         return samples, sr
 
-    def text_to_speech(
-        self,
-        text: str,
-        interrupt_event: typing.Optional[threading.Event] = None,
-    ) -> bool:
-        """Synthesize and play through a short-lived stream. Returns False if interrupted."""
-        samples, sr = self.synthesize(text)
-        return _play_samples(samples, sr, interrupt_event)
-
     def save_to_file(self, text: str, filename: str) -> None:
         import soundfile as sf
 
@@ -305,27 +296,27 @@ class Audio:
     ) -> None:
         if is_agent_active():
             return
-        global _tts_warned
-        with _tts_lock:
-            try:
-                engine = _get_tts_singleton()
-                engine.text_to_speech(text, interrupt_event=interrupt_event)
-            except ImportError:
-                if not _tts_warned:
-                    print(
-                        "TTS unavailable: kokoro-onnx not installed. "
-                        "Run: pip install -r requirements/voice.txt"
-                    )
-                    _tts_warned = True
-            except Exception as e:
-                if not _tts_warned:
-                    print(
-                        f"TTS unavailable: {e} — check voice.tts_voice / voice.model_path in config.yaml."
-                    )
-                    _tts_warned = True
-                # Engine may be broken; reset so next call tries a fresh one.
-                global _tts_singleton
-                _tts_singleton = None
+        if not text or not str(text).strip():
+            return
+        # Pipelined sentence-by-sentence path: first audio after one sentence's
+        # synthesis instead of the whole text's.
+        stream_text_to_speech([str(text)], interrupt_event)
+
+    @staticmethod
+    def notify(text: str) -> None:
+        """Speak a proactive background notification (timer, reminder, poller),
+        ducking other apps' audio for the duration. No-op when audio is off."""
+        from helpers.cache import Cache
+
+        if not text or not Cache.get_audio():
+            return
+        try:
+            from helpers.ducking import duck_others
+
+            with duck_others():
+                Audio.text_to_speech(text)
+        except Exception:
+            Audio.text_to_speech(text)
 
     @staticmethod
     def record_audio(duration: int = 3) -> np.ndarray:
@@ -415,16 +406,38 @@ class BargeinListener:
             gen.close()
 
 
+def _warn_tts_unavailable(e: Exception) -> None:
+    """Print one actionable TTS failure message and reset a broken engine."""
+    global _tts_warned, _tts_singleton
+    if isinstance(e, ImportError):
+        if not _tts_warned:
+            print(
+                "TTS unavailable: kokoro-onnx not installed. "
+                "Run: pip install -r requirements/voice.txt"
+            )
+            _tts_warned = True
+        return
+    if not _tts_warned:
+        print(
+            f"TTS unavailable: {e} — check voice.tts_voice / voice.model_path in config.yaml."
+        )
+        _tts_warned = True
+    # Engine may be broken; reset so the next call builds a fresh one.
+    _tts_singleton = None
+
+
 def stream_text_to_speech(
     text_gen: typing.Union[typing.Generator[str, None, None], typing.Iterable[str]],
     interrupt_event: typing.Optional[threading.Event] = None,
 ) -> typing.Tuple[str, typing.List[str]]:
     """
-    Stream model text deltas to TTS sentence-by-sentence.
+    Stream model text deltas to TTS sentence-by-sentence, pipelined.
 
     Accumulates chunks until a sentence boundary is detected, then synthesizes
-    and plays that sentence immediately. Uses a single persistent OutputStream
-    across all sentences — no gaps or device re-init between sentences.
+    that sentence and hands it to a playback thread. Synthesis of the next
+    sentence overlaps playback of the current one, so the only wait the user
+    hears is the synthesis of the very first sentence. A single persistent
+    OutputStream is reused across sentences — no gaps or device re-init.
 
     Checks interrupt_event every 50ms during playback so the assistant can be
     stopped mid-sentence, not just between sentences.
@@ -434,78 +447,98 @@ def stream_text_to_speech(
         spoken_text: everything that was actually spoken aloud
         remaining_sentences: unspoken sentences buffered when interrupted
     """
+    import queue
+
     import sounddevice as sd
 
     if interrupt_event is None:
         interrupt_event = threading.Event()
 
     spoken_parts: typing.List[str] = []
-    pending: typing.List[str] = []
+    pending_playback: typing.List[str] = []  # reached playback but interrupted
+    pending_synth: typing.List[str] = []     # never reached playback
     buffer = ""
-    out_stream = None  # opened on first sentence, reused for the whole turn
-    was_interrupted = False
 
-    def _flush_sentence(sentence: str) -> bool:
-        """Synthesize and play one sentence. Returns False if interrupted."""
-        nonlocal out_stream, was_interrupted
-        with _tts_lock:
-            try:
+    # Bounded so synthesis stays at most a few sentences ahead of playback
+    # (keeps barge-in responsive and memory flat on long answers).
+    audio_q: "queue.Queue" = queue.Queue(maxsize=3)
+
+    def _playback() -> None:
+        out_stream = None
+        interrupted = False
+        try:
+            while True:
+                item = audio_q.get()
+                if item is None:
+                    return
+                sentence, samples, sr = item
+                if interrupted or interrupt_event.is_set():
+                    pending_playback.append(sentence)
+                    continue
+                try:
+                    if out_stream is None:
+                        out_stream = sd.OutputStream(samplerate=sr, channels=1, dtype="float32")
+                        out_stream.start()
+                    if _play_samples(samples, sr, interrupt_event, out_stream=out_stream):
+                        spoken_parts.append(sentence)
+                    else:
+                        interrupted = True
+                        pending_playback.append(sentence)
+                except Exception:
+                    # Output device failure — keep draining so the producer never blocks.
+                    interrupted = True
+                    pending_playback.append(sentence)
+        finally:
+            if out_stream is not None:
+                if not interrupted:
+                    try:
+                        out_stream.stop()  # drain remaining buffered audio before closing
+                    except Exception:
+                        pass
+                try:
+                    out_stream.close()
+                except Exception:
+                    pass
+
+    player = threading.Thread(target=_playback, daemon=True, name="tts-playback")
+    player.start()
+
+    def _synth_and_queue(sentence: str) -> None:
+        if interrupt_event.is_set():
+            pending_synth.append(sentence)
+            return
+        try:
+            with _tts_lock:
                 engine = _get_tts_singleton()
                 samples, sr = engine.synthesize(sentence)
-                if out_stream is None:
-                    out_stream = sd.OutputStream(samplerate=sr, channels=1, dtype="float32")
-                    out_stream.start()
-                completed = _play_samples(samples, sr, interrupt_event, out_stream=out_stream)
-            except Exception:
-                return True  # treat synthesis/playback error as not-interrupted
-        if not completed:
-            was_interrupted = True
-        return completed
+        except Exception as e:
+            _warn_tts_unavailable(e)
+            return
+        audio_q.put((sentence, samples, sr))
 
     try:
         for chunk in text_gen:
-            if interrupt_event.is_set():
-                buffer += chunk
-                continue
-
             buffer += chunk
+            if interrupt_event.is_set():
+                continue  # keep buffering; remainder lands in pending below
+
             sentences = _split_sentences(buffer)
-
             if len(sentences) > 1:
-                complete = sentences[:-1]
                 buffer = sentences[-1]
-                for s in complete:
-                    if interrupt_event.is_set():
-                        pending.append(s)
-                    else:
-                        if _flush_sentence(s):
-                            spoken_parts.append(s)
-                        else:
-                            pending.append(s)
+                for s in sentences[:-1]:
+                    _synth_and_queue(s)
 
-        # Flush remainder
         if buffer.strip():
             if interrupt_event.is_set():
-                pending.append(buffer.strip())
+                pending_synth.append(buffer.strip())
             else:
-                if _flush_sentence(buffer.strip()):
-                    spoken_parts.append(buffer.strip())
-                else:
-                    pending.append(buffer.strip())
-
+                _synth_and_queue(buffer.strip())
+                buffer = ""
     finally:
-        if out_stream is not None:
-            if not was_interrupted:
-                try:
-                    out_stream.stop()  # drain remaining buffered audio before closing
-                except Exception:
-                    pass
-            try:
-                out_stream.close()
-            except Exception:
-                pass
+        audio_q.put(None)
+        player.join()
 
-    return " ".join(spoken_parts), pending
+    return " ".join(spoken_parts), pending_playback + pending_synth
 
 
 def preload_tts() -> None:

@@ -1146,15 +1146,11 @@ class Gmail:
             messages = self._get_new_messages(name)
             if not messages:
                 return
-            audio = Cache.get_audio()
             msg = f"You have {len(messages)} new email(s) in {name}."
-            if audio:
-                Audio.text_to_speech(msg)
+            Audio.notify(msg)
             logger.log_system_event("gmail_poll", msg)
             for message in messages:
-                formatted = self._format_message(message, verbose=False)
-                if audio:
-                    Audio.text_to_speech(formatted)
+                Audio.notify(self._format_message(message, verbose=False))
 
         BackgroundJobs.start(job_name, _poll, interval=interval_minutes * 60)
         return f"Checking '{name}' emails every {interval_minutes} minutes."

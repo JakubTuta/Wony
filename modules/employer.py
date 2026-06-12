@@ -85,7 +85,6 @@ class Employer:
             "shut up",
         ]
 
-        streaming_enabled = bool(Config.get("voice.streaming.enabled", True))
         barge_in_enabled = bool(Config.get("voice.barge_in.enabled", False))
         resume_phrases = list(
             Config.get("voice.barge_in.resume_phrases", None)
@@ -99,7 +98,7 @@ class Employer:
 
             logger.log_user_input(text, "speech")
 
-            if streaming_enabled and barge_in_enabled:
+            if barge_in_enabled:
                 interrupt_event = threading.Event()
                 from helpers.audio import BargeinListener
                 listener = BargeinListener(interrupt_event)
@@ -184,6 +183,42 @@ class Employer:
         max_steps = int(Config.get("ai.agent.max_steps", 5))
         system_prompt = build_agent_system_prompt()
 
+        # Always stream the model's reply. Audio mode pipes deltas into the TTS
+        # pipeline (speech starts on the first sentence); console mode writes
+        # them to stdout as they arrive. Either way the full answer reaches the
+        # user through on_text — job_on_command never re-emits it afterwards.
+        audio = Cache.get_audio()
+
+        tts_queue = None
+        tts_thread = None
+        tts_result: typing.Dict[str, typing.Any] = {}
+        on_text = None
+
+        if audio:
+            import queue as _queue
+
+            from helpers.audio import stream_text_to_speech
+
+            tts_queue = _queue.Queue()
+
+            def _tts_worker() -> None:
+                def _chunks():
+                    while True:
+                        item = tts_queue.get()
+                        if item is None:
+                            return
+                        yield item
+
+                tts_result["value"] = stream_text_to_speech(_chunks(), interrupt_event)
+
+            tts_thread = threading.Thread(target=_tts_worker, daemon=True, name="tts-stream")
+            tts_thread.start()
+            on_text = tts_queue.put
+        else:
+            def on_text(chunk: str) -> None:
+                sys.stdout.write(chunk)
+                sys.stdout.flush()
+
         # agent_lock serializes concurrent agent runs (wake word + web /api/chat)
         with agent_lock:
             set_agent_active(True)
@@ -195,25 +230,22 @@ class Employer:
                     system_instructions=system_prompt,
                     history=Conversation.get_messages(),
                     max_steps=max_steps,
+                    on_text=on_text,
                 )
             finally:
                 set_agent_active(False)
+                if tts_queue is not None:
+                    tts_queue.put(None)
 
-        text = agent_result.text
-        if text:
-            audio = Cache.get_audio()
-            if audio:
-                if interrupt_event is not None:
-                    from helpers.audio import stream_text_to_speech
-                    _, paused = stream_text_to_speech([text], interrupt_event)
-                    self._last_paused_sentences = paused
-                else:
-                    Audio.text_to_speech(text)
-            else:
-                print(text)
+        if tts_thread is not None:
+            tts_thread.join()
+            _, paused = tts_result.get("value", ("", []))
+            self._last_paused_sentences = paused
+        elif agent_result.text:
+            print()  # newline after the streamed console line
 
-        Conversation.record_turn(user_input, text, calls=agent_result.calls)
-        return text
+        Conversation.record_turn(user_input, agent_result.text, calls=agent_result.calls)
+        return agent_result.text
 
     @register_job
     @capture_response

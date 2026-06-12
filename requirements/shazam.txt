@@ -1,4 +1,7 @@
-pyaudiowpatch
+# WASAPI loopback capture — Windows-only fork of PyAudio. The shazam module
+# records what the speakers play; on other platforms song recognition is
+# unavailable and the module reports why.
+pyaudiowpatch ; platform_system == "Windows"
 shazamio
 soundfile
 numpy
