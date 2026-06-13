@@ -180,7 +180,6 @@ def run_tray() -> None:
         return "Stop" if controller.is_running() else "Start"
 
     def _on_exit(icon, item) -> None:
-        controller.shutdown()
         icon.stop()
 
     menu = pystray.Menu(
@@ -199,9 +198,9 @@ def run_tray() -> None:
     )
     _icon_ref[0] = icon
 
-    # Hook the exit job so sys.exit(0) from "exit" command shuts down gracefully
+    # Hook the exit job so "exit" voice command shuts down gracefully.
+    # Only stop the icon here; controller.shutdown() runs after icon.run() returns.
     def _tray_exit_hook() -> None:
-        controller.shutdown()
         if _icon_ref[0] is not None:
             _icon_ref[0].stop()
 
@@ -228,6 +227,13 @@ def run_tray() -> None:
 
     # Block main thread on the tray icon (pystray requirement on Windows)
     icon.run()
+
+    # icon.run() returned — Exit was clicked (or _tray_exit_hook fired).
+    # Run cleanup on the main thread, then force-exit. os._exit bypasses
+    # atexit/gc finalizers that can block on audio/C-extension threads.
+    controller.shutdown()
+    import os as _os
+    _os._exit(0)
 
 
 if __name__ == "__main__":

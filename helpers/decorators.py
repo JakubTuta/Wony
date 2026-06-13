@@ -61,7 +61,7 @@ def capture_response(
             try:
                 response = f(*args, **kwargs)
             except Exception as e:
-                error_msg = f"\n[{class_name} - {function_name}]: {e}"
+                error_msg = f"Error ({class_name}.{function_name}): {e}"
                 print(error_msg)
 
                 if logger:

@@ -36,6 +36,7 @@ class Msg:
     html: str = ""
     label_names: typing.List[str] = dataclasses.field(default_factory=list)
     attachments: typing.List[str] = dataclasses.field(default_factory=list)
+    account: str = ""
 
 
 def _walk_parts(payload: dict) -> typing.Tuple[str, str, typing.List[str]]:
@@ -375,6 +376,9 @@ class Gmail:
         ]
 
         if verbose:
+            if message.account and len(GoogleAccounts.list_accounts()) > 1:
+                parts.append(f"Account: {message.account}")
+
             if message.recipient:
                 parts.append(f"To: {message.recipient.strip()}")
 
@@ -474,32 +478,52 @@ class Gmail:
     # Internal fetch helpers
     # ------------------------------------------------------------------
 
-    def _get_new_messages(self, account: str) -> typing.List[Msg]:
-        name = GoogleAccounts.resolve(account or None)
-        cache_key = f"last_email_date_{name}"
-        newer_than_days = self._get_newer_than_days(cache_key)
-        svc = self._svc(account)
-        label_map = self._label_map(account)
-        query = self._scope(f"is:unread newer_than:{newer_than_days}d")
-        refs = self._list_ids(svc, query, self._default_max())
-        return self._batch_get(svc, refs, "full", label_map)
+    def _accounts(self, account: str) -> typing.List[str]:
+        """Accounts to operate on: the named one if given, else every configured
+        account (so an unspecified account searches all). Raises via resolve()
+        if none are configured."""
+        if account:
+            return [GoogleAccounts.resolve(account)]
+        return GoogleAccounts.list_accounts() or [GoogleAccounts.resolve(None)]
 
-    def _get_newer_than_days(self, cache_key: str) -> int:
-        last_email_date: typing.Optional[str] = Cache.get_value(cache_key)
-        if last_email_date is None:
-            last_email_date = datetime.now().isoformat()
-        Cache.set_value(cache_key, datetime.now().isoformat())
-        newer_than_date = datetime.fromisoformat(last_email_date)
-        return max(1, (datetime.now() - newer_than_date).days + 1)
+    def _fetch(
+        self,
+        scoped_query: str,
+        max_results: int,
+        account: str,
+        fmt: str = "full",
+    ) -> typing.List[Msg]:
+        """Run an already-scoped query across the target account(s), tag each
+        message with its account, and return them sorted newest-first."""
+        if max_results <= 0:
+            max_results = self._default_max()
+        out: typing.List[Msg] = []
+        for name in self._accounts(account):
+            svc = self._svc(name)
+            label_map = self._label_map(name)
+            refs = self._list_ids(svc, scoped_query, max_results)
+            msgs = self._batch_get(svc, refs, fmt, label_map)
+            for m in msgs:
+                m.account = name
+            out.extend(msgs)
+        return self._sort_desc(out)
+
+    def _get_new_messages(self, account: str) -> typing.List[Msg]:
+        """Unread messages not yet announced by background polling. ID-based
+        dedup mirrors the calendar poller — robust against Gmail's day-granular
+        date filters re-announcing the same mail every interval."""
+        name = GoogleAccounts.resolve(account or None)
+        cache_key = f"announced_email_ids_{name}"
+        messages = self._fetch(self._scope("is:unread"), self._default_max(), name)
+        announced: typing.List[str] = Cache.get_value(cache_key) or []
+        new = [m for m in messages if m.id not in announced]
+        if new:
+            Cache.set_value(cache_key, (announced + [m.id for m in new])[-200:])
+        return new
 
     def _search(self, query: str, max_results: int = 0, account: str = "") -> typing.List[Msg]:
         """Public search helper returning Msg list (for external callers)."""
-        if max_results <= 0:
-            max_results = self._default_max()
-        svc = self._svc(account)
-        label_map = self._label_map(account)
-        refs = self._list_ids(svc, self._scope(query), max_results)
-        return self._batch_get(svc, refs, "full", label_map)
+        return self._fetch(self._scope(query), max_results, account)
 
     # ------------------------------------------------------------------
     # Jobs — read
@@ -509,29 +533,31 @@ class Gmail:
     @method_job
     def check_new_emails(self, account: str = "") -> str:
         """
-        [EMAIL MANAGEMENT JOB] Retrieves and announces new unread emails from Gmail.
+        [EMAIL MANAGEMENT JOB] Retrieves and announces all unread emails from Gmail inbox.
 
         Use this job when the user wants to:
         - Check for new Gmail messages
         - Get email notifications and summaries
         - Review recent unread emails
+        - See what unread emails they have
+        - List unread messages
 
         Keywords: email, emails, inbox, unread, messages, check emails, new emails, gmail,
-                 mail check, email update, inbox check, new messages
+                 mail check, email update, inbox check, new messages, show unread, list unread
 
         Args:
             account (str): Google account to use (default: primary).
 
         Returns:
-            str: Count and details of new emails.
+            str: Count and details of unread emails.
         """
-        messages = self._get_new_messages(account)
+        messages = self._fetch(self._scope("is:unread"), self._default_max(), account)
         audio = Cache.get_audio()
         return self._render_messages(
             messages,
-            header="Checking new emails...",
+            header="Unread emails:",
             audio=audio,
-            count_template="You have {count} new message(s).",
+            count_template="You have {count} unread message(s).",
         )
 
     @capture_response
@@ -571,11 +597,9 @@ class Gmail:
             max_r = self._default_max()
 
         audio = Cache.get_audio()
-        svc = self._svc(account)
-        label_map = self._label_map(account)
-        query = self._scope(f"newer_than:{days_back}d", folder=folder)
-        refs = self._list_ids(svc, query, max_r)
-        messages = self._sort_desc(self._batch_get(svc, refs, "full", label_map))
+        messages = self._fetch(
+            self._scope(f"newer_than:{days_back}d", folder=folder), max_r, account
+        )
         folder_label = f" ({folder})" if folder else ""
         return self._render_messages(
             messages,
@@ -609,10 +633,7 @@ class Gmail:
         audio = Cache.get_audio()
         if not max_results or max_results <= 0:
             max_results = self._default_max()
-        svc = self._svc(account)
-        label_map = self._label_map(account)
-        refs = self._list_ids(svc, self._scope(query), max_results)
-        messages = self._sort_desc(self._batch_get(svc, refs, "full", label_map))
+        messages = self._fetch(self._scope(query), max_results, account)
         return self._render_messages(
             messages,
             header=f"Searching emails: {query}",
@@ -652,10 +673,7 @@ class Gmail:
             max_results = self._default_max()
 
         audio = Cache.get_audio()
-        svc = self._svc(account)
-        label_map = self._label_map(account)
-        refs = self._list_ids(svc, self._scope(f"from:{sender}"), max_results)
-        messages = self._sort_desc(self._batch_get(svc, refs, "full", label_map))
+        messages = self._fetch(self._scope(f"from:{sender}"), max_results, account)
         return self._render_messages(
             messages,
             header=f"Emails from: {sender}",
@@ -690,8 +708,6 @@ class Gmail:
             str: Full details of the most recent matching email.
         """
         audio = Cache.get_audio()
-        svc = self._svc(account)
-        label_map = self._label_map(account)
 
         parts = []
         if sender:
@@ -700,11 +716,7 @@ class Gmail:
             parts.append(f"subject:{subject}")
         query = self._scope(" ".join(parts), folder=folder)
 
-        refs = self._list_ids(svc, query, 10)
-        if not refs:
-            return "No matching email found."
-
-        messages = self._sort_desc(self._batch_get(svc, refs, "full", label_map))
+        messages = self._fetch(query, 10, account)
         if not messages:
             return "No matching email found."
 
@@ -738,8 +750,6 @@ class Gmail:
             str: Full email body and headers.
         """
         audio = Cache.get_audio()
-        svc = self._svc(account)
-        label_map = self._label_map(account)
 
         if query:
             scoped = self._scope(query, folder=folder)
@@ -751,11 +761,7 @@ class Gmail:
                 parts.append(f"subject:{subject}")
             scoped = self._scope(" ".join(parts), folder=folder)
 
-        refs = self._list_ids(svc, scoped, 10)
-        if not refs:
-            return "No matching email found."
-
-        messages = self._sort_desc(self._batch_get(svc, refs, "full", label_map))
+        messages = self._fetch(scoped, 10, account)
         if not messages:
             return "No matching email found."
 
@@ -782,8 +788,16 @@ class Gmail:
         Returns:
             str: Number of unread emails.
         """
-        stats = self._label_counts(self._svc(account), "INBOX")
-        return f"You have {stats.get('messagesUnread', 0)} unread email(s)."
+        names = self._accounts(account)
+        total = 0
+        per: typing.List[str] = []
+        for name in names:
+            n = self._label_counts(self._svc(name), "INBOX").get("messagesUnread", 0)
+            total += n
+            per.append(f"{name}: {n}")
+        if len(names) > 1:
+            return f"You have {total} unread email(s) — " + ", ".join(per) + "."
+        return f"You have {total} unread email(s)."
 
     @capture_response
     @method_job
@@ -806,7 +820,10 @@ class Gmail:
             str: All label names.
         """
         audio = Cache.get_audio()
-        all_names = list(self._label_map(account).values())
+        all_names: typing.List[str] = []
+        for name in self._accounts(account):
+            all_names.extend(self._label_map(name).values())
+        all_names = list(dict.fromkeys(all_names))
 
         user_labels = [
             n for n in all_names
@@ -866,12 +883,9 @@ class Gmail:
             max_results = self._default_max()
 
         audio = Cache.get_audio()
-        svc = self._svc(account)
-        label_map = self._label_map(account)
         label_q = f'label:"{label}"' if " " in label else f"label:{label}"
         query = self._scope(label_q, no_inbox_prefix=True)
-        refs = self._list_ids(svc, query, max_results)
-        messages = self._sort_desc(self._batch_get(svc, refs, "full", label_map))
+        messages = self._fetch(query, max_results, account)
         return self._render_messages(
             messages,
             header=f"Emails with label '{label}':",
@@ -911,11 +925,9 @@ class Gmail:
             max_results = self._default_max()
 
         audio = Cache.get_audio()
-        svc = self._svc(account)
-        label_map = self._label_map(account)
-        query = self._scope(f"has:attachment newer_than:{days_back}d")
-        refs = self._list_ids(svc, query, max_results)
-        messages = self._sort_desc(self._batch_get(svc, refs, "full", label_map))
+        messages = self._fetch(
+            self._scope(f"has:attachment newer_than:{days_back}d"), max_results, account
+        )
         return self._render_messages(
             messages,
             header=f"Emails with attachments (past {days_back} days):",
@@ -952,11 +964,9 @@ class Gmail:
             max_results = self._default_max()
 
         audio = Cache.get_audio()
-        svc = self._svc(account)
-        label_map = self._label_map(account)
-        query = self._scope("is:starred", no_inbox_prefix=True)
-        refs = self._list_ids(svc, query, max_results)
-        messages = self._sort_desc(self._batch_get(svc, refs, "full", label_map))
+        messages = self._fetch(
+            self._scope("is:starred", no_inbox_prefix=True), max_results, account
+        )
         return self._render_messages(
             messages,
             header="Starred emails:",
@@ -993,11 +1003,9 @@ class Gmail:
             max_results = self._default_max()
 
         audio = Cache.get_audio()
-        svc = self._svc(account)
-        label_map = self._label_map(account)
-        query = self._scope("is:important", no_inbox_prefix=True)
-        refs = self._list_ids(svc, query, max_results)
-        messages = self._sort_desc(self._batch_get(svc, refs, "full", label_map))
+        messages = self._fetch(
+            self._scope("is:important", no_inbox_prefix=True), max_results, account
+        )
         return self._render_messages(
             messages,
             header="Important emails:",
@@ -1031,16 +1039,21 @@ class Gmail:
             return "Please provide a query or subject to find the thread."
 
         audio = Cache.get_audio()
-        svc = self._svc(account)
-        label_map = self._label_map(account)
+        search_q = self._scope(query if query else f"subject:{subject}")
 
-        search_q = query if query else f"subject:{subject}"
-        refs = self._list_ids(svc, self._scope(search_q), 1)
-        if not refs:
-            return "No matching email found."
+        svc = None
+        label_map: typing.Dict[str, str] = {}
+        thread_id = ""
+        for name in self._accounts(account):
+            candidate = self._svc(name)
+            refs = self._list_ids(candidate, search_q, 1)
+            if refs and refs[0].get("threadId"):
+                svc = candidate
+                label_map = self._label_map(name)
+                thread_id = refs[0]["threadId"]
+                break
 
-        thread_id = refs[0].get("threadId", "")
-        if not thread_id:
+        if not thread_id or svc is None:
             return "No matching email found."
 
         thread_raw = svc.users().threads().get(
@@ -1081,19 +1094,18 @@ class Gmail:
         Returns:
             str: Inbox summary including unread count, attachments, top senders.
         """
-        svc = self._svc(account)
-        label_map = self._label_map(account)
-
-        unread_count = self._label_counts(svc, "INBOX").get("messagesUnread", 0)
-        att_count = self._count(svc, self._scope(f"has:attachment newer_than:7d"))
-
-        unread_refs = self._list_ids(svc, self._scope("is:unread"), 50)
-        unread_msgs = self._batch_get(svc, unread_refs, "metadata", label_map)
-
+        unread_count = 0
+        att_count = 0
         sender_counts: typing.Dict[str, int] = {}
-        for m in unread_msgs:
-            s = self._format_sender(m.sender or "Unknown")
-            sender_counts[s] = sender_counts.get(s, 0) + 1
+        for name in self._accounts(account):
+            svc = self._svc(name)
+            label_map = self._label_map(name)
+            unread_count += self._label_counts(svc, "INBOX").get("messagesUnread", 0)
+            att_count += self._count(svc, self._scope("has:attachment newer_than:7d"))
+            unread_refs = self._list_ids(svc, self._scope("is:unread"), 50)
+            for m in self._batch_get(svc, unread_refs, "metadata", label_map):
+                s = self._format_sender(m.sender or "Unknown")
+                sender_counts[s] = sender_counts.get(s, 0) + 1
         top_senders = sorted(sender_counts.items(), key=lambda x: x[1], reverse=True)[:5]
 
         lines = [

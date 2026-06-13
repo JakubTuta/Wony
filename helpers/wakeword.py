@@ -307,7 +307,7 @@ class WakeWordListener:
         from helpers.ducking import duck_others
 
         with duck_others():
-            Audio.play_cached("Yes?")  # non-blocking WAV if rendered, else live TTS
+            Audio.play_cached("Yes?")
 
             from helpers.recognizer import Recognizer
 

@@ -272,22 +272,24 @@ class Audio:
         engine.save_to_file(text, filename)
 
     @staticmethod
-    def play_cached(text: str, blocking: bool = False) -> None:
+    def play_cached(text: str) -> None:
         """Play a pre-rendered WAV clip if available, else live TTS. Run scripts/render_voice_clips.py to generate clips."""
         if is_agent_active():
             return
 
-        wav = CACHED_CLIPS.get(text)
-        if wav and os.path.exists(wav):
-            try:
-                from helpers import mic
+        from helpers.ducking import duck_others
+        with duck_others():
+            wav = CACHED_CLIPS.get(text)
+            if wav and os.path.exists(wav):
+                try:
+                    from helpers import mic
 
-                mic.play_wav(wav, blocking=blocking)
-                return
-            except Exception as e:
-                print(f"[audio] cached playback failed ({e}) — falling back to TTS")
+                    mic.play_wav(wav, blocking=True)
+                    return
+                except Exception as e:
+                    print(f"[audio] cached playback failed ({e}) — falling back to TTS")
 
-        Audio.text_to_speech(text)
+            stream_text_to_speech([text])
 
     @staticmethod
     def text_to_speech(
@@ -500,9 +502,6 @@ def stream_text_to_speech(
                 except Exception:
                     pass
 
-    player = threading.Thread(target=_playback, daemon=True, name="tts-playback")
-    player.start()
-
     def _synth_and_queue(sentence: str) -> None:
         if interrupt_event.is_set():
             pending_synth.append(sentence)
@@ -516,27 +515,32 @@ def stream_text_to_speech(
             return
         audio_q.put((sentence, samples, sr))
 
-    try:
-        for chunk in text_gen:
-            buffer += chunk
-            if interrupt_event.is_set():
-                continue  # keep buffering; remainder lands in pending below
+    from helpers.ducking import duck_others
+    with duck_others():
+        player = threading.Thread(target=_playback, daemon=True, name="tts-playback")
+        player.start()
 
-            sentences = _split_sentences(buffer)
-            if len(sentences) > 1:
-                buffer = sentences[-1]
-                for s in sentences[:-1]:
-                    _synth_and_queue(s)
+        try:
+            for chunk in text_gen:
+                buffer += chunk
+                if interrupt_event.is_set():
+                    continue  # keep buffering; remainder lands in pending below
 
-        if buffer.strip():
-            if interrupt_event.is_set():
-                pending_synth.append(buffer.strip())
-            else:
-                _synth_and_queue(buffer.strip())
-                buffer = ""
-    finally:
-        audio_q.put(None)
-        player.join()
+                sentences = _split_sentences(buffer)
+                if len(sentences) > 1:
+                    buffer = sentences[-1]
+                    for s in sentences[:-1]:
+                        _synth_and_queue(s)
+
+            if buffer.strip():
+                if interrupt_event.is_set():
+                    pending_synth.append(buffer.strip())
+                else:
+                    _synth_and_queue(buffer.strip())
+                    buffer = ""
+        finally:
+            audio_q.put(None)
+            player.join()
 
     return " ".join(spoken_parts), pending_playback + pending_synth
 

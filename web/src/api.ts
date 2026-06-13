@@ -106,46 +106,6 @@ export async function sendChat(message: string): Promise<ChatResponse> {
   return res.json();
 }
 
-// Streams the assistant reply. `onDelta` fires for each text chunk as it
-// arrives; the resolved value is the final turn (id + full text + calls).
-export async function streamChat(
-  message: string,
-  onDelta: (chunk: string) => void,
-): Promise<ChatResponse> {
-  const res = await fetch(`${BASE}/chat/stream`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message }),
-  });
-  if (!res.ok || !res.body) throw new Error(`Chat failed: ${res.status}`);
-
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let final: ChatResponse = { id: null, text: '', calls: [] };
-
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-
-    const frames = buffer.split('\n\n');
-    buffer = frames.pop() ?? '';
-    for (const frame of frames) {
-      const line = frame.trim();
-      if (!line.startsWith('data:')) continue;
-      const evt = JSON.parse(line.slice(5).trim()) as
-        | { type: 'delta'; data: string }
-        | { type: 'final'; data: ChatResponse }
-        | { type: 'error'; data: string };
-      if (evt.type === 'delta') onDelta(evt.data);
-      else if (evt.type === 'final') final = evt.data;
-      else if (evt.type === 'error') throw new Error(evt.data);
-    }
-  }
-  return final;
-}
-
 export async function clearChat(): Promise<void> {
   await fetch(`${BASE}/chat/clear`, { method: 'POST' });
 }
@@ -171,11 +131,15 @@ export async function fetchHistory(limit = 50): Promise<HistoryTurn[]> {
 }
 
 export type WsEvent =
-  | ({ type: 'turn' } & HistoryTurn)
+  | ({ type: 'turn'; session_id?: string } & HistoryTurn)
+  | ({ type: 'delta'; session_id: string; data: string })
+  | ({ type: 'error'; session_id: string; data: string })
   | Diagnostic;
 
 export function connectEventSocket(handlers: {
-  onTurn?: (turn: HistoryTurn) => void;
+  onTurn?: (turn: HistoryTurn, sessionId?: string) => void;
+  onDelta?: (chunk: string, sessionId: string) => void;
+  onError?: (message: string, sessionId: string) => void;
   onDiagnostic?: (d: Diagnostic) => void;
 }): () => void {
   const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws`;
@@ -191,8 +155,12 @@ export function connectEventSocket(handlers: {
         const data = JSON.parse(ev.data) as WsEvent;
         if (data.type === 'diagnostic') {
           handlers.onDiagnostic?.(data as Diagnostic);
+        } else if (data.type === 'delta') {
+          handlers.onDelta?.(data.data, data.session_id);
+        } else if (data.type === 'error') {
+          handlers.onError?.(data.data, data.session_id);
         } else {
-          handlers.onTurn?.(data as HistoryTurn);
+          handlers.onTurn?.(data as HistoryTurn, (data as { session_id?: string }).session_id);
         }
       } catch {
         // ignore malformed
@@ -215,8 +183,66 @@ export function connectEventSocket(handlers: {
   };
 }
 
-export function connectTurnsSocket(
-  onTurn: (turn: HistoryTurn) => void,
-): () => void {
-  return connectEventSocket({ onTurn });
+export function connectChatSocket(handlers: {
+  onTurn?: (turn: HistoryTurn, sessionId?: string) => void;
+  onDelta?: (chunk: string, sessionId: string) => void;
+  onError?: (message: string, sessionId: string) => void;
+  onDiagnostic?: (d: Diagnostic) => void;
+  onConnect?: () => void;
+  onDisconnect?: () => void;
+}): { send: (message: string, sessionId: string) => void; disconnect: () => void } {
+  let ws: WebSocket | null = null;
+  let closed = false;
+  let retryTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws`;
+
+  function connect() {
+    if (closed) return;
+    ws = new WebSocket(wsUrl);
+
+    ws.onopen = () => handlers.onConnect?.();
+
+    ws.onmessage = (ev) => {
+      try {
+        const data = JSON.parse(ev.data) as WsEvent;
+        if (data.type === 'diagnostic') {
+          handlers.onDiagnostic?.(data as Diagnostic);
+        } else if (data.type === 'delta') {
+          handlers.onDelta?.(data.data, data.session_id);
+        } else if (data.type === 'error') {
+          handlers.onError?.(data.data, data.session_id);
+        } else {
+          handlers.onTurn?.(data as HistoryTurn, (data as { session_id?: string }).session_id);
+        }
+      } catch {
+        // ignore malformed
+      }
+    };
+
+    ws.onclose = () => {
+      ws = null;
+      handlers.onDisconnect?.();
+      if (!closed) {
+        retryTimeout = setTimeout(connect, 3000);
+      }
+    };
+
+    ws.onerror = () => ws?.close();
+  }
+
+  connect();
+
+  return {
+    send(message: string, sessionId: string) {
+      if (ws?.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'chat', message, session_id: sessionId }));
+      }
+    },
+    disconnect() {
+      closed = true;
+      if (retryTimeout) clearTimeout(retryTimeout);
+      ws?.close();
+    },
+  };
 }

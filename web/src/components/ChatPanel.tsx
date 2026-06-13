@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { Send, Trash2, Database, ChevronDown, ChevronRight, Loader2, Bot, User } from 'lucide-react';
-import { streamChat, clearChat, wipeData, fetchHistory, connectTurnsSocket } from '../api';
+import { clearChat, wipeData, fetchHistory, connectChatSocket } from '../api';
 import type { ChatCall, HistoryTurn } from '../api';
 
 interface Message {
@@ -8,7 +8,12 @@ interface Message {
   text: string;
   calls?: ChatCall[];
   turnId?: number | null;
-  streamKey?: string; // present only while streaming; removed on finalization
+  streamKey?: string;
+}
+
+interface PendingSession {
+  sessionId: string;
+  streamKey: string;
 }
 
 export function ChatPanel() {
@@ -19,10 +24,114 @@ export function ChatPanel() {
   const [expandedCalls, setExpandedCalls] = useState<Set<number>>(new Set());
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  // Turn ids whose assistant reply is already on screen — the single source of
-  // truth for dedup. A turn arrives from up to two paths (HTTP /chat response
-  // and the WS broadcast); whichever lands first claims the id, the other skips.
+
+  // Single WS socket ref — owns send() and disconnect()
+  const socketRef = useRef<ReturnType<typeof connectChatSocket> | null>(null);
+
+  // Current in-flight request. Set before send, cleared on turn/error.
+  const pendingRef = useRef<PendingSession | null>(null);
+
+  // Dedup external turns (voice / other tabs) by turn id.
   const seenTurnIds = useRef<Set<number>>(new Set());
+
+  // ------------------------------------------------------------------
+  // Incoming message handlers
+  // ------------------------------------------------------------------
+
+  const handleTurn = useCallback((turn: HistoryTurn, sessionId?: string) => {
+    if (pendingRef.current && sessionId === pendingRef.current.sessionId) {
+      // Our own turn completed — finalize the streaming bubble.
+      const { streamKey } = pendingRef.current;
+      pendingRef.current = null;
+      if (turn.id != null) seenTurnIds.current.add(turn.id);
+      setLoading(false);
+      setMessages(prev => {
+        const idx = prev.findIndex(m => m.streamKey === streamKey);
+        if (idx === -1) return prev;
+        const next = [...prev];
+        next[idx] = {
+          role: 'assistant',
+          text: turn.assistant || next[idx].text || '',
+          calls: turn.calls ?? [],
+          turnId: turn.id,
+        };
+        return next;
+      });
+      return;
+    }
+
+    // External turn (voice, other tab, proactive) — dedup by id.
+    if (turn.id != null && seenTurnIds.current.has(turn.id)) return;
+    if (turn.id != null) seenTurnIds.current.add(turn.id);
+
+    setMessages(prev => {
+      const n = prev.length;
+      const assistantMsg: Message = {
+        role: 'assistant',
+        text: turn.assistant,
+        calls: turn.calls ?? [],
+        turnId: turn.id,
+      };
+      // Search all messages backwards for a matching user bubble.
+      for (let i = n - 1; i >= 0; i--) {
+        if (prev[i].role === 'user' && prev[i].text === turn.user) {
+          if (!turn.assistant) return prev.slice(0, i + 1);
+          return [...prev.slice(0, i + 1), assistantMsg];
+        }
+      }
+      // Truly external: add both bubbles.
+      return [
+        ...prev,
+        { role: 'user' as const, text: turn.user },
+        ...(turn.assistant ? [assistantMsg] : []),
+      ];
+    });
+  }, []);
+
+  const handleDelta = useCallback((chunk: string, sessionId: string) => {
+    if (pendingRef.current?.sessionId !== sessionId) return;
+    const { streamKey } = pendingRef.current;
+    setMessages(prev => {
+      const idx = prev.findIndex(m => m.streamKey === streamKey);
+      if (idx === -1) return prev;
+      const next = [...prev];
+      next[idx] = { ...next[idx], text: next[idx].text + chunk };
+      return next;
+    });
+  }, []);
+
+  const handleError = useCallback((message: string, sessionId: string) => {
+    if (pendingRef.current?.sessionId !== sessionId) return;
+    const { streamKey } = pendingRef.current;
+    pendingRef.current = null;
+    setLoading(false);
+    setMessages(prev => {
+      const idx = prev.findIndex(m => m.streamKey === streamKey);
+      if (idx === -1) return prev;
+      const next = [...prev];
+      next[idx] = { role: 'assistant', text: `Error: ${message}` };
+      return next;
+    });
+  }, []);
+
+  const handleDisconnect = useCallback(() => {
+    // Clear any in-flight bubble on disconnect so the user sees an error.
+    if (!pendingRef.current) return;
+    const { streamKey } = pendingRef.current;
+    pendingRef.current = null;
+    setLoading(false);
+    setMessages(prev => {
+      const idx = prev.findIndex(m => m.streamKey === streamKey);
+      if (idx === -1) return prev;
+      const next = [...prev];
+      next[idx] = { role: 'assistant', text: 'Connection lost. Please try again.' };
+      return next;
+    });
+  }, []);
+
+  // ------------------------------------------------------------------
+  // Lifecycle: history + socket
+  // ------------------------------------------------------------------
 
   useEffect(() => {
     fetchHistory(50).then(turns => {
@@ -38,114 +147,69 @@ export function ChatPanel() {
     }).finally(() => setHistoryLoading(false));
   }, []);
 
-  const handleIncomingTurn = useCallback((turn: HistoryTurn) => {
-    // Already rendered (e.g. HTTP response beat the WS frame) — ignore.
-    if (turn.id != null && seenTurnIds.current.has(turn.id)) return;
-    if (turn.id != null) seenTurnIds.current.add(turn.id);
-
-    setMessages(prev => {
-      const n = prev.length;
-      const assistantMsg: Message = {
-        role: 'assistant',
-        text: turn.assistant,
-        calls: turn.calls ?? [],
-        turnId: turn.id,
-      };
-      // Look in the last 2 positions for a matching user bubble.
-      // The streaming path adds [user, empty-assistant(streamKey)] atomically,
-      // so the user bubble may be at n-2 when there's a live streaming bubble.
-      for (let i = n - 1; i >= Math.max(0, n - 2); i--) {
-        if (prev[i].role === 'user' && prev[i].text === turn.user) {
-          if (!turn.assistant) return prev.slice(0, i + 1);
-          // Drop everything after the user bubble (removes in-flight streaming bubble)
-          // and append the final assistant message.
-          return [...prev.slice(0, i + 1), assistantMsg];
-        }
-      }
-      // External / proactive turn (voice, desktop) — add both bubbles.
-      return [
-        ...prev,
-        { role: 'user' as const, text: turn.user },
-        ...(turn.assistant ? [assistantMsg] : []),
-      ];
-    });
-  }, []);
-
   useEffect(() => {
-    const disconnect = connectTurnsSocket(handleIncomingTurn);
-    return disconnect;
-  }, [handleIncomingTurn]);
+    const socket = connectChatSocket({
+      onTurn: handleTurn,
+      onDelta: handleDelta,
+      onError: handleError,
+      onDisconnect: handleDisconnect,
+    });
+    socketRef.current = socket;
+    return () => {
+      socket.disconnect();
+      socketRef.current = null;
+    };
+  }, [handleTurn, handleDelta, handleError, handleDisconnect]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, loading]);
 
-  async function send() {
+  // ------------------------------------------------------------------
+  // Send
+  // ------------------------------------------------------------------
+
+  function send() {
     const text = input.trim();
-    if (!text || loading) return;
+    if (!text || loading || !socketRef.current) return;
+
+    const sessionId = `s${Date.now()}`;
+    const streamKey = sessionId;
+
+    pendingRef.current = { sessionId, streamKey };
     setInput('');
     setLoading(true);
-
-    // Use a stable key so the streaming bubble can be found by identity
-    // rather than a stale index — avoids both the "Empty response" flash and
-    // the duplicate-user-message race with the WS broadcast.
-    const key = `s${Date.now()}`;
     setMessages(prev => [
       ...prev,
       { role: 'user', text },
-      { role: 'assistant', text: '', streamKey: key },
+      { role: 'assistant', text: '', streamKey },
     ]);
 
     try {
-      const res = await streamChat(text, chunk => {
-        setMessages(prev => {
-          const idx = prev.findIndex(m => m.streamKey === key);
-          if (idx === -1) return prev; // WS already claimed this turn
-          const next = [...prev];
-          next[idx] = { ...next[idx], text: next[idx].text + chunk };
-          return next;
-        });
-      });
-      // WS frame may have already rendered this turn — dedup by id, not text.
-      if (res.id != null && seenTurnIds.current.has(res.id)) {
-        setMessages(prev => prev.filter(m => m.streamKey !== key));
-        return;
-      }
-      if (res.id != null) seenTurnIds.current.add(res.id);
+      socketRef.current.send(text, sessionId);
+    } catch {
+      pendingRef.current = null;
+      setLoading(false);
       setMessages(prev => {
-        const idx = prev.findIndex(m => m.streamKey === key);
-        if (idx === -1) return prev; // WS handled it while we were finalizing
-        const next = [...prev];
-        next[idx] = {
-          role: 'assistant',
-          text: res.text || next[idx].text || '',
-          calls: res.calls,
-          turnId: res.id,
-          // streamKey intentionally omitted — message is finalized
-        };
-        return next;
-      });
-    } catch (e) {
-      setMessages(prev => {
-        const idx = prev.findIndex(m => m.streamKey === key);
+        const idx = prev.findIndex(m => m.streamKey === streamKey);
         if (idx === -1) return prev;
         const next = [...prev];
-        next[idx] = {
-          role: 'assistant',
-          text: `Error: ${e instanceof Error ? e.message : String(e)}`,
-        };
+        next[idx] = { role: 'assistant', text: 'Failed to send. Please try again.' };
         return next;
       });
-    } finally {
-      setLoading(false);
     }
   }
+
+  // ------------------------------------------------------------------
+  // UI helpers
+  // ------------------------------------------------------------------
 
   async function handleClear() {
     await clearChat();
     setMessages([]);
     setExpandedCalls(new Set());
     seenTurnIds.current.clear();
+    pendingRef.current = null;
   }
 
   async function handleWipe() {
@@ -158,6 +222,7 @@ export function ChatPanel() {
       setMessages([]);
       setExpandedCalls(new Set());
       seenTurnIds.current.clear();
+      pendingRef.current = null;
     } catch (e) {
       window.alert(`Wipe failed: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -177,6 +242,10 @@ export function ChatPanel() {
       send();
     }
   }
+
+  // ------------------------------------------------------------------
+  // Render
+  // ------------------------------------------------------------------
 
   return (
     <div className="flex flex-col h-full">

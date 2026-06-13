@@ -39,17 +39,23 @@ def to_16k_mono_f32(samples: np.ndarray, in_rate: int) -> np.ndarray:
 
 
 def _play(data: np.ndarray, sr: int, blocking: bool) -> None:
+    channels = 1 if data.ndim == 1 else data.shape[1]
+    arr = data.reshape(-1, 1) if data.ndim == 1 else data.astype("float32")
+
+    def _do_play() -> None:
+        try:
+            stream = sd.OutputStream(samplerate=sr, channels=channels, dtype="float32")
+            stream.start()
+            stream.write(arr)
+            stream.stop()
+            stream.close()
+        except Exception as e:
+            print(f"[mic] playback failed: {e}")
+
     if blocking:
-        sd.play(data, sr)
-        sd.wait()
+        _do_play()
     else:
-        def _bg() -> None:
-            try:
-                sd.play(data, sr)
-                sd.wait()
-            except Exception as e:
-                print(f"[mic] playback failed: {e}")
-        threading.Thread(target=_bg, daemon=True).start()
+        threading.Thread(target=_do_play, daemon=True).start()
 
 
 def play_wav(filename: str, blocking: bool = False) -> None:

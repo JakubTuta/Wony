@@ -10,7 +10,7 @@ import typing
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -361,81 +361,6 @@ def build_app() -> FastAPI:
                 raise HTTPException(status_code=503, detail=user_msg)
             raise HTTPException(status_code=500, detail=str(e))
 
-    @app.post("/api/chat/stream")
-    async def chat_stream(req: ChatRequest) -> StreamingResponse:
-        """Stream the assistant reply as Server-Sent Events.
-
-        Emits `{"type":"delta","data":"<text>"}` frames as the model produces
-        text, then one `{"type":"final","data":{id,text,calls}}` frame (or
-        `{"type":"error","data":"..."}`). The agent runs in a worker thread; its
-        on_text callback pushes deltas onto a queue the async generator drains.
-        """
-        import json as _json
-        import queue as _queue
-        import threading as _threading
-
-        if not req.message or not req.message.strip():
-            raise HTTPException(status_code=400, detail="Message cannot be empty.")
-
-        q: "_queue.Queue" = _queue.Queue()
-
-        def _run() -> None:
-            from helpers.agent import run_agent
-            from helpers.bootstrap import get_ai_client
-            from helpers.conversation import Conversation
-            from helpers.decorators import agent_lock, set_agent_active
-            from helpers.logger import logger
-            from modules.ai import build_agent_system_prompt
-
-            try:
-                ai_client = get_ai_client()
-                system_prompt = build_agent_system_prompt()
-                history = Conversation.get_messages()
-                max_steps = int(Config.get("ai.agent.max_steps", 5))
-                all_jobs = ServiceRegistry.get_all_jobs()
-
-                with agent_lock:
-                    set_agent_active(True)
-                    try:
-                        result = run_agent(
-                            client=ai_client,
-                            user_input=req.message,
-                            available_jobs=all_jobs,
-                            system_instructions=system_prompt,
-                            history=history,
-                            max_steps=max_steps,
-                            on_text=lambda c: q.put(("delta", c)),
-                        )
-                    finally:
-                        set_agent_active(False)
-
-                safe_calls = _sanitize_calls(result.calls)
-                turn_id = Conversation.record_turn(req.message, result.text, calls=safe_calls)
-                q.put(("final", {"id": turn_id, "text": result.text, "calls": safe_calls}))
-            except Exception as e:
-                logger.log_error(str(e), "web_chat_stream")
-                classified = _classify_api_error(e)
-                if classified:
-                    user_msg, hint = classified
-                    _emit_api_diagnostic(user_msg, hint)
-                    q.put(("error", user_msg))
-                else:
-                    q.put(("error", str(e)))
-            finally:
-                q.put(None)
-
-        _threading.Thread(target=_run, daemon=True, name="web-chat-stream").start()
-
-        async def _events() -> typing.AsyncGenerator[str, None]:
-            loop = asyncio.get_running_loop()
-            while True:
-                item = await loop.run_in_executor(None, q.get)
-                if item is None:
-                    break
-                kind, payload = item
-                yield f"data: {_json.dumps({'type': kind, 'data': payload})}\n\n"
-
-        return StreamingResponse(_events(), media_type="text/event-stream")
 
     @app.post("/api/chat/clear")
     def clear_chat() -> typing.Dict[str, str]:
@@ -474,14 +399,112 @@ def build_app() -> FastAPI:
             ]
         }
 
+    async def _ws_chat(ws: WebSocket, data: dict) -> None:
+        """Handle a {type:"chat"} message on the WebSocket.
+
+        Streams deltas back to the requesting client only, then broadcasts the
+        completed turn (with session_id) to all connected clients so other tabs
+        and the voice UI stay in sync without a separate SSE connection.
+        """
+        import queue as _queue
+        import threading as _threading
+        from datetime import datetime as _dt
+
+        message = (data.get("message") or "").strip()
+        session_id = str(data.get("session_id") or "")
+
+        if not message:
+            try:
+                await ws.send_json({"type": "error", "session_id": session_id, "data": "Message cannot be empty."})
+            except Exception:
+                pass
+            return
+
+        q: "_queue.Queue" = _queue.Queue()
+        loop = asyncio.get_running_loop()
+
+        def _run() -> None:
+            from helpers.agent import run_agent
+            from helpers.bootstrap import get_ai_client
+            from helpers.conversation import Conversation
+            from helpers.decorators import agent_lock, set_agent_active
+            from helpers.logger import logger
+            from modules.ai import build_agent_system_prompt
+
+            try:
+                ai_client = get_ai_client()
+                system_prompt = build_agent_system_prompt()
+                history = Conversation.get_messages()
+                max_steps = int(Config.get("ai.agent.max_steps", 5))
+                all_jobs = ServiceRegistry.get_all_jobs()
+
+                with agent_lock:
+                    set_agent_active(True)
+                    try:
+                        result = run_agent(
+                            client=ai_client,
+                            user_input=message,
+                            available_jobs=all_jobs,
+                            system_instructions=system_prompt,
+                            history=history,
+                            max_steps=max_steps,
+                            on_text=lambda c: q.put(("delta", c)),
+                        )
+                    finally:
+                        set_agent_active(False)
+
+                safe_calls = _sanitize_calls(result.calls)
+                # emit=False: we broadcast ourselves below with session_id included
+                turn_id = Conversation.record_turn(message, result.text, calls=safe_calls, emit=False)
+                q.put(("done", {
+                    "id": turn_id,
+                    "user": message,
+                    "assistant": result.text,
+                    "calls": safe_calls,
+                    "ts": _dt.now().isoformat(timespec="seconds"),
+                }))
+            except Exception as e:
+                logger.log_error(str(e), "ws_chat")
+                classified = _classify_api_error(e)
+                if classified:
+                    user_msg, hint = classified
+                    _emit_api_diagnostic(user_msg, hint)
+                    q.put(("error", user_msg))
+                else:
+                    q.put(("error", str(e)))
+            finally:
+                q.put(None)
+
+        _threading.Thread(target=_run, daemon=True, name="ws-chat").start()
+
+        while True:
+            item = await loop.run_in_executor(None, q.get)
+            if item is None:
+                break
+            kind, payload = item
+            try:
+                if kind == "delta":
+                    await ws.send_json({"type": "delta", "session_id": session_id, "data": payload})
+                elif kind == "done":
+                    await _ws_broadcast({"type": "turn", "session_id": session_id, **payload})
+                elif kind == "error":
+                    await ws.send_json({"type": "error", "session_id": session_id, "data": payload})
+            except Exception:
+                break
+
     @app.websocket("/api/ws")
     async def websocket_turns(ws: WebSocket) -> None:
         await ws.accept()
         _ws_clients.add(ws)
         try:
             while True:
-                # Keep the connection alive; client sends pings or we just wait
-                await ws.receive_text()
+                raw = await ws.receive_text()
+                try:
+                    data = json.loads(raw)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if data.get("type") == "chat":
+                    asyncio.create_task(_ws_chat(ws, data))
         except WebSocketDisconnect:
             pass
         finally:

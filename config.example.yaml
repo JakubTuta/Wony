@@ -75,6 +75,9 @@ ai:
   thinking: "on"
   history:
     max_turns: 5          # past exchanges (user+assistant pairs) kept in context
+    tool_results_turns: 2        # recent turns whose raw tool output is replayed into context
+                                 # so the model can answer follow-ups without re-calling tools
+                                 # 0 = disabled; lower = leaner prompt = faster voice first-token
   agent:
     max_steps: 5          # maximum tool-call iterations per request
 

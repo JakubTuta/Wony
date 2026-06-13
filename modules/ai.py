@@ -102,9 +102,15 @@ def build_agent_system_prompt() -> str:
         "\n\n7. REMEMBER FACTS: If the user states a personal preference or fact,"
         " call `remember` to store it for future sessions."
 
-        "\n\n8. ANSWER FROM HISTORY: For follow-up questions about something already in"
-        " the conversation ('what was it about', 'when is that'),"
-        " answer directly from history without calling a tool."
+        "\n\n8. ANSWER FROM HISTORY — BUT FETCH WHEN ASKED FOR MORE: For a follow-up"
+        " whose answer is already fully present in the conversation ('what was it about',"
+        " 'when is that'), answer directly from history. But if the user asks for detail"
+        " you do NOT already have — e.g. the briefing listed unread senders and they now"
+        " ask to read those emails, see the bodies, or get details of today's meetings —"
+        " call the matching email/calendar tool to fetch it (check_new_emails, read_email,"
+        " get_today_agenda, etc.). You DO have access to the user's Gmail and Calendar via"
+        " these tools: never reply that you cannot access their email or calendar. A tool"
+        " returning zero results is a valid answer ('no unread emails'), not an error."
 
         "\n\n9. RECALL FROM PERSISTENT HISTORY: If the user asks about past conversations"
         " across sessions ('what did we discuss last week', 'did I mention X before',"

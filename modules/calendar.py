@@ -59,6 +59,18 @@ class Calendar:
             self._services[name] = build("calendar", "v3", credentials=creds)
         return self._services[name]
 
+    def _accounts(self, account: str) -> typing.List[str]:
+        """Accounts to operate on: the named one if given, else every configured
+        account (so an unspecified account searches all)."""
+        if account:
+            return [GoogleAccounts.resolve(account)]
+        return GoogleAccounts.list_accounts() or [GoogleAccounts.resolve(None)]
+
+    @staticmethod
+    def _event_start_key(event: dict) -> str:
+        start = event.get("start", {})
+        return start.get("dateTime") or start.get("date") or ""
+
     def _load_credentials(self, token_file: str) -> Credentials:
         creds: typing.Optional[Credentials] = None
         if os.path.exists(token_file):
@@ -94,7 +106,6 @@ class Calendar:
         if max_results is None:
             max_results = int(cfg.get("max_results", 10))
 
-        service = self._service_for(account)
         now = now_local()
 
         if time_min and time_max:
@@ -109,38 +120,52 @@ class Calendar:
             t_min = now.isoformat()
             t_max = (now + timedelta(hours=hours_ahead)).isoformat()
 
-        kwargs: dict = dict(
-            calendarId=calendar_id,
-            timeMin=t_min,
-            timeMax=t_max,
-            maxResults=max_results,
-            singleEvents=True,
-            orderBy="startTime",
-        )
-        if q:
-            kwargs["q"] = q
+        items: typing.List[dict] = []
+        for name in self._accounts(account):
+            service = self._service_for(name)
+            kwargs: dict = dict(
+                calendarId=calendar_id,
+                timeMin=t_min,
+                timeMax=t_max,
+                maxResults=max_results,
+                singleEvents=True,
+                orderBy="startTime",
+            )
+            if q:
+                kwargs["q"] = q
+            response = service.events().list(**kwargs).execute()
+            for ev in response.get("items", []):
+                ev["_account"] = name
+                items.append(ev)
 
-        response = service.events().list(**kwargs).execute()
-        return response.get("items", [])
+        items.sort(key=self._event_start_key)
+        return items
 
     def _fetch_events_for_day(self, day: datetime, account: str = "", calendar_id: str = "primary") -> typing.List[dict]:
         tz = local_tz()
         start = day.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=tz)
         end = start + timedelta(days=1)
-        service = self._service_for(account)
-        response = (
-            service.events()
-            .list(
-                calendarId=calendar_id,
-                timeMin=start.isoformat(),
-                timeMax=end.isoformat(),
-                maxResults=50,
-                singleEvents=True,
-                orderBy="startTime",
+        items: typing.List[dict] = []
+        for name in self._accounts(account):
+            service = self._service_for(name)
+            response = (
+                service.events()
+                .list(
+                    calendarId=calendar_id,
+                    timeMin=start.isoformat(),
+                    timeMax=end.isoformat(),
+                    maxResults=50,
+                    singleEvents=True,
+                    orderBy="startTime",
+                )
+                .execute()
             )
-            .execute()
-        )
-        return response.get("items", [])
+            for ev in response.get("items", []):
+                ev["_account"] = name
+                items.append(ev)
+
+        items.sort(key=self._event_start_key)
+        return items
 
     def _get_new_events(self, account: str) -> typing.List[dict]:
         name = GoogleAccounts.resolve(account or None)
@@ -172,6 +197,10 @@ class Calendar:
             parts.append(f"Location: {location}")
 
         if verbose:
+            acct = event.get("_account", "")
+            if acct and len(GoogleAccounts.list_accounts()) > 1:
+                parts.append(f"Account: {acct}")
+
             description = event.get("description", "").strip()
             if description:
                 parts.append(f"Description: {description}")
@@ -646,6 +675,8 @@ class Calendar:
         if not calendar_name:
             return "Please specify which calendar to check."
         audio = Cache.get_audio()
+        # Named calendars are account-specific; pin to one account.
+        account = GoogleAccounts.resolve(account or None)
         cal_id = self._resolve_calendar_id(calendar_name, account)
         if not cal_id:
             return f"Calendar '{calendar_name}' not found."
@@ -1050,6 +1081,8 @@ class Calendar:
         if not query and not date:
             return "Error: Provide a query or date to find the event to edit."
 
+        # Edits patch a specific calendar; pin to one account for search + patch.
+        account = GoogleAccounts.resolve(account or None)
         search_date = self._parse_date(date) if date else None
         if search_date:
             events = self._fetch_events_for_day(search_date, account=account)
@@ -1167,6 +1200,8 @@ class Calendar:
         if not query and not date:
             return "Error: Provide a query or date to find the event to delete."
 
+        # Deletes target a specific calendar; pin to one account.
+        account = GoogleAccounts.resolve(account or None)
         search_date = self._parse_date(date) if date else None
         if search_date:
             events = self._fetch_events_for_day(search_date, account=account)

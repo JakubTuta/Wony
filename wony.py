@@ -83,21 +83,42 @@ def _require_setup() -> None:
 # ── Subcommand handlers ───────────────────────────────────────────────────────
 
 
+def _get_tray_launcher(pythonw: str) -> str:
+    """Return path to Wony.exe — a copy of pythonw.exe placed in the same
+    Python directory so the tray process shows as 'Wony' in Task Manager.
+    Re-copies if pythonw.exe is newer (e.g. after a Python update).
+    Falls back to pythonw.exe on any error."""
+    import os
+    import shutil
+
+    launcher = os.path.join(os.path.dirname(pythonw), "Wony.exe")
+    try:
+        src_mtime = os.path.getmtime(pythonw)
+        dst_mtime = os.path.getmtime(launcher) if os.path.isfile(launcher) else 0
+        if dst_mtime < src_mtime:
+            shutil.copy2(pythonw, launcher)
+    except Exception:
+        pass
+    return launcher if os.path.isfile(launcher) else pythonw
+
+
 def cmd_tray(args: argparse.Namespace) -> None:
     import os
     import subprocess
 
     exe = sys.executable
-    # If running under python.exe (console), re-spawn under pythonw.exe so the
-    # process survives terminal close.
+    # If running under python.exe (console), re-spawn under Wony.exe (a copy of
+    # pythonw.exe) so the process shows as "Wony" in Task Manager and survives
+    # terminal close.
     if os.path.basename(exe).lower() == "python.exe":
         pythonw = os.path.join(os.path.dirname(exe), "pythonw.exe")
         if not os.path.isfile(pythonw):
             pythonw = exe.replace("python.exe", "pythonw.exe")
         if os.path.isfile(pythonw):
+            launcher = _get_tray_launcher(pythonw)
             script = os.path.abspath(__file__)
             subprocess.Popen(
-                [pythonw, script, "tray"],
+                [launcher, script, "tray"],
                 cwd=os.path.dirname(script),
                 close_fds=True,
                 creationflags=subprocess.DETACHED_PROCESS
