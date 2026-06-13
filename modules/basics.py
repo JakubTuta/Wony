@@ -108,6 +108,73 @@ def set_timer(minutes: float, label: str = "") -> str:
     return f"Timer set for {display}" + (f": {label}" if label else "") + "."
 
 
+@register_job(module_name="basics", summary="Set a timer for a specific clock time")
+@capture_response
+def set_timer_at(hour: int, minute: int = 0, label: str = "", date: str = "") -> str:
+    """
+    [TIMER JOB] Sets a background timer that fires at a specific clock time.
+
+    Use this job when the user wants to:
+    - Set a timer for a specific time of day
+    - Be reminded at a specific hour and minute
+    - Set an alarm for a future date and time
+
+    Keywords: set timer at, alarm at, remind me at, wake me at, at N o'clock,
+             at HH:MM, set alarm for, remind me on, timer for tomorrow at
+
+    Args:
+        hour (int): Hour of the day (0-23).
+        minute (int): Minute of the hour (0-59). Defaults to 0.
+        label (str): Optional label/description for the timer.
+        date (str): Optional date in YYYY-MM-DD format. If omitted, uses today
+                    (or tomorrow if the time has already passed today).
+
+    Returns:
+        str: Confirmation that the timer was started, or an error message.
+    """
+    try:
+        hour = int(hour)
+        minute = int(minute)
+    except (TypeError, ValueError):
+        return "Invalid hour or minute. Provide integers, e.g. hour=14, minute=30."
+
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return "Hour must be 0-23 and minute 0-59."
+
+    now = datetime.now()
+
+    if date:
+        try:
+            parsed = datetime.strptime(date, "%Y-%m-%d")
+            target = parsed.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        except ValueError:
+            return "Invalid date format. Use YYYY-MM-DD, e.g. '2026-06-15'."
+    else:
+        target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if target <= now:
+            target += timedelta(days=1)
+
+    if target <= now:
+        return f"Cannot set timer for a past time ({target.strftime('%H:%M on %B %d, %Y')})."
+
+    delay_seconds = (target - now).total_seconds()
+    job_name = f"timer_at_{target.strftime('%Y%m%d_%H%M')}" + (f"_{label}" if label else "")
+
+    if BackgroundJobs.is_running(job_name):
+        return f"Timer already set for {target.strftime('%H:%M on %B %d, %Y')}."
+
+    def _worker():
+        time.sleep(delay_seconds)
+        msg = f"Timer done: {label}." if label else f"It's {target.strftime('%H:%M')}."
+        Audio.notify(msg)
+        logger.log_system_event("timer_fired", msg)
+
+    BackgroundJobs.start(job_name, _worker)
+
+    time_str = target.strftime("%H:%M on %A, %B %d, %Y")
+    return f"Timer set for {time_str}" + (f": {label}" if label else "") + "."
+
+
 @register_job(module_name="basics", summary="List active timers")
 @capture_response
 def list_timers() -> str:

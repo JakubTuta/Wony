@@ -95,6 +95,40 @@ def _coerce_args(
     return coerced
 
 
+def _classify_api_error(e: Exception) -> typing.Optional[typing.Tuple[str, str]]:
+    """Return (user_message, hint) for known API billing/quota errors, else None."""
+    msg = str(e)
+    if "credit balance is too low" in msg:
+        return (
+            "Anthropic API credit balance too low.",
+            "Add credits at console.anthropic.com/billing, then restart the assistant.",
+        )
+    if "spending cap" in msg:
+        return (
+            "Gemini API monthly spending cap exceeded.",
+            "Raise your cap at https://ai.studio/spend",
+        )
+    if "RESOURCE_EXHAUSTED" in msg:
+        return (
+            "Gemini API quota exceeded. Try again later.",
+            None,
+        )
+    if "rate_limit_error" in msg or "Error code: 429" in msg:
+        return (
+            "API rate limit reached. Wait a moment and try again.",
+            None,
+        )
+    return None
+
+
+def _emit_api_diagnostic(user_msg: str, hint: typing.Optional[str]) -> None:
+    try:
+        from helpers.diagnostics import add as _add_diag
+        _add_diag("error", "AI provider", user_msg, hint)
+    except Exception:
+        pass
+
+
 def _sanitize_calls(
     calls: typing.List[typing.Dict[str, typing.Any]],
 ) -> typing.List[typing.Dict[str, typing.Any]]:
@@ -320,6 +354,11 @@ def build_app() -> FastAPI:
             return {"id": turn_id, "text": result.text, "calls": safe_calls}
         except Exception as e:
             logger.log_error(str(e), "web_chat")
+            classified = _classify_api_error(e)
+            if classified:
+                user_msg, hint = classified
+                _emit_api_diagnostic(user_msg, hint)
+                raise HTTPException(status_code=503, detail=user_msg)
             raise HTTPException(status_code=500, detail=str(e))
 
     @app.post("/api/chat/stream")
@@ -375,7 +414,13 @@ def build_app() -> FastAPI:
                 q.put(("final", {"id": turn_id, "text": result.text, "calls": safe_calls}))
             except Exception as e:
                 logger.log_error(str(e), "web_chat_stream")
-                q.put(("error", str(e)))
+                classified = _classify_api_error(e)
+                if classified:
+                    user_msg, hint = classified
+                    _emit_api_diagnostic(user_msg, hint)
+                    q.put(("error", user_msg))
+                else:
+                    q.put(("error", str(e)))
             finally:
                 q.put(None)
 

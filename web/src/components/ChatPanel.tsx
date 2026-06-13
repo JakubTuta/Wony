@@ -8,6 +8,7 @@ interface Message {
   text: string;
   calls?: ChatCall[];
   turnId?: number | null;
+  streamKey?: string; // present only while streaming; removed on finalization
 }
 
 export function ChatPanel() {
@@ -50,9 +51,16 @@ export function ChatPanel() {
         calls: turn.calls ?? [],
         turnId: turn.id,
       };
-      // Optimistic user bubble already shown for this turn — attach the reply.
-      if (n >= 1 && prev[n - 1].role === 'user' && prev[n - 1].text === turn.user) {
-        return turn.assistant ? [...prev, assistantMsg] : prev;
+      // Look in the last 2 positions for a matching user bubble.
+      // The streaming path adds [user, empty-assistant(streamKey)] atomically,
+      // so the user bubble may be at n-2 when there's a live streaming bubble.
+      for (let i = n - 1; i >= Math.max(0, n - 2); i--) {
+        if (prev[i].role === 'user' && prev[i].text === turn.user) {
+          if (!turn.assistant) return prev.slice(0, i + 1);
+          // Drop everything after the user bubble (removes in-flight streaming bubble)
+          // and append the final assistant message.
+          return [...prev.slice(0, i + 1), assistantMsg];
+        }
       }
       // External / proactive turn (voice, desktop) — add both bubbles.
       return [
@@ -76,44 +84,53 @@ export function ChatPanel() {
     const text = input.trim();
     if (!text || loading) return;
     setInput('');
-    setMessages(prev => [...prev, { role: 'user', text }]);
     setLoading(true);
 
-    // Live assistant bubble: append an empty one, then grow it as deltas land.
-    const streamIdx = messages.length + 1;
-    setMessages(prev => [...prev, { role: 'assistant', text: '' }]);
+    // Use a stable key so the streaming bubble can be found by identity
+    // rather than a stale index — avoids both the "Empty response" flash and
+    // the duplicate-user-message race with the WS broadcast.
+    const key = `s${Date.now()}`;
+    setMessages(prev => [
+      ...prev,
+      { role: 'user', text },
+      { role: 'assistant', text: '', streamKey: key },
+    ]);
 
     try {
       const res = await streamChat(text, chunk => {
         setMessages(prev => {
+          const idx = prev.findIndex(m => m.streamKey === key);
+          if (idx === -1) return prev; // WS already claimed this turn
           const next = [...prev];
-          const cur = next[streamIdx];
-          if (cur && cur.role === 'assistant') {
-            next[streamIdx] = { ...cur, text: cur.text + chunk };
-          }
+          next[idx] = { ...next[idx], text: next[idx].text + chunk };
           return next;
         });
       });
       // WS frame may have already rendered this turn — dedup by id, not text.
       if (res.id != null && seenTurnIds.current.has(res.id)) {
-        setMessages(prev => prev.filter((_, i) => i !== streamIdx));
+        setMessages(prev => prev.filter(m => m.streamKey !== key));
         return;
       }
       if (res.id != null) seenTurnIds.current.add(res.id);
       setMessages(prev => {
+        const idx = prev.findIndex(m => m.streamKey === key);
+        if (idx === -1) return prev; // WS handled it while we were finalizing
         const next = [...prev];
-        next[streamIdx] = {
+        next[idx] = {
           role: 'assistant',
-          text: res.text || next[streamIdx]?.text || '',
+          text: res.text || next[idx].text || '',
           calls: res.calls,
           turnId: res.id,
+          // streamKey intentionally omitted — message is finalized
         };
         return next;
       });
     } catch (e) {
       setMessages(prev => {
+        const idx = prev.findIndex(m => m.streamKey === key);
+        if (idx === -1) return prev;
         const next = [...prev];
-        next[streamIdx] = {
+        next[idx] = {
           role: 'assistant',
           text: `Error: ${e instanceof Error ? e.message : String(e)}`,
         };
@@ -236,7 +253,7 @@ export function ChatPanel() {
                     : 'bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100 rounded-tl-sm'
                 }`}
               >
-                {msg.text || <span className="italic text-gray-400">Empty response</span>}
+                {msg.text || (!msg.streamKey && <span className="italic text-gray-400">Empty response</span>)}
               </div>
 
               {/* Tool calls trace */}
@@ -278,7 +295,7 @@ export function ChatPanel() {
           </div>
         ))}
 
-        {loading && (
+        {loading && !messages.some(m => m.streamKey) && (
           <div className="flex gap-2.5">
             <div className="shrink-0 w-7 h-7 rounded-full bg-gray-200 dark:bg-gray-700 flex items-center justify-center">
               <Bot size={14} className="text-gray-600 dark:text-gray-300" />
