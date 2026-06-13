@@ -25,56 +25,72 @@ def is_agent_active() -> bool:
 
 
 def capture_response(
-    func: typing.Callable[..., typing.Any],
+    func: typing.Callable[..., typing.Any] = None,
+    *,
+    mute: bool = False,
 ) -> typing.Callable[..., typing.Optional[str]]:
     """
     Decorator that captures the response, prints it to console, and handles audio output.
     Always returns a string response.
+
+    Args:
+        mute: When True, suppresses TTS on success but still vocalizes errors.
+              Use for actions with immediate audible feedback (play, pause, volume).
     """
 
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs) -> typing.Optional[str]:
-        # Lazy imports to avoid circular dependencies
-        try:
-            from helpers.audio import Audio
-            from helpers.cache import Cache
-            from helpers.logger import logger
-        except ImportError:
-            logger = None
-            Audio = None
-            Cache = None
+    def decorator(f: typing.Callable[..., typing.Any]) -> typing.Callable[..., typing.Optional[str]]:
+        @functools.wraps(f)
+        def wrapper(*args, **kwargs) -> typing.Optional[str]:
+            # Lazy imports to avoid circular dependencies
+            try:
+                from helpers.audio import Audio
+                from helpers.cache import Cache
+                from helpers.logger import logger
+            except ImportError:
+                logger = None
+                Audio = None
+                Cache = None
 
-        function_name = func.__name__ if hasattr(func, "__name__") else "Unknown"
-        class_name = (
-            args[0].__class__.__name__
-            if args and hasattr(args[0], "__class__")
-            else "Unknown"
-        )
+            function_name = f.__name__ if hasattr(f, "__name__") else "Unknown"
+            class_name = (
+                args[0].__class__.__name__
+                if args and hasattr(args[0], "__class__")
+                else "Unknown"
+            )
 
-        try:
-            response = func(*args, **kwargs)
-        except Exception as e:
-            error_msg = f"\n[{class_name} - {function_name}]: {e}"
-            print(error_msg)
+            try:
+                response = f(*args, **kwargs)
+            except Exception as e:
+                error_msg = f"\n[{class_name} - {function_name}]: {e}"
+                print(error_msg)
 
-            if logger:
-                logger.log_error(str(e), f"{class_name}.{function_name}")
-            return error_msg
+                if logger:
+                    logger.log_error(str(e), f"{class_name}.{function_name}")
 
-        str_response = str(response) if response is not None else ""
+                # Always vocalize errors so user knows the action failed.
+                if not _agent_active and Cache and Audio and Cache.get_audio():
+                    Audio.text_to_speech(error_msg)
 
-        # Suppress per-tool output while the agent loop is running;
-        # the agent will narrate the final answer once.
-        if not _agent_active:
-            if Cache and Audio:
-                audio = Cache.get_audio()
-                if audio:
+                return error_msg
+
+            str_response = str(response) if response is not None else ""
+
+            # Suppress per-tool output while the agent loop is running;
+            # the agent will narrate the final answer once.
+            if not _agent_active:
+                if not mute and Cache and Audio and Cache.get_audio():
                     Audio.text_to_speech(str_response)
-            print(str_response)
+                print(str_response)
 
-        return str_response
+            return str_response
 
-    return wrapper
+        return wrapper
+
+    if func is not None:
+        # Used as @capture_response (no parentheses)
+        return decorator(func)
+    # Used as @capture_response(...) (with parentheses)
+    return decorator
 
 
 def capture_exception(
