@@ -446,10 +446,9 @@ class Calendar:
             if not events:
                 return
             msg = f"You have {len(events)} new calendar event(s) in {name}."
-            Audio.notify(msg)
             logger.log_system_event("calendar_poll", msg)
-            for event in events:
-                Audio.notify(self._format_event(event, verbose=False))
+            messages = [msg] + [self._format_event(e, verbose=False) for e in events]
+            Audio.notify(messages)
 
         BackgroundJobs.start(job_name, _poll, interval=interval_minutes * 60)
         return f"Checking '{name}' calendar every {interval_minutes} minutes."

@@ -52,7 +52,14 @@ class Recognizer:
             audio = Audio.record_command(start_timeout=start_timeout)
             if audio is None or len(audio) == 0:
                 return ""
-            language = Config.get("assistant.language", "en")
+            raw_lang = str(Config.get("assistant.language", "en")).lower()
+            # Normalize "en-us" / "en_US" → "en"; faster-whisper expects ISO 639-1 codes.
+            language = raw_lang.split("-")[0].split("_")[0]
+            if language != raw_lang:
+                helpers.diagnostics.add(
+                    "info", "STT",
+                    f"Language '{raw_lang}' normalized to '{language}' for faster-whisper."
+                )
             model = _get_model()
             # no vad_filter: record_command already endpoints with webrtcvad; a second pass over-trims short clips.
             segments, _ = model.transcribe(
@@ -64,5 +71,5 @@ class Recognizer:
             )
             return " ".join(seg.text for seg in segments).strip()
         except Exception as e:
-            print(f"Couldn't capture audio — check your microphone. ({e})")
+            helpers.diagnostics.add("error", "STT", f"Transcription failed: {e}", hint="Check GPU/CPU model load and audio input.")
             return ""

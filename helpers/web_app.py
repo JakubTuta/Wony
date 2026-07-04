@@ -95,38 +95,7 @@ def _coerce_args(
     return coerced
 
 
-def _classify_api_error(e: Exception) -> typing.Optional[typing.Tuple[str, str]]:
-    """Return (user_message, hint) for known API billing/quota errors, else None."""
-    msg = str(e)
-    if "credit balance is too low" in msg:
-        return (
-            "Anthropic API credit balance too low.",
-            "Add credits at console.anthropic.com/billing, then restart the assistant.",
-        )
-    if "spending cap" in msg:
-        return (
-            "Gemini API monthly spending cap exceeded.",
-            "Raise your cap at https://ai.studio/spend",
-        )
-    if "RESOURCE_EXHAUSTED" in msg:
-        return (
-            "Gemini API quota exceeded. Try again later.",
-            None,
-        )
-    if "rate_limit_error" in msg or "Error code: 429" in msg:
-        return (
-            "API rate limit reached. Wait a moment and try again.",
-            None,
-        )
-    return None
-
-
-def _emit_api_diagnostic(user_msg: str, hint: typing.Optional[str]) -> None:
-    try:
-        from helpers.diagnostics import add as _add_diag
-        _add_diag("error", "AI provider", user_msg, hint)
-    except Exception:
-        pass
+from helpers.errors import classify_api_error as _classify_api_error, emit_api_diagnostic as _emit_api_diagnostic
 
 
 def _sanitize_calls(
@@ -202,6 +171,23 @@ def build_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.get("/api/config")
+    def get_config() -> typing.Dict[str, typing.Any]:
+        """Return frontend-relevant config values."""
+        return {
+            "assistant": {
+                "name": Config.get("assistant.name", "Wony"),
+                "language": Config.get("assistant.language", "en"),
+            },
+            "voice": {
+                "stt": {
+                    "silence_ms": int(Config.get("voice.stt.silence_ms", 700)),
+                    "start_timeout": int(Config.get("voice.stt.start_timeout", 4)),
+                    "max_seconds": int(Config.get("voice.stt.max_seconds", 12)),
+                },
+            },
+        }
 
     @app.get("/api/health")
     def health() -> typing.Dict[str, typing.Any]:
@@ -381,6 +367,73 @@ def build_app() -> FastAPI:
             logger.log_error(str(e), "web_wipe_data")
             raise HTTPException(status_code=500, detail=str(e))
 
+    @app.post("/api/ack")
+    async def play_ack() -> typing.Dict[str, bool]:
+        """Play the 'Yes?' acknowledgement chime through PC speakers."""
+        try:
+            from helpers.audio import Audio
+            Audio.play_cached("Yes?")
+        except Exception:
+            pass
+        return {"ok": True}
+
+    @app.post("/api/stt")
+    async def stt_from_audio(request: Request) -> typing.Dict[str, typing.Any]:
+        """Decode uploaded audio (webm/opus from MediaRecorder) → text via Whisper."""
+        data = await request.body()
+        if not data:
+            raise HTTPException(status_code=400, detail="No audio data received.")
+        try:
+            import io
+            import tempfile
+
+            import numpy as np
+
+            # Decode via av (already bundled with faster-whisper)
+            import av
+
+            with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as tmp:
+                tmp.write(data)
+                tmp_path = tmp.name
+
+            try:
+                samples_list = []
+                with av.open(tmp_path) as container:
+                    for frame in container.decode(audio=0):
+                        arr = frame.to_ndarray()
+                        if arr.ndim > 1:
+                            arr = arr.mean(axis=0)
+                        samples_list.append(arr.astype(np.float32))
+                os.unlink(tmp_path)
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
+                raise
+
+            if not samples_list:
+                return {"text": ""}
+
+            audio = np.concatenate(samples_list)
+            # Resample to 16k if needed
+            sr = 48000  # MediaRecorder default
+            try:
+                import soxr
+                audio = soxr.resample(audio, sr, 16000)
+            except Exception:
+                pass
+
+            from helpers.recognizer import _get_model
+            model = _get_model()
+            raw_lang = str(Config.get("assistant.language", "en")).lower()
+            language = raw_lang.split("-")[0].split("_")[0]
+            segments, _ = model.transcribe(audio, language=language, beam_size=1, no_speech_threshold=0.6)
+            text = " ".join(s.text for s in segments).strip()
+            return {"text": text}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"STT failed: {e}")
+
     @app.get("/api/chat/history")
     def chat_history(limit: int = 50) -> typing.Dict[str, typing.Any]:
         from helpers.memory_db import recent_turns
@@ -505,6 +558,9 @@ def build_app() -> FastAPI:
                     continue
                 if data.get("type") == "chat":
                     asyncio.create_task(_ws_chat(ws, data))
+                elif data.get("type") == "stop":
+                    from helpers.audio import interrupt_current_speech
+                    interrupt_current_speech()
         except WebSocketDisconnect:
             pass
         finally:

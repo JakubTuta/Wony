@@ -55,6 +55,7 @@ class VoiceSettings(BaseModel):
     model_path: str = "models/kokoro-v1.0.onnx"
     voices_path: str = "models/voices-v1.0.bin"
     tts_device: str = "auto"
+    input_device: typing.Optional[typing.Union[int, str]] = None
     stt: SttSettings = Field(default_factory=SttSettings)
     ducking: DuckingSettings = Field(default_factory=DuckingSettings)
     conversation: ConversationSettings = Field(default_factory=ConversationSettings)

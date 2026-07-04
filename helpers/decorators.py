@@ -2,6 +2,7 @@ import functools
 import os
 import sys
 import threading
+import traceback
 import typing
 
 T = typing.TypeVar("T")
@@ -65,7 +66,7 @@ def capture_response(
                 print(error_msg)
 
                 if logger:
-                    logger.log_error(str(e), f"{class_name}.{function_name}")
+                    logger.log_error(traceback.format_exc(), f"{class_name}.{function_name}")
 
                 # Always vocalize errors so user knows the action failed.
                 if not _agent_active and Cache and Audio and Cache.get_audio():

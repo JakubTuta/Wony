@@ -70,6 +70,17 @@ export interface ChatResponse {
 
 const BASE = '/api';
 
+export interface AppConfig {
+  assistant: { name: string; language: string };
+  voice: { stt: { silence_ms: number; start_timeout: number; max_seconds: number } };
+}
+
+export async function fetchConfig(): Promise<AppConfig> {
+  const res = await fetch(`${BASE}/config`);
+  if (!res.ok) throw new Error(`Config fetch failed: ${res.status}`);
+  return res.json();
+}
+
 export async function fetchHealth(): Promise<HealthResponse> {
   const res = await fetch(`${BASE}/health`);
   if (!res.ok) throw new Error(`Health check failed: ${res.status}`);
@@ -130,11 +141,25 @@ export async function fetchHistory(limit = 50): Promise<HistoryTurn[]> {
   return data.turns ?? [];
 }
 
+export type AssistantState = 'idle' | 'listening' | 'thinking' | 'speaking';
+
 export type WsEvent =
   | ({ type: 'turn'; session_id?: string } & HistoryTurn)
   | ({ type: 'delta'; session_id: string; data: string })
   | ({ type: 'error'; session_id: string; data: string })
+  | ({ type: 'state'; state: AssistantState })
   | Diagnostic;
+
+export async function transcribeAudio(blob: Blob): Promise<string> {
+  const res = await fetch(`${BASE}/stt`, {
+    method: 'POST',
+    body: blob,
+    headers: { 'Content-Type': blob.type || 'audio/webm' },
+  });
+  if (!res.ok) throw new Error(`STT failed: ${res.status}`);
+  const data = await res.json();
+  return data.text ?? '';
+}
 
 export function connectEventSocket(handlers: {
   onTurn?: (turn: HistoryTurn, sessionId?: string) => void;
@@ -188,12 +213,14 @@ export function connectChatSocket(handlers: {
   onDelta?: (chunk: string, sessionId: string) => void;
   onError?: (message: string, sessionId: string) => void;
   onDiagnostic?: (d: Diagnostic) => void;
+  onState?: (state: AssistantState) => void;
   onConnect?: () => void;
   onDisconnect?: () => void;
-}): { send: (message: string, sessionId: string) => void; disconnect: () => void } {
+}): { send: (message: string, sessionId: string) => void; stop: (sessionId: string) => void; disconnect: () => void } {
   let ws: WebSocket | null = null;
   let closed = false;
   let retryTimeout: ReturnType<typeof setTimeout> | null = null;
+  let retryDelay = 3000;
 
   const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws`;
 
@@ -201,7 +228,10 @@ export function connectChatSocket(handlers: {
     if (closed) return;
     ws = new WebSocket(wsUrl);
 
-    ws.onopen = () => handlers.onConnect?.();
+    ws.onopen = () => {
+      retryDelay = 3000;
+      handlers.onConnect?.();
+    };
 
     ws.onmessage = (ev) => {
       try {
@@ -212,6 +242,8 @@ export function connectChatSocket(handlers: {
           handlers.onDelta?.(data.data, data.session_id);
         } else if (data.type === 'error') {
           handlers.onError?.(data.data, data.session_id);
+        } else if (data.type === 'state') {
+          handlers.onState?.((data as { type: 'state'; state: AssistantState }).state);
         } else {
           handlers.onTurn?.(data as HistoryTurn, (data as { session_id?: string }).session_id);
         }
@@ -224,7 +256,10 @@ export function connectChatSocket(handlers: {
       ws = null;
       handlers.onDisconnect?.();
       if (!closed) {
-        retryTimeout = setTimeout(connect, 3000);
+        retryTimeout = setTimeout(() => {
+          retryDelay = Math.min(retryDelay * 2, 30000);
+          connect();
+        }, retryDelay);
       }
     };
 
@@ -237,6 +272,11 @@ export function connectChatSocket(handlers: {
     send(message: string, sessionId: string) {
       if (ws?.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'chat', message, session_id: sessionId }));
+      }
+    },
+    stop(sessionId: string) {
+      if (ws?.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'stop', session_id: sessionId }));
       }
     },
     disconnect() {

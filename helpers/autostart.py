@@ -23,36 +23,37 @@ TASK_NAME = "WonyAssistant"
 
 
 def _pythonw() -> str:
-    """Resolve pythonw.exe, preferring the repo venv over the global interpreter.
+    """Resolve the background-process interpreter, preferring Wony.exe (renamed copy).
 
     Order:
-      1. <repo>/venv/Scripts/pythonw.exe
-      2. <repo>/.venv/Scripts/pythonw.exe
-      3. $VIRTUAL_ENV/Scripts/pythonw.exe
-      4. sys.executable directory (current interpreter)
+      1. <repo>/venv/Scripts/Wony.exe  (renamed pythonw — shows as "Wony" in Task Manager)
+      2. <repo>/venv/Scripts/pythonw.exe
+      3. <repo>/.venv/Scripts/Wony.exe / pythonw.exe
+      4. $VIRTUAL_ENV/Scripts/Wony.exe / pythonw.exe
+      5. sys.executable directory
     """
     repo_root = os.path.dirname(_wony_script())
-    venv_candidates = [
-        os.path.join(repo_root, "venv", "Scripts", "pythonw.exe"),
-        os.path.join(repo_root, ".venv", "Scripts", "pythonw.exe"),
+    venv_scripts_dirs = [
+        os.path.join(repo_root, "venv", "Scripts"),
+        os.path.join(repo_root, ".venv", "Scripts"),
     ]
     virtual_env = os.environ.get("VIRTUAL_ENV", "")
     if virtual_env:
-        venv_candidates.append(os.path.join(virtual_env, "Scripts", "pythonw.exe"))
+        venv_scripts_dirs.append(os.path.join(virtual_env, "Scripts"))
 
-    for c in venv_candidates:
-        if os.path.isfile(c):
-            return c
+    for scripts in venv_scripts_dirs:
+        for name in ("Wony.exe", "pythonw.exe"):
+            candidate = os.path.join(scripts, name)
+            if os.path.isfile(candidate):
+                return candidate
 
     # Fall back to interpreter-adjacent pythonw.exe
     exe = sys.executable
     base = os.path.dirname(exe)
-    for c in [
-        os.path.join(base, "pythonw.exe"),
-        os.path.join(base, "Scripts", "pythonw.exe"),
-    ]:
-        if os.path.isfile(c):
-            return c
+    for name in ("Wony.exe", "pythonw.exe"):
+        for c in [os.path.join(base, name), os.path.join(base, "Scripts", name)]:
+            if os.path.isfile(c):
+                return c
     return exe.replace("python.exe", "pythonw.exe")
 
 

@@ -53,14 +53,22 @@ def _try_acquire_instance_lock() -> bool:
         return False
 
 
-def _make_icon_image():
-    """Generate a simple tray icon using Pillow (already in core.txt)."""
+_STATE_COLORS = {
+    "idle":      (100, 149, 237),  # cornflower blue
+    "listening": ( 72, 199, 116),  # green
+    "thinking":  (255, 193,   7),  # amber
+    "speaking":  (167,  80, 214),  # purple
+}
+
+
+def _make_icon_image(state: str = "idle"):
+    """Generate a tray icon with a color matching the assistant state."""
     from PIL import Image, ImageDraw
     size = 64
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
-    draw.ellipse([4, 4, size - 4, size - 4], fill=(100, 149, 237, 255))
-    # Small white dot in center for visual interest
+    r, g, b = _STATE_COLORS.get(state, _STATE_COLORS["idle"])
+    draw.ellipse([4, 4, size - 4, size - 4], fill=(r, g, b, 255))
     cx = size // 2
     draw.ellipse([cx - 8, cx - 8, cx + 8, cx + 8], fill=(255, 255, 255, 200))
     return img
@@ -74,7 +82,7 @@ def _load_icon_image():
             return Image.open(assets_ico)
         except Exception:
             pass
-    return _make_icon_image()
+    return _make_icon_image("idle")
 
 
 def run_tray() -> None:
@@ -163,6 +171,7 @@ def run_tray() -> None:
 
     # Forward references for closures
     _icon_ref: typing.List[typing.Any] = [None]
+    _current_state: typing.List[str] = ["idle"]
 
     def _on_open_web(icon, item) -> None:
         import webbrowser
@@ -176,14 +185,30 @@ def run_tray() -> None:
             controller.start()
         icon.update_menu()
 
+    def _on_stop_speaking(icon, item) -> None:
+        from helpers.audio import interrupt_current_speech
+        interrupt_current_speech()
+
+    def _on_mute_toggle(icon, item) -> None:
+        from helpers.cache import Cache
+        Cache.set_audio(not Cache.get_audio())
+        icon.update_menu()
+
     def _toggle_label(item) -> str:
         return "Stop" if controller.is_running() else "Start"
+
+    def _mute_label(item) -> str:
+        from helpers.cache import Cache
+        return "Mute" if Cache.get_audio() else "Unmute"
 
     def _on_exit(icon, item) -> None:
         icon.stop()
 
     menu = pystray.Menu(
         pystray.MenuItem("Open in web", _on_open_web),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Stop speaking", _on_stop_speaking),
+        pystray.MenuItem(_mute_label, _on_mute_toggle),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem(_toggle_label, _on_toggle),
         pystray.Menu.SEPARATOR,
@@ -197,6 +222,19 @@ def run_tray() -> None:
         menu=menu,
     )
     _icon_ref[0] = icon
+
+    # Subscribe to state events to update icon color
+    def _on_state_event(payload: dict) -> None:
+        if payload.get("type") != "state":
+            return
+        state = payload.get("state", "idle")
+        _current_state[0] = state
+        ic = _icon_ref[0]
+        if ic is not None:
+            ic.icon = _make_icon_image(state)
+
+    from helpers.events import subscribe, unsubscribe
+    subscribe(_on_state_event)
 
     # Hook the exit job so "exit" voice command shuts down gracefully.
     # Only stop the icon here; controller.shutdown() runs after icon.run() returns.
@@ -231,6 +269,7 @@ def run_tray() -> None:
     # icon.run() returned — Exit was clicked (or _tray_exit_hook fired).
     # Run cleanup on the main thread, then force-exit. os._exit bypasses
     # atexit/gc finalizers that can block on audio/C-extension threads.
+    unsubscribe(_on_state_event)
     controller.shutdown()
     import os as _os
     _os._exit(0)

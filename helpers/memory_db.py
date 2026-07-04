@@ -58,9 +58,15 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             when_str       TEXT,
             trigger_type   TEXT NOT NULL,
             trigger_kwargs TEXT NOT NULL,
-            created_ts     TEXT NOT NULL
+            created_ts     TEXT NOT NULL,
+            action         TEXT
         )
     """)
+    try:
+        conn.execute("ALTER TABLE reminders ADD COLUMN action TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
     conn.execute("""
         CREATE TABLE IF NOT EXISTS mcp_servers (
             name         TEXT PRIMARY KEY,
@@ -257,10 +263,11 @@ def save_reminder(meta: typing.Dict) -> None:
     import json as _json
     conn = _get_conn()
     ts = datetime.now().isoformat(timespec="seconds")
+    action = meta.get("action")
     with _lock:
         conn.execute(
-            "INSERT OR REPLACE INTO reminders (id, text, when_str, trigger_type, trigger_kwargs, created_ts)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO reminders (id, text, when_str, trigger_type, trigger_kwargs, created_ts, action)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 meta["id"],
                 meta["text"],
@@ -268,6 +275,7 @@ def save_reminder(meta: typing.Dict) -> None:
                 meta["trigger_type"],
                 _json.dumps(meta.get("trigger_kwargs", {})),
                 ts,
+                _json.dumps(action) if action else None,
             ),
         )
         conn.commit()
@@ -285,7 +293,7 @@ def all_reminders() -> typing.List[typing.Dict]:
     conn = _get_conn()
     with _lock:
         rows = conn.execute(
-            "SELECT id, text, when_str, trigger_type, trigger_kwargs, created_ts FROM reminders"
+            "SELECT id, text, when_str, trigger_type, trigger_kwargs, created_ts, action FROM reminders"
         ).fetchall()
         result = []
         for r in rows:
@@ -294,6 +302,10 @@ def all_reminders() -> typing.List[typing.Dict]:
                 d["trigger_kwargs"] = _json.loads(d["trigger_kwargs"])
             except Exception:
                 d["trigger_kwargs"] = {}
+            try:
+                d["action"] = _json.loads(d["action"]) if d.get("action") else None
+            except Exception:
+                d["action"] = None
             result.append(d)
         return result
 

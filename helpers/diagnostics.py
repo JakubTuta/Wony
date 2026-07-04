@@ -5,7 +5,9 @@ import typing
 
 _lock = threading.Lock()
 _records: typing.List[typing.Dict] = []
-_seen: typing.Set[typing.Tuple[str, str]] = set()
+# Maps (source, message) → monotonic time of last emit; re-emits after TTL so recurring failures stay visible.
+_seen: typing.Dict[typing.Tuple[str, str], float] = {}
+_SEEN_TTL = 600.0  # 10 minutes
 
 
 def add(
@@ -16,9 +18,10 @@ def add(
 ) -> None:
     key = (source, message)
     with _lock:
-        if key in _seen:
+        now = time.monotonic()
+        if now - _seen.get(key, 0.0) < _SEEN_TTL:
             return
-        _seen.add(key)
+        _seen[key] = now
         record: typing.Dict = {
             "type": "diagnostic",
             "level": level,
@@ -50,4 +53,4 @@ def get_all() -> typing.List[typing.Dict]:
 def clear() -> None:
     with _lock:
         _records.clear()
-        _seen.clear()
+        _seen.clear()  # dict.clear() works on both old set and new dict

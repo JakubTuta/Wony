@@ -207,13 +207,19 @@ def _audio_selftest() -> list:
         in_info = sd.query_devices(in_idx, "input")
         out_info = sd.query_devices(out_idx, "output")
         lines.append(f"    Default input : [{in_idx}] {in_info['name']}  ({int(in_info['default_samplerate'])} Hz)")
+        resolved_idx = mic.resolve_input_device()
+        if resolved_idx != in_idx:
+            resolved_info = sd.query_devices(resolved_idx, "input")
+            lines.append(f"    Capture input : [{resolved_idx}] {resolved_info['name']}  ({int(resolved_info['default_samplerate'])} Hz)  (virtual default bypassed)")
         lines.append(f"    Default output: [{out_idx}] {out_info['name']}")
     except Exception as e:
         lines.append(f"  ✗ Could not query devices: {e}")
         return lines
 
     try:
-        mic.play_wav("voice/bot/ready.wav", blocking=True)
+        from helpers.ducking import duck_others
+        with duck_others():
+            mic.play_wav("voice/bot/ready.wav", blocking=True)
         lines.append("    ✓ Output test — did you hear the ready sound?")
     except Exception as e:
         lines.append(f"    ✗ Output test failed: {e}")

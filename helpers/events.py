@@ -35,3 +35,8 @@ def emit_turn(turn: typing.Dict) -> None:
     tagged = dict(turn)
     tagged.setdefault("type", "turn")
     emit(tagged)
+
+
+def emit_state(state: str) -> None:
+    """Broadcast assistant state change: 'idle' | 'listening' | 'thinking' | 'speaking'."""
+    emit({"type": "state", "state": state})

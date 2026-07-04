@@ -67,7 +67,9 @@ def _require_setup() -> None:
 
     want_dir = data.get("python_dir")
     have_dir = os.path.dirname(os.path.abspath(sys.executable))
-    if want_dir and os.path.normcase(os.path.abspath(want_dir)) != os.path.normcase(have_dir):
+    if want_dir and os.path.normcase(os.path.abspath(want_dir)) != os.path.normcase(
+        have_dir
+    ):
         want_py = data.get("python", os.path.join(want_dir, "python.exe"))
         print(
             "\nWrong Python interpreter for Wony.\n"
@@ -170,8 +172,8 @@ def cmd_voice(args: argparse.Namespace) -> None:
         print(f"\nCannot start: {e}\n")
         sys.exit(1)
 
-    from helpers.recognizer import preload_model
     from helpers.audio import preload_tts
+    from helpers.recognizer import preload_model
 
     preload_model()
     preload_tts()
@@ -194,8 +196,8 @@ def cmd_voice(args: argparse.Namespace) -> None:
     ww.start()
 
     def _do_speak() -> None:
-        from helpers.logger import logger
         from helpers.ducking import duck_others
+        from helpers.logger import logger
 
         logger.log_system_event("hotkey_fired", "ctrl+l")
         print("[voice] Ctrl+L — listening")

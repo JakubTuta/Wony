@@ -1,10 +1,13 @@
 import json
+import os
+import threading
 import typing
 
 
 class Cache:
     _filename = "cache.json"
     _values = {}
+    _lock = threading.Lock()
 
     @staticmethod
     def load_values() -> None:
@@ -29,10 +32,12 @@ class Cache:
 
     @staticmethod
     def set_value(key: str, value: typing.Any) -> None:
-        Cache._values[key] = value
-
-        with open(Cache._filename, "w") as file:
-            json.dump(Cache._values, file, indent=4)
+        with Cache._lock:
+            Cache._values[key] = value
+            tmp = Cache._filename + ".tmp"
+            with open(tmp, "w") as file:
+                json.dump(Cache._values, file, indent=4)
+            os.replace(tmp, Cache._filename)
 
     @staticmethod
     def get_value(key: str, default=None) -> typing.Any:

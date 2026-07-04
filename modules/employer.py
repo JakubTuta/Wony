@@ -206,7 +206,12 @@ class Employer:
                             return
                         yield item
 
-                tts_result["value"] = stream_text_to_speech(_chunks(), interrupt_event)
+                from helpers.events import emit_state
+                emit_state("speaking")
+                try:
+                    tts_result["value"] = stream_text_to_speech(_chunks(), interrupt_event)
+                finally:
+                    emit_state("idle")
 
             tts_thread = threading.Thread(target=_tts_worker, daemon=True, name="tts-stream")
             tts_thread.start()
@@ -217,6 +222,9 @@ class Employer:
                 sys.stdout.flush()
 
         # agent_lock serializes concurrent agent runs (wake word + web /api/chat)
+        _agent_err: typing.Optional[Exception] = None
+        from helpers.events import emit_state
+        emit_state("thinking")
         with agent_lock:
             set_agent_active(True)
             try:
@@ -229,10 +237,30 @@ class Employer:
                     max_steps=max_steps,
                     on_text=on_text,
                 )
+            except Exception as _e:
+                _agent_err = _e
             finally:
                 set_agent_active(False)
                 if tts_queue is not None:
                     tts_queue.put(None)
+
+        if _agent_err is not None:
+            if tts_thread is not None:
+                tts_thread.join()
+            from helpers.errors import classify_api_error, emit_api_diagnostic
+            import helpers.diagnostics
+            classified = classify_api_error(_agent_err)
+            if classified:
+                err_msg, hint = classified
+                emit_api_diagnostic(err_msg, hint)
+            else:
+                err_msg = f"Something went wrong: {_agent_err}"
+                helpers.diagnostics.add("error", "AI", err_msg)
+            if audio:
+                Audio.text_to_speech(err_msg)
+            else:
+                print(err_msg)
+            return err_msg
 
         if tts_thread is not None:
             tts_thread.join()

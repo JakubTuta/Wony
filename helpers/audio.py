@@ -17,6 +17,18 @@ _tts_warned = False
 _tts_lock = threading.Lock()  # Kokoro is not re-entrant; serialize calls
 _tts_singleton: typing.Optional["TTS_Engine"] = None
 
+# Track the active TTS interrupt event so external callers can stop speech.
+_active_tts_interrupt: typing.Optional[threading.Event] = None
+_active_tts_interrupt_lock = threading.Lock()
+
+
+def interrupt_current_speech() -> None:
+    """Interrupt the currently playing TTS stream, if any."""
+    with _active_tts_interrupt_lock:
+        ev = _active_tts_interrupt
+    if ev is not None:
+        ev.set()
+
 CACHED_CLIPS: dict[str, str] = {
     "Yes?": "voice/bot/yes.wav",
     "I'm ready!": "voice/bot/ready.wav",
@@ -255,18 +267,6 @@ class TTS_Engine:
 
 class Audio:
     @staticmethod
-    def play_audio_from_file(filename: str) -> None:
-        if not os.path.exists(filename):
-            print(f"Audio file {filename} does not exist.")
-            return
-        try:
-            from helpers import mic
-
-            mic.play_wav(filename, blocking=False)
-        except Exception as e:
-            print(f"[audio] playback failed for {filename}: {e}")
-
-    @staticmethod
     def save_text_to_file(text: str, filename: str) -> None:
         engine = _get_tts_singleton()
         engine.save_to_file(text, filename)
@@ -305,19 +305,18 @@ class Audio:
         stream_text_to_speech([str(text)], interrupt_event)
 
     @staticmethod
-    def notify(text: str) -> None:
-        """Speak a proactive background notification (timer, reminder, poller),
-        ducking other apps' audio for the duration. No-op when audio is off."""
+    def notify(text: typing.Union[str, typing.List[str]]) -> None:
+        """Speak a proactive background notification (timer, reminder, poller).
+        No-op when audio is off. Accepts a list to batch multiple messages under one duck."""
         from helpers.cache import Cache
 
         if not text or not Cache.get_audio():
             return
-        try:
-            from helpers.ducking import duck_others
-
-            with duck_others():
-                Audio.text_to_speech(text)
-        except Exception:
+        if isinstance(text, list):
+            combined = " ".join(t for t in text if t)
+            if combined:
+                Audio.text_to_speech(combined)
+        else:
             Audio.text_to_speech(text)
 
     @staticmethod
@@ -456,6 +455,10 @@ def stream_text_to_speech(
     if interrupt_event is None:
         interrupt_event = threading.Event()
 
+    with _active_tts_interrupt_lock:
+        global _active_tts_interrupt
+        _active_tts_interrupt = interrupt_event
+
     spoken_parts: typing.List[str] = []
     pending_playback: typing.List[str] = []  # reached playback but interrupted
     pending_synth: typing.List[str] = []     # never reached playback
@@ -541,6 +544,10 @@ def stream_text_to_speech(
         finally:
             audio_q.put(None)
             player.join()
+
+    with _active_tts_interrupt_lock:
+        if _active_tts_interrupt is interrupt_event:
+            _active_tts_interrupt = None
 
     return " ".join(spoken_parts), pending_playback + pending_synth
 

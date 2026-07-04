@@ -477,6 +477,7 @@ def install(chosen, detected):
                 print(c(f"  ✗ {rf} failed — continuing.", "31"))
 
     _ensure_gpu_onnxruntime(chosen, new)
+    _ensure_wony_exe()
 
     # Download Kokoro model files then pre-render cached voice clips.
     if any(f["key"] == "voice" for f in new):
@@ -499,6 +500,23 @@ def _dist_installed(name):
 def _has_nvidia_gpu():
     import shutil
     return shutil.which("nvidia-smi") is not None
+
+
+def _ensure_wony_exe():
+    """Copy pythonw.exe → Wony.exe so Task Manager shows the process as 'Wony'."""
+    scripts = os.path.join(VENV_DIR, "Scripts")
+    src = os.path.join(scripts, "pythonw.exe")
+    dst = os.path.join(scripts, "Wony.exe")
+    if not os.path.isfile(src):
+        return
+    if os.path.isfile(dst):
+        return  # already done
+    try:
+        import shutil
+        shutil.copy2(src, dst)
+        print(c("  ✓ created venv/Scripts/Wony.exe (process display name)", "32"))
+    except Exception as e:
+        print(c(f"  ! Could not create Wony.exe: {e}", "33"))
 
 
 def _ensure_gpu_onnxruntime(chosen, new):

@@ -18,6 +18,12 @@ voice:
   model_path: "models/kokoro-v1.0.onnx"
   voices_path: "models/voices-v1.0.bin"
 
+  # Override which microphone to capture from. null = auto (recommended): picks the
+  # best physical mic, skipping virtual/loopback devices (Sonar, VoiceMeeter, etc.).
+  # Set to a device index (int) or a name substring (str) only if auto-select
+  # chooses the wrong mic. Run `python wony.py doctor` to see what was selected.
+  input_device: null
+
   stt:
     start_timeout: 4      # give up if no speech starts within this many seconds
     max_seconds: 12       # hard cap on total capture length

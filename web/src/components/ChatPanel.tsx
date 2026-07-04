@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Send, Trash2, Database, ChevronDown, ChevronRight, Loader2, Bot, User } from 'lucide-react';
-import { clearChat, wipeData, fetchHistory, connectChatSocket } from '../api';
-import type { ChatCall, HistoryTurn } from '../api';
+import { Send, Trash2, Database, ChevronDown, ChevronRight, Loader2, Bot, User, Square, Mic } from 'lucide-react';
+import { clearChat, wipeData, fetchHistory, connectChatSocket, transcribeAudio, fetchConfig } from '../api';
+import type { AppConfig, ChatCall, HistoryTurn, AssistantState } from '../api';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -16,14 +16,35 @@ interface PendingSession {
   streamKey: string;
 }
 
+const STATE_LABELS: Record<AssistantState, string> = {
+  idle: 'Idle',
+  listening: 'Listening…',
+  thinking: 'Thinking…',
+  speaking: 'Speaking…',
+};
+
+const STATE_COLORS: Record<AssistantState, string> = {
+  idle: 'bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-400',
+  listening: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400',
+  thinking: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400',
+  speaking: 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-400',
+};
+
 export function ChatPanel() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [expandedCalls, setExpandedCalls] = useState<Set<number>>(new Set());
+  const [assistantState, setAssistantState] = useState<AssistantState>('idle');
+  const [recording, setRecording] = useState(false);
+  const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const silenceRafRef = useRef<number | null>(null);
 
   // Single WS socket ref — owns send() and disconnect()
   const socketRef = useRef<ReturnType<typeof connectChatSocket> | null>(null);
@@ -134,6 +155,10 @@ export function ChatPanel() {
   // ------------------------------------------------------------------
 
   useEffect(() => {
+    fetchConfig().then(setAppConfig).catch(() => {});
+  }, []);
+
+  useEffect(() => {
     fetchHistory(50).then(turns => {
       const msgs: Message[] = [];
       for (const t of turns) {
@@ -153,6 +178,7 @@ export function ChatPanel() {
       onDelta: handleDelta,
       onError: handleError,
       onDisconnect: handleDisconnect,
+      onState: setAssistantState,
     });
     socketRef.current = socket;
     return () => {
@@ -169,15 +195,13 @@ export function ChatPanel() {
   // Send
   // ------------------------------------------------------------------
 
-  function send() {
-    const text = input.trim();
+  function sendText(text: string) {
     if (!text || loading || !socketRef.current) return;
 
     const sessionId = `s${Date.now()}`;
     const streamKey = sessionId;
 
     pendingRef.current = { sessionId, streamKey };
-    setInput('');
     setLoading(true);
     setMessages(prev => [
       ...prev,
@@ -197,6 +221,102 @@ export function ChatPanel() {
         next[idx] = { role: 'assistant', text: 'Failed to send. Please try again.' };
         return next;
       });
+    }
+  }
+
+  function send() {
+    const text = input.trim();
+    if (!text) return;
+    setInput('');
+    sendText(text);
+  }
+
+  function stop() {
+    if (!socketRef.current || !pendingRef.current) return;
+    socketRef.current.stop(pendingRef.current.sessionId);
+  }
+
+  function stopRecording() {
+    if (silenceRafRef.current !== null) {
+      cancelAnimationFrame(silenceRafRef.current);
+      silenceRafRef.current = null;
+    }
+    if (audioContextRef.current) {
+      audioContextRef.current.close().catch(() => {});
+      audioContextRef.current = null;
+    }
+    mediaRecorderRef.current?.stop();
+  }
+
+  async function toggleMic() {
+    if (recording) {
+      stopRecording();
+      return;
+    }
+    try {
+      fetch('/api/ack', { method: 'POST' }).catch(() => {});
+
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mr = new MediaRecorder(stream);
+      audioChunksRef.current = [];
+      mr.ondataavailable = e => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
+      mr.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        setRecording(false);
+        const blob = new Blob(audioChunksRef.current, { type: mr.mimeType || 'audio/webm' });
+        try {
+          const text = await transcribeAudio(blob);
+          if (text) sendText(text);
+        } catch {
+          // ignore transcription error
+        }
+      };
+      mediaRecorderRef.current = mr;
+      mr.start();
+      setRecording(true);
+
+      // Silence detection via Web Audio analyser — thresholds from config
+      const SILENCE_THRESHOLD = 0.015;
+      const SILENCE_MS = appConfig?.voice.stt.silence_ms ?? 1500;
+      const MAX_RECORD_MS = (appConfig?.voice.stt.max_seconds ?? 12) * 1000;
+      const MIN_RECORD_MS = Math.min(700, SILENCE_MS);
+      const startedAt = Date.now();
+      let silenceStart: number | null = null;
+
+      const ctx = new AudioContext();
+      audioContextRef.current = ctx;
+      const source = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+      const buf = new Float32Array(analyser.fftSize);
+
+      function tick() {
+        analyser.getFloatTimeDomainData(buf);
+        const rms = Math.sqrt(buf.reduce((s, v) => s + v * v, 0) / buf.length);
+        const elapsed = Date.now() - startedAt;
+
+        if (elapsed >= MAX_RECORD_MS) {
+          stopRecording();
+          return;
+        }
+
+        if (elapsed > MIN_RECORD_MS) {
+          if (rms < SILENCE_THRESHOLD) {
+            if (silenceStart === null) silenceStart = Date.now();
+            else if (Date.now() - silenceStart > SILENCE_MS) {
+              stopRecording();
+              return;
+            }
+          } else {
+            silenceStart = null;
+          }
+        }
+        silenceRafRef.current = requestAnimationFrame(tick);
+      }
+      silenceRafRef.current = requestAnimationFrame(tick);
+    } catch {
+      // mic permission denied or not available
     }
   }
 
@@ -251,9 +371,12 @@ export function ChatPanel() {
     <div className="flex flex-col h-full">
       {/* Toolbar */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 dark:border-gray-800">
-        <span className="text-sm font-medium text-gray-500 dark:text-gray-400">
-          {messages.length === 0 ? 'Start a conversation' : `${messages.length} messages`}
-        </span>
+        <div className="flex items-center gap-2">
+          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium ${STATE_COLORS[assistantState]}`}>
+            {assistantState !== 'idle' && <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" />}
+            {STATE_LABELS[assistantState]}
+          </span>
+        </div>
         <div className="flex items-center gap-3">
           {messages.length > 0 && (
             <button
@@ -382,6 +505,20 @@ export function ChatPanel() {
       {/* Input */}
       <div className="border-t border-gray-100 dark:border-gray-800 px-4 py-3">
         <div className="flex gap-2 items-end">
+          {/* Mic button */}
+          <button
+            onClick={toggleMic}
+            disabled={loading}
+            title={recording ? 'Stop recording' : 'Record voice input'}
+            className={`shrink-0 w-10 h-10 rounded-xl flex items-center justify-center transition disabled:opacity-40 disabled:cursor-not-allowed ${
+              recording
+                ? 'bg-violet-500 text-white hover:bg-violet-600 animate-pulse'
+                : 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'
+            }`}
+          >
+            <Mic size={16} />
+          </button>
+
           <textarea
             ref={inputRef}
             value={input}
@@ -398,13 +535,25 @@ export function ChatPanel() {
               t.style.height = `${Math.min(t.scrollHeight, 128)}px`;
             }}
           />
-          <button
-            onClick={send}
-            disabled={!input.trim() || loading}
-            className="shrink-0 w-10 h-10 rounded-xl bg-violet-600 text-white flex items-center justify-center hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed transition"
-          >
-            {loading ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
-          </button>
+
+          {/* Stop button while generating */}
+          {loading ? (
+            <button
+              onClick={stop}
+              title="Stop generation"
+              className="shrink-0 w-10 h-10 rounded-xl bg-red-500 text-white flex items-center justify-center hover:bg-red-600 transition"
+            >
+              <Square size={14} fill="currentColor" />
+            </button>
+          ) : (
+            <button
+              onClick={send}
+              disabled={!input.trim()}
+              className="shrink-0 w-10 h-10 rounded-xl bg-violet-600 text-white flex items-center justify-center hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed transition"
+            >
+              <Send size={16} />
+            </button>
+          )}
         </div>
       </div>
     </div>

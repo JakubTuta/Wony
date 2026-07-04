@@ -1159,10 +1159,9 @@ class Gmail:
             if not messages:
                 return
             msg = f"You have {len(messages)} new email(s) in {name}."
-            Audio.notify(msg)
             logger.log_system_event("gmail_poll", msg)
-            for message in messages:
-                Audio.notify(self._format_message(message, verbose=False))
+            notifications = [msg] + [self._format_message(m, verbose=False) for m in messages]
+            Audio.notify(notifications)
 
         BackgroundJobs.start(job_name, _poll, interval=interval_minutes * 60)
         return f"Checking '{name}' emails every {interval_minutes} minutes."

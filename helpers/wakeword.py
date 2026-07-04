@@ -47,7 +47,8 @@ class WakeWordListener:
         try:
             self._enabled = self._init_engine()
         except Exception as e:
-            print(f"[wakeword] disabled — init failed: {e}")
+            import helpers.diagnostics
+            helpers.diagnostics.add("error", "WakeWord", f"Disabled — init failed: {e}", hint="Check openwakeword install and config voice.wake_word.phrase.")
 
     # ── Init ──────────────────────────────────────────────────────────────────
 
@@ -196,11 +197,14 @@ class WakeWordListener:
     def _open_stream(self, native_rate: int, native_block: int) -> typing.Any:
         import sounddevice as sd
 
+        from helpers import mic
+
         stream = sd.InputStream(
             samplerate=native_rate,
             channels=1,
             dtype="float32",
             blocksize=native_block,
+            device=mic.resolve_input_device(),
         )
         stream.start()
         return stream
@@ -251,6 +255,10 @@ class WakeWordListener:
                     except Exception:
                         pass
                     stream = None
+                    from helpers import mic as _mic
+                    _mic._invalidate_input_device()
+                    native_rate = _mic.default_input_rate()
+                    native_block = int(round(native_rate * _FRAME_SIZE / 16000))
                     time.sleep(0.3)
                     continue
 
@@ -305,7 +313,9 @@ class WakeWordListener:
     def _handle_detection(self) -> None:
         from helpers.audio import Audio
         from helpers.ducking import duck_others
+        from helpers.events import emit_state
 
+        emit_state("listening")
         with duck_others():
             Audio.play_cached("Yes?")
 
@@ -313,6 +323,8 @@ class WakeWordListener:
 
             text = Recognizer.recognize_speech_from_mic()
             if not text:
+                Audio.play_cached("I didn't catch that.")
+                emit_state("idle")
                 return
 
             try:
@@ -326,4 +338,8 @@ class WakeWordListener:
                     self._stop_event.set()
                     self._exit_event.set()
             except Exception as e:
-                print(f"[wakeword] utterance error: {e}")
+                import helpers.diagnostics
+                helpers.diagnostics.add("error", "WakeWord", f"Utterance error: {e}")
+                Audio.text_to_speech(f"Sorry, something went wrong: {e}")
+            finally:
+                emit_state("idle")
