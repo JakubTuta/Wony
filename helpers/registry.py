@@ -1,10 +1,13 @@
 import os
+import threading
 import typing
 
 import dotenv
 
 dotenv.load_dotenv()
 T = typing.TypeVar("T")
+
+_interactive_local = threading.local()
 
 
 class ModuleStatus:
@@ -65,72 +68,91 @@ class ServiceRegistry:
         return retryable
 
     @classmethod
-    def reinitialize_module(cls, module_name: str) -> bool:
+    def interactive_allowed(cls) -> bool:
+        """True unless the current call stack is a non-interactive reinit
+        (e.g. the health-watcher's automatic retry loop) — services that
+        would otherwise pop up a browser/OAuth flow should raise instead."""
+        return getattr(_interactive_local, "value", True)
+
+    @classmethod
+    def reinitialize_module(cls, module_name: str, interactive: bool = True) -> bool:
         """
         Attempt to re-initialize a previously failed module.
         Returns True if the module is now ENABLED.
         Safe to call from any thread; caller should handle exceptions.
+
+        interactive: False for automatic/background retries (health watcher) —
+        services that need user interaction (e.g. Spotify OAuth) should check
+        interactive_allowed() and raise rather than popping up a browser.
         """
-        pending = cls._reinit_pending.get(module_name)
-        if not pending:
-            return False
-
-        status, _ = cls._module_status.get(module_name, (None, ""))
-        if status == ModuleStatus.DISABLED:
-            return False
-
-        kind = pending["kind"]
-
-        if kind == "service":
-            svc_class = pending["cls"]
-            requires = pending["requires"]
-
-            ready, reason = cls._check_requirements(requires)
-            if not ready:
-                cls._module_status[module_name] = (cls._status_for_reason(reason), reason)
+        prev_interactive = getattr(_interactive_local, "value", True)
+        _interactive_local.value = interactive
+        try:
+            pending = cls._reinit_pending.get(module_name)
+            if not pending:
                 return False
 
-            try:
-                instance = svc_class()
-                cls._service_instances[module_name] = instance
-                cls._services[module_name] = svc_class
-
-                for attr_name in dir(instance):
-                    attr = getattr(instance, attr_name)
-                    if hasattr(attr, "_is_job_method"):
-                        job_name = getattr(attr, "_job_name", attr_name)
-                        cls._jobs[job_name] = attr
-                        cls._job_modules[job_name] = module_name
-                        explicit_summary = getattr(attr, "_job_summary", "")
-                        cls._job_summaries[job_name] = explicit_summary or cls._extract_summary(attr)
-
-                cls._module_status[module_name] = (ModuleStatus.ENABLED, "")
-                cls._reinit_pending.pop(module_name, None)
-                return True
-            except Exception as e:
-                cls._module_status[module_name] = (ModuleStatus.ERROR, str(e))
+            status, _ = cls._module_status.get(module_name, (None, ""))
+            if status == ModuleStatus.DISABLED:
                 return False
 
-        elif kind == "jobs":
-            items = pending["items"]
-            registered = []
-            for job_name, func, requires, summary in items:
+            kind = pending["kind"]
+
+            if kind == "service":
+                svc_class = pending["cls"]
+                requires = pending["requires"]
+
                 ready, reason = cls._check_requirements(requires)
                 if not ready:
                     cls._module_status[module_name] = (cls._status_for_reason(reason), reason)
                     return False
-                registered.append((job_name, func, summary))
 
-            for job_name, func, summary in registered:
-                cls._jobs[job_name] = func
-                cls._job_modules[job_name] = module_name
-                cls._job_summaries[job_name] = summary or cls._extract_summary(func)
+                try:
+                    instance = svc_class()
+                    cls._service_instances[module_name] = instance
+                    cls._services[module_name] = svc_class
 
-            cls._module_status[module_name] = (ModuleStatus.ENABLED, "")
-            cls._reinit_pending.pop(module_name, None)
-            return True
+                    for attr_name in dir(instance):
+                        attr = getattr(instance, attr_name)
+                        if hasattr(attr, "_is_job_method"):
+                            job_name = getattr(attr, "_job_name", attr_name)
+                            cls._jobs[job_name] = attr
+                            cls._job_modules[job_name] = module_name
+                            explicit_summary = getattr(attr, "_job_summary", "")
+                            cls._job_summaries[job_name] = explicit_summary or cls._extract_summary(attr)
 
-        return False
+                    cls._module_status[module_name] = (ModuleStatus.ENABLED, "")
+                    cls._reinit_pending.pop(module_name, None)
+                    return True
+                except Exception as e:
+                    cls._module_status[module_name] = (ModuleStatus.ERROR, str(e))
+                    return False
+
+            if kind == "jobs":
+                return cls._reinitialize_jobs_kind(module_name, pending)
+            return False
+        finally:
+            _interactive_local.value = prev_interactive
+
+    @classmethod
+    def _reinitialize_jobs_kind(cls, module_name: str, pending: typing.Dict) -> bool:
+        items = pending["items"]
+        registered = []
+        for job_name, func, requires, summary in items:
+            ready, reason = cls._check_requirements(requires)
+            if not ready:
+                cls._module_status[module_name] = (cls._status_for_reason(reason), reason)
+                return False
+            registered.append((job_name, func, summary))
+
+        for job_name, func, summary in registered:
+            cls._jobs[job_name] = func
+            cls._job_modules[job_name] = module_name
+            cls._job_summaries[job_name] = summary or cls._extract_summary(func)
+
+        cls._module_status[module_name] = (ModuleStatus.ENABLED, "")
+        cls._reinit_pending.pop(module_name, None)
+        return True
 
     @classmethod
     def _check_module_enabled(

@@ -56,6 +56,7 @@ class VoiceSettings(BaseModel):
     voices_path: str = "models/voices-v1.0.bin"
     tts_device: str = "auto"
     input_device: typing.Optional[typing.Union[int, str]] = None
+    output_device: typing.Optional[typing.Union[int, str]] = None
     stt: SttSettings = Field(default_factory=SttSettings)
     ducking: DuckingSettings = Field(default_factory=DuckingSettings)
     conversation: ConversationSettings = Field(default_factory=ConversationSettings)
@@ -89,6 +90,18 @@ class AiSettings(BaseModel):
 class TraySettings(BaseModel):
     notify_on_ready: bool = True
     open_browser_on_start: bool = False
+
+
+class LoggingSettings(BaseModel):
+    keep_days: int = 14
+
+
+class ModelsSettings(BaseModel):
+    # False: load Whisper/Kokoro lazily on first wake instead of at startup,
+    # so idle tray holds only the tiny always-on wake-word model.
+    preload: bool = False
+    # Unload both after this many idle minutes (0 = never unload).
+    idle_unload_minutes: int = 15
 
 
 class ServerSettings(BaseModel):
@@ -164,6 +177,8 @@ class AppSettings(BaseSettings):
     modules: ModulesSettings = Field(default_factory=ModulesSettings)
     tray: TraySettings = Field(default_factory=TraySettings)
     server: ServerSettings = Field(default_factory=ServerSettings)
+    logging: LoggingSettings = Field(default_factory=LoggingSettings)
+    models: ModelsSettings = Field(default_factory=ModelsSettings)
 
     @classmethod
     def settings_customise_sources(

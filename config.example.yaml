@@ -24,6 +24,11 @@ voice:
   # chooses the wrong mic. Run `python wony.py doctor` to see what was selected.
   input_device: null
 
+  # Override which output device to play TTS/notifications through. null = OS
+  # default (recommended) — automatically follows the Windows default output
+  # device. Set to a device index (int) or a name substring (str) to pin it.
+  output_device: null
+
   stt:
     start_timeout: 4      # give up if no speech starts within this many seconds
     max_seconds: 12       # hard cap on total capture length
@@ -148,3 +153,14 @@ tray:
 server:
   host: "127.0.0.1"
   port: 8000
+
+logging:
+  keep_days: 14   # log/csv files older than this are deleted at startup
+
+# Whisper (STT) and Kokoro (TTS) resource lifecycle.
+models:
+  # false (recommended): load on first wake, so idle tray only holds the tiny
+  # always-on wake-word model. true: load both at startup (instant first
+  # response, but ~holds GPU/RAM the whole time the app runs).
+  preload: false
+  idle_unload_minutes: 15   # unload both after this many idle minutes; 0 = never

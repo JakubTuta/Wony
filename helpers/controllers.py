@@ -18,7 +18,8 @@ class MouseController:
         Returns:
             None
         """
-        print("Idling mouse...")
+        import helpers.diagnostics
+        helpers.diagnostics.add("info", "Controllers", "Idling mouse...")
         mouse_controller = MouseController()
         mouse_controller.func_idle_mouse()
 

@@ -15,12 +15,17 @@ class BackgroundJobs:
         name: str,
         target: typing.Callable,
         interval: typing.Optional[float] = None,
+        pass_stop_event: bool = False,
     ) -> bool:
         """
         Start a named background job.
 
         If interval is given the target is called repeatedly with that delay between calls.
         If interval is None the target is called once (but runs in a daemon thread).
+        If pass_stop_event is True, target is called with the job's stop_event as its
+        only argument — use this for jobs that sleep for a long time (e.g. timers) so
+        stop_all()/stop() can wake and cancel them instead of leaving them asleep
+        until the delay elapses on its own.
         Returns False if a job with that name is already running.
         """
         with cls._lock:
@@ -29,20 +34,28 @@ class BackgroundJobs:
 
             stop_event = threading.Event()
 
+            def _call() -> None:
+                if pass_stop_event:
+                    target(stop_event)
+                else:
+                    target()
+
             if interval is not None:
                 def _loop():
                     while not stop_event.wait(interval):
                         try:
-                            target()
+                            _call()
                         except Exception as e:
-                            print(f"[{name}] error: {e}")
+                            from helpers.logger import logger
+                            logger.log_error(str(e), context=f"job:{name}")
                 thread_target = _loop
             else:
                 def _once():
                     try:
-                        target()
+                        _call()
                     except Exception as e:
-                        print(f"[{name}] error: {e}")
+                        from helpers.logger import logger
+                        logger.log_error(str(e), context=f"job:{name}")
                 thread_target = _once
 
             thread = threading.Thread(target=thread_target, name=name, daemon=True)

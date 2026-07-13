@@ -1,5 +1,5 @@
 import os
-import time
+import threading
 import typing
 from datetime import datetime, timedelta, timezone
 
@@ -62,8 +62,9 @@ def get_date() -> str:
 # --- timer ---
 
 
-def _timer_worker(minutes: float, label: str) -> None:
-    time.sleep(minutes * 60)
+def _timer_worker(minutes: float, label: str, stop_event: threading.Event) -> None:
+    if stop_event.wait(minutes * 60):
+        return  # cancelled
     msg = f"Timer done: {label}." if label else f"{int(minutes)}-minute timer is done."
     Audio.notify(msg)
     logger.log_system_event("timer_fired", msg)
@@ -102,7 +103,9 @@ def set_timer(minutes: float, label: str = "") -> str:
     if BackgroundJobs.is_running(job_name):
         return f"A timer called '{job_name}' is already running."
 
-    BackgroundJobs.start(job_name, lambda: _timer_worker(minutes, label))
+    BackgroundJobs.start(
+        job_name, lambda stop_event: _timer_worker(minutes, label, stop_event), pass_stop_event=True
+    )
 
     display = f"{minutes:g} minute{'s' if minutes != 1 else ''}"
     return f"Timer set for {display}" + (f": {label}" if label else "") + "."
@@ -163,13 +166,14 @@ def set_timer_at(hour: int, minute: int = 0, label: str = "", date: str = "") ->
     if BackgroundJobs.is_running(job_name):
         return f"Timer already set for {target.strftime('%H:%M on %B %d, %Y')}."
 
-    def _worker():
-        time.sleep(delay_seconds)
+    def _worker(stop_event: threading.Event) -> None:
+        if stop_event.wait(delay_seconds):
+            return  # cancelled
         msg = f"Timer done: {label}." if label else f"It's {target.strftime('%H:%M')}."
         Audio.notify(msg)
         logger.log_system_event("timer_fired", msg)
 
-    BackgroundJobs.start(job_name, _worker)
+    BackgroundJobs.start(job_name, _worker, pass_stop_event=True)
 
     time_str = target.strftime("%H:%M on %A, %B %d, %Y")
     return f"Timer set for {time_str}" + (f": {label}" if label else "") + "."

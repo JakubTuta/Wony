@@ -47,6 +47,9 @@ except Exception:
 _shutdown_done = False
 _shutdown_lock = threading.Lock()
 
+_idle_sweeper_thread: typing.Optional[threading.Thread] = None
+_idle_sweeper_stop = threading.Event()
+
 
 class BootstrapError(Exception):
     pass
@@ -60,6 +63,8 @@ def shutdown() -> None:
             return
         _shutdown_done = True
 
+    _stop_idle_sweeper()
+
     try:
         from helpers.health_watcher import stop as _watcher_stop
 
@@ -71,6 +76,13 @@ def shutdown() -> None:
         from helpers.jobs import BackgroundJobs
 
         BackgroundJobs.stop_all()
+    except Exception:
+        pass
+
+    try:
+        from helpers.mcp_client import disconnect_all
+
+        disconnect_all()
     except Exception:
         pass
 
@@ -136,6 +148,20 @@ def bootstrap(
 
     Config.load()
 
+    try:
+        from helpers.logger import logger
+
+        logger.cleanup_old_logs(int(Config.get("logging.keep_days", 14)))
+    except Exception:
+        pass
+
+    try:
+        from helpers.ducking import recover_stale_snapshot
+
+        recover_stale_snapshot()
+    except Exception:
+        pass
+
     from helpers.cache import Cache
 
     Cache.load_values()
@@ -187,6 +213,8 @@ def bootstrap(
 
     _reconnect_mcp_servers(Config, quiet)
     _start_health_watcher(Config, quiet)
+    if audio:
+        _start_idle_sweeper(Config)
 
     if not quiet:
         print()
@@ -222,3 +250,53 @@ def _start_health_watcher(Config: typing.Any, quiet: bool) -> None:
                 )
     except Exception:
         pass
+
+
+def _start_idle_sweeper(Config: typing.Any) -> None:
+    """Periodic background safety net, ticking every 60s:
+      - unload the STT/TTS models after idle_unload_minutes of disuse (see
+        helpers.recognizer.unload_if_idle / helpers.audio.unload_tts_if_idle) —
+        skipped when idle_unload_minutes is 0, but the thread still runs for...
+      - ducking safety net: if a crash/kill left a stale ducking snapshot on
+        disk (helpers.ducking) and nothing is actively ducking right now,
+        retry restoring those app volumes. This is independent of the model
+        idle-unload setting — it must always run whenever audio is enabled,
+        otherwise a user who disables idle-unload would unknowingly also lose
+        this safety net.
+    """
+    global _idle_sweeper_thread
+    if _idle_sweeper_thread is not None and _idle_sweeper_thread.is_alive():
+        return
+
+    try:
+        idle_minutes = float(Config.get("models.idle_unload_minutes", 15))
+    except Exception:
+        idle_minutes = 15.0
+    idle_seconds = idle_minutes * 60.0
+    _idle_sweeper_stop.clear()
+
+    def _loop() -> None:
+        while not _idle_sweeper_stop.wait(60):
+            if idle_seconds > 0:
+                try:
+                    from helpers.recognizer import unload_if_idle as _unload_stt
+                    _unload_stt(idle_seconds)
+                except Exception:
+                    pass
+                try:
+                    from helpers.audio import unload_tts_if_idle as _unload_tts
+                    _unload_tts(idle_seconds)
+                except Exception:
+                    pass
+            try:
+                from helpers.ducking import recover_stale_snapshot
+                recover_stale_snapshot()
+            except Exception:
+                pass
+
+    _idle_sweeper_thread = threading.Thread(target=_loop, daemon=True, name="background-safety-sweeper")
+    _idle_sweeper_thread.start()
+
+
+def _stop_idle_sweeper() -> None:
+    _idle_sweeper_stop.set()

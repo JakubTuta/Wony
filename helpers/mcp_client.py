@@ -12,6 +12,7 @@ ServiceRegistry dynamically — no restart needed.
 import asyncio
 import json
 import threading
+import time
 import typing
 
 from helpers.logger import logger
@@ -52,6 +53,8 @@ class MCPServerSession:
         self._ready = threading.Event()
         self._error: typing.Optional[Exception] = None
         self._stop_event: typing.Optional[asyncio.Event] = None
+        # Set once _run() has fully unwound (child process/connection closed).
+        self._closed = threading.Event()
 
     # ---------------------------------------------------------------- public sync API
 
@@ -66,6 +69,11 @@ class MCPServerSession:
     def disconnect(self) -> None:
         if self._stop_event is not None:
             _get_loop().call_soon_threadsafe(self._stop_event.set)
+
+    def wait_closed(self, timeout: float = 5.0) -> bool:
+        """Block until _run() has fully unwound (stdio child process closed),
+        or timeout elapses. Returns False on timeout."""
+        return self._closed.wait(timeout)
 
     def list_tools(self) -> typing.List[typing.Dict]:
         return list(self._tools)
@@ -87,6 +95,8 @@ class MCPServerSession:
         except Exception as exc:
             self._error = exc
             self._ready.set()
+        finally:
+            self._closed.set()
 
     async def _run_stdio(self) -> None:
         from mcp import ClientSession
@@ -191,6 +201,31 @@ def get_session(name: str) -> typing.Optional[MCPServerSession]:
 def all_connected() -> typing.List[str]:
     with _sessions_lock:
         return list(_sessions.keys())
+
+
+def disconnect_all(timeout: float = 5.0) -> None:
+    """Disconnect every connected MCP server and wait (up to `timeout` total)
+    for each stdio child process / connection to actually close. Call this on
+    shutdown — otherwise MCP server subprocesses can outlive the app."""
+    with _sessions_lock:
+        sessions = list(_sessions.values())
+        _sessions.clear()
+
+    for session in sessions:
+        try:
+            session.disconnect()
+        except Exception:
+            pass
+        try:
+            _unregister_tools(session.name)
+        except Exception:
+            pass
+
+    deadline = time.monotonic() + timeout
+    for session in sessions:
+        remaining = max(0.0, deadline - time.monotonic())
+        if not session.wait_closed(remaining):
+            logger.log_error(f"MCP server '{session.name}' did not close within {timeout:.0f}s", "mcp.disconnect_all")
 
 
 def reconnect_enabled_servers() -> None:

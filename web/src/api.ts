@@ -150,7 +150,12 @@ export type WsEvent =
   | ({ type: 'state'; state: AssistantState })
   | Diagnostic;
 
-export async function transcribeAudio(blob: Blob): Promise<string> {
+export interface TranscribeResult {
+  text: string;
+  warning?: string;
+}
+
+export async function transcribeAudio(blob: Blob): Promise<TranscribeResult> {
   const res = await fetch(`${BASE}/stt`, {
     method: 'POST',
     body: blob,
@@ -158,7 +163,7 @@ export async function transcribeAudio(blob: Blob): Promise<string> {
   });
   if (!res.ok) throw new Error(`STT failed: ${res.status}`);
   const data = await res.json();
-  return data.text ?? '';
+  return { text: data.text ?? '', warning: data.warning };
 }
 
 export function connectEventSocket(handlers: {

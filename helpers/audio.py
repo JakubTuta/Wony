@@ -1,23 +1,39 @@
 import importlib
 import os
+import queue
 import re
 import sys
 import threading
+import time
 import typing
 import urllib.request
 
 import numpy as np
 
 import helpers.diagnostics
-from helpers.compute import _GPU_FIX_HINT
+from helpers.compute import _GPU_FIX_HINT, select_onnx_provider
 from helpers.config import Config
 from helpers.decorators import is_agent_active
+
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _abs_path(path: str) -> str:
+    """Resolve a config-supplied relative path against the repo root, not the process CWD."""
+    return path if os.path.isabs(path) else os.path.join(_REPO_ROOT, path)
 
 _tts_warned = False
 _tts_lock = threading.Lock()  # Kokoro is not re-entrant; serialize calls
 _tts_singleton: typing.Optional["TTS_Engine"] = None
 
+# Only one speech session (streamed reply, cached clip, or notification) plays
+# at a time. RLock because play_cached()'s live-TTS fallback calls
+# stream_text_to_speech() on the same thread while already holding the lane.
+_playback_lane = threading.RLock()
+
 # Track the active TTS interrupt event so external callers can stop speech.
+# Registration only ever happens while _playback_lane is held, so there is
+# provably only one speech session — a single slot is correct.
 _active_tts_interrupt: typing.Optional[threading.Event] = None
 _active_tts_interrupt_lock = threading.Lock()
 
@@ -75,9 +91,10 @@ def _resolve_kokoro_lang(bcp47: str) -> str:
     if prefix in _LANG_MAP:
         return _LANG_MAP[prefix]
     if not _UNSUPPORTED_LANG_WARNING_SHOWN:
-        print(
-            f"[TTS] Language '{bcp47}' not supported by Kokoro v1.0 — falling back to en-us. "
-            "Set voice.tts_voice to an English voice or update assistant.language."
+        helpers.diagnostics.add(
+            "warning", "TTS",
+            f"Language '{bcp47}' not supported by Kokoro v1.0 — falling back to en-us.",
+            hint="Set voice.tts_voice to an English voice or update assistant.language.",
         )
         _UNSUPPORTED_LANG_WARNING_SHOWN = True
     return "en-us"
@@ -95,9 +112,22 @@ def _download_model_files(onnx_path: str, voices_path: str) -> None:
         if os.path.exists(dest):
             continue
         url = base_url + name
-        print(f"[TTS] Downloading {name} → {dest} …")
-        urllib.request.urlretrieve(url, dest)
-        print(f"[TTS] Downloaded {name}.")
+        helpers.diagnostics.add("info", "TTS", f"Downloading {name} → {dest} …")
+        tmp_dest = dest + ".part"
+        try:
+            with urllib.request.urlopen(url, timeout=30) as resp:
+                with open(tmp_dest, "wb") as f:
+                    while True:
+                        chunk = resp.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+            os.replace(tmp_dest, dest)
+        except Exception:
+            if os.path.exists(tmp_dest):
+                os.remove(tmp_dest)
+            raise
+        helpers.diagnostics.add("info", "TTS", f"Downloaded {name}.")
 
 
 def _add_nvidia_dll_dirs() -> None:
@@ -127,45 +157,70 @@ def _setup_onnx_provider() -> None:
 
     Must be called before constructing Kokoro() since the ONNX session is built inside its constructor.
     """
-    try:
-        import onnxruntime as ort
-    except ImportError:
-        return
-
     device = str(Config.get("voice.tts_device", "auto")).lower()
-    if device != "cpu" and "CUDAExecutionProvider" in ort.get_available_providers():
-        os.environ["ONNX_PROVIDER"] = "CUDAExecutionProvider"
-        helpers.diagnostics.add("info", "TTS", "Using CUDAExecutionProvider (GPU).")
+    provider = select_onnx_provider(device)
+    if provider:
+        os.environ["ONNX_PROVIDER"] = provider
+        helpers.diagnostics.add("info", "TTS", f"Using {provider} (GPU).")
     else:
         os.environ.pop("ONNX_PROVIDER", None)
         if device == "cuda":
             helpers.diagnostics.add("warning", "TTS", "CUDA requested but CUDAExecutionProvider unavailable — using CPU.", hint=_GPU_FIX_HINT)
 
 
+_tts_last_used: float = 0.0
+
+
 def _get_tts_singleton() -> "TTS_Engine":
-    global _tts_singleton
+    global _tts_singleton, _tts_last_used
     if _tts_singleton is None:
         _tts_singleton = TTS_Engine()
+        # Count load time as "used" — otherwise a freshly loaded but not-yet-
+        # synthesized engine looks infinitely idle (_tts_last_used defaults to
+        # 0) and the idle sweeper unloads it before it's ever used.
+        _tts_last_used = time.monotonic()
     return _tts_singleton
+
+
+def warm_tts_async() -> None:
+    """Kick off TTS engine load on a daemon thread if not already loaded/loading.
+    Used to overlap load time with the wake ack + user speaking, when
+    models.preload is off. Safe to call repeatedly."""
+    if _tts_singleton is not None:
+        return
+
+    def _warm() -> None:
+        with _tts_lock:
+            _get_tts_singleton()
+
+    threading.Thread(target=_warm, daemon=True, name="tts-warm").start()
+
+
+def unload_tts_if_idle(idle_seconds: float) -> None:
+    """Free the TTS engine if unused for idle_seconds. No-op if never loaded,
+    or if it's currently in use (synthesis holds _tts_lock for its duration,
+    so this can never yank the engine mid-use)."""
+    global _tts_singleton
+    with _tts_lock:
+        if _tts_singleton is None or time.monotonic() - _tts_last_used < idle_seconds:
+            return
+        _tts_singleton = None
+    import gc
+    gc.collect()
+    helpers.diagnostics.add("info", "TTS", "Engine unloaded (idle).")
 
 
 def _play_samples(
     samples: np.ndarray,
     sr: int,
+    out_stream,
     interrupt_event: typing.Optional[threading.Event] = None,
-    out_stream=None,
 ) -> bool:
-    """Play samples in 50ms chunks. Returns True if fully played, False if interrupted.
+    """Play samples in 50ms chunks on a caller-owned stream.
 
-    If out_stream is provided, caller owns its lifecycle; on interrupt it is aborted.
+    Returns True if fully played, False if interrupted. Caller owns the
+    stream's lifecycle; on interrupt it is aborted (buffered audio discarded).
     """
-    import sounddevice as sd
-
-    own_stream = out_stream is None
-    if own_stream:
-        out_stream = sd.OutputStream(samplerate=sr, channels=1, dtype="float32")
-        out_stream.start()
-
     chunk_size = int(sr * 0.05)  # 50ms chunks for responsive interruption
     completed = True
     try:
@@ -177,14 +232,6 @@ def _play_samples(
             out_stream.write(samples[i : i + chunk_size])
     except Exception:
         completed = False
-
-    if own_stream:
-        if completed:
-            try:
-                out_stream.stop()  # drain remaining buffered audio
-            except Exception:
-                pass
-        out_stream.close()
 
     return completed
 
@@ -205,8 +252,8 @@ class TTS_Engine:
         language = str(Config.get("assistant.language", "en"))
         self._lang = _resolve_kokoro_lang(language)
 
-        onnx_path = Config.get("voice.model_path", "models/kokoro-v1.0.onnx")
-        voices_path = Config.get("voice.voices_path", "models/voices-v1.0.bin")
+        onnx_path = _abs_path(Config.get("voice.model_path", "models/kokoro-v1.0.onnx"))
+        voices_path = _abs_path(Config.get("voice.voices_path", "models/voices-v1.0.bin"))
 
         _download_model_files(onnx_path, voices_path)
 
@@ -265,6 +312,90 @@ class TTS_Engine:
         sf.write(filename, samples, sr)
 
 
+_notify_q: "queue.Queue[str]" = queue.Queue()
+_notify_dispatcher_thread: typing.Optional[threading.Thread] = None
+_notify_dispatcher_lock = threading.Lock()
+
+
+def _lane_busy() -> bool:
+    acquired = _playback_lane.acquire(blocking=False)
+    if acquired:
+        _playback_lane.release()
+        return False
+    return True
+
+
+def _ensure_notify_dispatcher() -> None:
+    global _notify_dispatcher_thread
+    with _notify_dispatcher_lock:
+        if _notify_dispatcher_thread is not None and _notify_dispatcher_thread.is_alive():
+            return
+        _notify_dispatcher_thread = threading.Thread(
+            target=_notify_dispatcher_loop, daemon=True, name="notify-dispatcher"
+        )
+        _notify_dispatcher_thread.start()
+
+
+def _notify_dispatcher_loop() -> None:
+    from helpers import mic
+
+    while True:
+        text = _notify_q.get()
+        batch = [text]
+        while True:
+            try:
+                batch.append(_notify_q.get_nowait())
+            except queue.Empty:
+                break
+
+        # Defer until any active conversation/push-to-talk session and any
+        # in-progress speech finish — talking over the user is strictly worse
+        # than a short delay. No max-defer timeout: conversations self-end on
+        # the follow-up silence timeout, so the wait is bounded in practice.
+        while mic.voice_session.locked() or _lane_busy():
+            time.sleep(0.5)
+
+        combined = " ".join(t for t in batch if t)
+        if combined:
+            stream_text_to_speech([combined])
+
+
+def _play_cached_wav(path: str) -> None:
+    """Play a WAV file with the same interrupt-slot registration as streamed
+    TTS, so tray "Stop speaking" / web `stop` can interrupt cached clips too."""
+    import sounddevice as sd
+    import soundfile as sf
+
+    from helpers import mic
+
+    samples, sr = sf.read(path, dtype="float32", always_2d=False)
+    if samples.ndim > 1:
+        samples = samples.mean(axis=1).astype(np.float32)
+
+    interrupt_event = threading.Event()
+    with _active_tts_interrupt_lock:
+        global _active_tts_interrupt
+        _active_tts_interrupt = interrupt_event
+    try:
+        with mic.pa_stream_guard():
+            out_stream = sd.OutputStream(
+                samplerate=sr, channels=1, dtype="float32", device=mic.resolve_output_device()
+            )
+            out_stream.start()
+            try:
+                _play_samples(samples, sr, out_stream, interrupt_event)
+            finally:
+                try:
+                    out_stream.stop()
+                except Exception:
+                    pass
+                out_stream.close()
+    finally:
+        with _active_tts_interrupt_lock:
+            if _active_tts_interrupt is interrupt_event:
+                _active_tts_interrupt = None
+
+
 class Audio:
     @staticmethod
     def save_text_to_file(text: str, filename: str) -> None:
@@ -276,20 +407,23 @@ class Audio:
         """Play a pre-rendered WAV clip if available, else live TTS. Run scripts/render_voice_clips.py to generate clips."""
         if is_agent_active():
             return
+        from helpers.cache import Cache
+        if not Cache.get_audio():
+            return
 
-        from helpers.ducking import duck_others
-        with duck_others():
-            wav = CACHED_CLIPS.get(text)
-            if wav and os.path.exists(wav):
-                try:
-                    from helpers import mic
+        with _playback_lane:
+            from helpers.ducking import duck_others
+            with duck_others():
+                wav = CACHED_CLIPS.get(text)
+                wav_path = _abs_path(wav) if wav else None
+                if wav_path and os.path.exists(wav_path):
+                    try:
+                        _play_cached_wav(wav_path)
+                        return
+                    except Exception as e:
+                        helpers.diagnostics.add("warning", "Audio", f"Cached playback failed ({e}) — falling back to TTS")
 
-                    mic.play_wav(wav, blocking=True)
-                    return
-                except Exception as e:
-                    print(f"[audio] cached playback failed ({e}) — falling back to TTS")
-
-            stream_text_to_speech([text])
+                stream_text_to_speech([text])
 
     @staticmethod
     def text_to_speech(
@@ -306,18 +440,19 @@ class Audio:
 
     @staticmethod
     def notify(text: typing.Union[str, typing.List[str]]) -> None:
-        """Speak a proactive background notification (timer, reminder, poller).
-        No-op when audio is off. Accepts a list to batch multiple messages under one duck."""
+        """Queue a proactive background notification (timer, reminder, poller)
+        to be spoken once any active conversation/speech finishes — never
+        talks over the user. No-op when audio is off. Accepts a list to batch
+        multiple messages under one duck."""
         from helpers.cache import Cache
 
         if not text or not Cache.get_audio():
             return
-        if isinstance(text, list):
-            combined = " ".join(t for t in text if t)
-            if combined:
-                Audio.text_to_speech(combined)
-        else:
-            Audio.text_to_speech(text)
+        combined = " ".join(t for t in text if t) if isinstance(text, list) else str(text)
+        if not combined:
+            return
+        _ensure_notify_dispatcher()
+        _notify_q.put(combined)
 
     @staticmethod
     def record_audio(duration: int = 3) -> np.ndarray:
@@ -340,7 +475,7 @@ class Audio:
         return mic.record_until_silence(
             max_seconds=float(cfg.get("max_seconds", 12.0)),
             start_timeout=effective_timeout,
-            silence_ms=int(cfg.get("silence_ms", 500)),
+            silence_ms=int(cfg.get("silence_ms", 700)),
             vad_aggressiveness=int(cfg.get("vad_aggressiveness", 2)),
         )
 
@@ -360,8 +495,8 @@ class BargeinListener:
     closes its stream before _listen returns, so the caller can open a fresh
     stream for STT.
 
-    Echo guard: requires `sustain_frames` consecutive speech frames (default 5,
-    ~150ms) to avoid false triggers from speaker bleed. Configurable via
+    Echo guard: requires `sustain_frames` consecutive speech frames (default 15,
+    ~450ms) to avoid false triggers from speaker bleed. Configurable via
     voice.barge_in.sustain_frames in config.yaml.
     """
 
@@ -408,19 +543,20 @@ class BargeinListener:
 
 
 def _warn_tts_unavailable(e: Exception) -> None:
-    """Print one actionable TTS failure message and reset a broken engine."""
+    """Emit one actionable TTS failure diagnostic and reset a broken engine."""
     global _tts_warned, _tts_singleton
     if isinstance(e, ImportError):
         if not _tts_warned:
-            print(
-                "TTS unavailable: kokoro-onnx not installed. "
-                "Run: pip install -r requirements/voice.txt"
+            helpers.diagnostics.add(
+                "error", "TTS", "kokoro-onnx not installed.",
+                hint="pip install -r requirements/voice.txt",
             )
             _tts_warned = True
         return
     if not _tts_warned:
-        print(
-            f"TTS unavailable: {e} — check voice.tts_voice / voice.model_path in config.yaml."
+        helpers.diagnostics.add(
+            "error", "TTS", f"Unavailable: {e}",
+            hint="Check voice.tts_voice / voice.model_path in config.yaml.",
         )
         _tts_warned = True
     # Engine may be broken; reset so the next call builds a fresh one.
@@ -443,113 +579,135 @@ def stream_text_to_speech(
     Checks interrupt_event every 50ms during playback so the assistant can be
     stopped mid-sentence, not just between sentences.
 
+    Runs inside the single playback lane — only one speech session (streamed
+    reply, cached clip, or deferred notification) plays at a time.
+
     Returns:
         (spoken_text, remaining_sentences)
         spoken_text: everything that was actually spoken aloud
         remaining_sentences: unspoken sentences buffered when interrupted
     """
-    import queue
-
     import sounddevice as sd
+
+    from helpers import mic
 
     if interrupt_event is None:
         interrupt_event = threading.Event()
 
-    with _active_tts_interrupt_lock:
-        global _active_tts_interrupt
-        _active_tts_interrupt = interrupt_event
+    with _playback_lane:
+        # Follow the OS default output device across sessions (mirrors input's
+        # runtime rediscovery). Cheap: one sub-ms COM call, done once per
+        # session rather than per chunk.
+        if mic.output_endpoint_stale():
+            if not mic.try_reinitialize_portaudio():
+                mic.request_portaudio_reinit()
 
-    spoken_parts: typing.List[str] = []
-    pending_playback: typing.List[str] = []  # reached playback but interrupted
-    pending_synth: typing.List[str] = []     # never reached playback
-    buffer = ""
+        with _active_tts_interrupt_lock:
+            global _active_tts_interrupt
+            _active_tts_interrupt = interrupt_event
 
-    # Bounded so synthesis stays at most a few sentences ahead of playback
-    # (keeps barge-in responsive and memory flat on long answers).
-    audio_q: "queue.Queue" = queue.Queue(maxsize=3)
+        spoken_parts: typing.List[str] = []
+        pending_playback: typing.List[str] = []  # reached playback but interrupted
+        pending_synth: typing.List[str] = []     # never reached playback
+        buffer = ""
 
-    def _playback() -> None:
-        out_stream = None
-        interrupted = False
-        try:
-            while True:
-                item = audio_q.get()
-                if item is None:
-                    return
-                sentence, samples, sr = item
-                if interrupted or interrupt_event.is_set():
-                    pending_playback.append(sentence)
-                    continue
+        # Bounded so synthesis stays at most a few sentences ahead of playback
+        # (keeps barge-in responsive and memory flat on long answers).
+        audio_q: "queue.Queue" = queue.Queue(maxsize=3)
+
+        def _playback() -> None:
+            out_stream = None
+            interrupted = False
+            # Held for the thread's whole life (not just while a stream is open) so
+            # a PortAudio reinit can never land mid-sentence.
+            with mic.pa_stream_guard():
                 try:
-                    if out_stream is None:
-                        out_stream = sd.OutputStream(samplerate=sr, channels=1, dtype="float32")
-                        out_stream.start()
-                    if _play_samples(samples, sr, interrupt_event, out_stream=out_stream):
-                        spoken_parts.append(sentence)
+                    while True:
+                        item = audio_q.get()
+                        if item is None:
+                            return
+                        sentence, samples, sr = item
+                        if interrupted or interrupt_event.is_set():
+                            pending_playback.append(sentence)
+                            continue
+                        try:
+                            if out_stream is None:
+                                out_stream = sd.OutputStream(
+                                    samplerate=sr, channels=1, dtype="float32",
+                                    device=mic.resolve_output_device(),
+                                )
+                                out_stream.start()
+                            if _play_samples(samples, sr, out_stream, interrupt_event):
+                                spoken_parts.append(sentence)
+                            else:
+                                interrupted = True
+                                pending_playback.append(sentence)
+                        except Exception as e:
+                            # Output device failure — surface it, ask the wake loop to
+                            # reinit PortAudio, and keep draining so the producer never blocks.
+                            helpers.diagnostics.add("error", "Audio", f"Output device failed: {e}")
+                            mic.request_portaudio_reinit()
+                            interrupted = True
+                            pending_playback.append(sentence)
+                finally:
+                    if out_stream is not None:
+                        if not interrupted:
+                            try:
+                                out_stream.stop()  # drain remaining buffered audio before closing
+                            except Exception:
+                                pass
+                        try:
+                            out_stream.close()
+                        except Exception:
+                            pass
+
+        def _synth_and_queue(sentence: str) -> None:
+            global _tts_last_used
+            if interrupt_event.is_set():
+                pending_synth.append(sentence)
+                return
+            try:
+                with _tts_lock:
+                    engine = _get_tts_singleton()
+                    samples, sr = engine.synthesize(sentence)
+                    _tts_last_used = time.monotonic()
+            except Exception as e:
+                _warn_tts_unavailable(e)
+                return
+            audio_q.put((sentence, samples, sr))
+
+        from helpers.ducking import duck_others
+        with duck_others():
+            player = threading.Thread(target=_playback, daemon=True, name="tts-playback")
+            player.start()
+
+            try:
+                for chunk in text_gen:
+                    buffer += chunk
+                    if interrupt_event.is_set():
+                        continue  # keep buffering; remainder lands in pending below
+
+                    sentences = _split_sentences(buffer)
+                    if len(sentences) > 1:
+                        buffer = sentences[-1]
+                        for s in sentences[:-1]:
+                            _synth_and_queue(s)
+
+                if buffer.strip():
+                    if interrupt_event.is_set():
+                        pending_synth.append(buffer.strip())
                     else:
-                        interrupted = True
-                        pending_playback.append(sentence)
-                except Exception:
-                    # Output device failure — keep draining so the producer never blocks.
-                    interrupted = True
-                    pending_playback.append(sentence)
-        finally:
-            if out_stream is not None:
-                if not interrupted:
-                    try:
-                        out_stream.stop()  # drain remaining buffered audio before closing
-                    except Exception:
-                        pass
-                try:
-                    out_stream.close()
-                except Exception:
-                    pass
+                        _synth_and_queue(buffer.strip())
+                        buffer = ""
+            finally:
+                audio_q.put(None)
+                player.join()
 
-    def _synth_and_queue(sentence: str) -> None:
-        if interrupt_event.is_set():
-            pending_synth.append(sentence)
-            return
-        try:
-            with _tts_lock:
-                engine = _get_tts_singleton()
-                samples, sr = engine.synthesize(sentence)
-        except Exception as e:
-            _warn_tts_unavailable(e)
-            return
-        audio_q.put((sentence, samples, sr))
+        with _active_tts_interrupt_lock:
+            if _active_tts_interrupt is interrupt_event:
+                _active_tts_interrupt = None
 
-    from helpers.ducking import duck_others
-    with duck_others():
-        player = threading.Thread(target=_playback, daemon=True, name="tts-playback")
-        player.start()
-
-        try:
-            for chunk in text_gen:
-                buffer += chunk
-                if interrupt_event.is_set():
-                    continue  # keep buffering; remainder lands in pending below
-
-                sentences = _split_sentences(buffer)
-                if len(sentences) > 1:
-                    buffer = sentences[-1]
-                    for s in sentences[:-1]:
-                        _synth_and_queue(s)
-
-            if buffer.strip():
-                if interrupt_event.is_set():
-                    pending_synth.append(buffer.strip())
-                else:
-                    _synth_and_queue(buffer.strip())
-                    buffer = ""
-        finally:
-            audio_q.put(None)
-            player.join()
-
-    with _active_tts_interrupt_lock:
-        if _active_tts_interrupt is interrupt_event:
-            _active_tts_interrupt = None
-
-    return " ".join(spoken_parts), pending_playback + pending_synth
+        return " ".join(spoken_parts), pending_playback + pending_synth
 
 
 def preload_tts() -> None:
@@ -557,9 +715,9 @@ def preload_tts() -> None:
     try:
         engine = _get_tts_singleton()
         engine.synthesize("warm up")  # loads ONNX session into memory, no playback needed
-        print("TTS engine loaded.")
+        helpers.diagnostics.add("info", "TTS", "Engine loaded.")
     except Exception as e:
-        print(f"[TTS] Preload failed (non-fatal): {e}")
+        helpers.diagnostics.add("warning", "TTS", f"Preload failed (non-fatal): {e}")
 
 
 def cleanup() -> None:

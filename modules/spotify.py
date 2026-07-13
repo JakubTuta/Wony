@@ -3,7 +3,7 @@ import datetime
 import http.server
 import os
 import socketserver
-import threading
+import time
 import typing
 import urllib.parse
 import webbrowser
@@ -36,9 +36,8 @@ class AuthHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(
                 b"<html><body><h1>Authentication successful!</h1><p>You can close this window now.</p></body></html>"
             )
-
-            # Signal the server to shut down
-            threading.Thread(target=self.server.shutdown).start()
+            # No explicit shutdown needed — _get_auth_code() polls via
+            # handle_request() and exits its loop as soon as auth_code is set.
         else:
             self.send_response(400)
             self.send_header("Content-type", "text/html")
@@ -80,6 +79,10 @@ class Spotify:
         self.access_token, self.refresh_token = self._get_tokens_from_cache()
 
         if not self.access_token or not self.refresh_token:
+            from helpers.registry import ServiceRegistry
+            if not ServiceRegistry.interactive_allowed():
+                raise Exception("Spotify needs interactive OAuth — run a Spotify command to authorize.")
+
             self.auth_code = self._get_auth_code()
             if not self.auth_code:
                 raise Exception("Failed to get authorization code")
@@ -898,7 +901,12 @@ class Spotify:
 
         return None, None
 
+    _AUTH_TIMEOUT_SECONDS = 180
+
     def _get_auth_code(self):
+        global auth_code
+        auth_code = None
+
         auth_url = "https://accounts.spotify.com/authorize?" + urllib.parse.urlencode(
             {
                 "client_id": self.client_id,
@@ -912,15 +920,19 @@ class Spotify:
         logger.log_system_event("spotify_auth", f"Opening browser for authorization.")
         webbrowser.open(auth_url)
 
-        httpd = socketserver.TCPServer(("", self.PORT), AuthHandler)
+        httpd = socketserver.TCPServer(("127.0.0.1", self.PORT), AuthHandler)
+        httpd.timeout = 1.0  # bounds each handle_request() call so the deadline loop below is enforced
         logger.log_system_event("spotify_auth", f"Waiting for authorization at http://localhost:{self.PORT}")
-        httpd.serve_forever()
+        try:
+            deadline = time.monotonic() + self._AUTH_TIMEOUT_SECONDS
+            while auth_code is None and time.monotonic() < deadline:
+                httpd.handle_request()
+        finally:
+            httpd.server_close()
 
-        if auth_code:
-            return auth_code
-
-        else:
-            return None
+        if not auth_code:
+            logger.log_error("Spotify authorization timed out.", "spotify.auth")
+        return auth_code
 
     def _get_tokens(self):
         headers = {

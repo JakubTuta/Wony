@@ -1,22 +1,30 @@
 """
 openWakeWord-based wake-word listener.
 
-Detection flow: sounddevice captures audio from the system default input at its
-native sample rate, resampled to 16 kHz mono int16 for openWakeWord. On trigger:
-  1. Release the mic (sounddevice stream stopped/closed)
-  2. Play listening.wav
-  3. STT via faster-whisper (Recognizer.recognize_speech_from_mic)
-  4. Pass transcript to employer.handle_utterance (acquires agent_lock internally)
-  5. Reopen the mic stream and reset the model buffer
+Detection flow: sounddevice captures audio from the resolved input device
+(see helpers.mic.resolve_input_device — trusts the OS default, no liveness
+probe at resolve time) at its native sample rate, resampled to 16 kHz mono
+int16 for openWakeWord. On trigger:
+  1. Acquire mic.voice_session (so tray "Listen now" / Ctrl+L can't collide)
+  2. Release the mic (sounddevice stream stopped/closed)
+  3. Play the "Yes?" ack clip (Audio.play_cached)
+  4. STT via faster-whisper (Recognizer.recognize_speech_from_mic)
+  5. Pass transcript to employer.handle_utterance (acquires agent_lock internally)
+  6. Reopen the mic stream and reset the model buffer, release voice_session
+
+The main loop never dies on a capture error: read/open failures are
+contained per-iteration, trigger cache invalidation + escalating backoff,
+and — after repeated failures — a guarded PortAudio re-enumeration (see
+helpers.mic.try_reinitialize_portaudio) so a device that came back (e.g. a
+wireless headset powered back on) can be rediscovered without a restart.
 
 Single-input-stream contract: the listener closes its stream before STT records.
-Both paths use the system default input device.
 
 Config keys (voice.wake_word.*):
   enabled          bool  - master switch
   phrase           str   - built-in model name (ignored when model_path is set)
                           valid: "hey jarvis", "alexa", "hey mycroft", "hey rhasspy"
-  model_path       str   - path to a custom .onnx model (optional)
+  model_path       str   - path to a custom .onnx model (optional, relative to repo root)
   threshold        float - detection score cutoff, 0..1 (default 0.5)
   cooldown_seconds float - ignore re-triggers within this window after detection
 
@@ -24,11 +32,18 @@ Required pip packages: openwakeword onnxruntime sounddevice soxr numpy
 No account or API key required.
 """
 
+import os
 import threading
 import time
 import typing
 
+import helpers.diagnostics as diagnostics
+
 _FRAME_SIZE = 1280  # 80 ms at 16 kHz
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_MAX_BACKOFF = 5.0
+_DEGRADED_RECHECK_INTERVAL = 300.0  # 5 min
+_BUILTIN_PHRASES = {"hey jarvis", "alexa", "hey mycroft", "hey rhasspy"}
 
 
 class WakeWordListener:
@@ -41,14 +56,20 @@ class WakeWordListener:
         self._exit_event = exit_event
         self._stop_event = threading.Event()
         self._paused = threading.Event()
+        self._resume_event = threading.Event()
+        self._mic_released = threading.Event()
+        self._mic_released.set()  # no stream open yet
         self._thread: typing.Optional[threading.Thread] = None
         self._enabled = False
+
+        self._reader: typing.Any = None
+        self._native_rate: int = 16000
+        self._native_block: int = _FRAME_SIZE
 
         try:
             self._enabled = self._init_engine()
         except Exception as e:
-            import helpers.diagnostics
-            helpers.diagnostics.add("error", "WakeWord", f"Disabled — init failed: {e}", hint="Check openwakeword install and config voice.wake_word.phrase.")
+            diagnostics.add("error", "WakeWord", f"Disabled — init failed: {e}", hint="Check openwakeword install and config voice.wake_word.phrase.")
 
     # ── Init ──────────────────────────────────────────────────────────────────
 
@@ -63,25 +84,19 @@ class WakeWordListener:
             import openwakeword  # noqa: F401
             from openwakeword.model import Model  # noqa: F401
         except ImportError:
-            print(
-                "[wakeword] disabled — openwakeword not installed (pip install -r requirements/wakeword.txt)"
-            )
+            diagnostics.add("warning", "WakeWord", "Disabled — openwakeword not installed.", hint="pip install -r requirements/wakeword.txt")
             return False
 
         try:
             import sounddevice  # noqa: F401
         except ImportError:
-            print(
-                "[wakeword] disabled — sounddevice not installed (pip install -r requirements/wakeword.txt)"
-            )
+            diagnostics.add("warning", "WakeWord", "Disabled — sounddevice not installed.", hint="pip install -r requirements/wakeword.txt")
             return False
 
         try:
             import numpy  # noqa: F401
         except ImportError:
-            print(
-                "[wakeword] disabled — numpy not installed (pip install -r requirements/wakeword.txt)"
-            )
+            diagnostics.add("warning", "WakeWord", "Disabled — numpy not installed.", hint="pip install -r requirements/wakeword.txt")
             return False
 
         # Download pre-trained weights on first run (no-op if already present)
@@ -90,15 +105,42 @@ class WakeWordListener:
 
             openwakeword.utils.download_models()
         except Exception as e:
-            print(
-                f"[wakeword] model download failed (offline?): {e} — continuing with cached models"
-            )
+            diagnostics.add("warning", "WakeWord", f"Model download failed (offline?): {e} — continuing with cached models.")
 
         model_path = cfg.get("model_path") or None
+        if model_path and not os.path.isabs(model_path):
+            model_path = os.path.join(_REPO_ROOT, model_path)
         phrase = cfg.get("phrase", "hey jarvis")
         self._threshold = float(cfg.get("threshold", 0.5))
         self._cooldown = float(cfg.get("cooldown_seconds", 2.0))
         self._last_trigger = 0.0
+
+        # A missing/invalid custom model or an unrecognized phrase must never
+        # silently disable wake word — fall back to a working built-in instead.
+        fell_back = False
+        if model_path and not os.path.exists(model_path):
+            diagnostics.add(
+                "error", "WakeWord",
+                f"Custom model '{model_path}' not found — falling back to a built-in phrase.",
+                hint="Train it (training/train_hey_wony.ipynb or .sh) or unset voice.wake_word.model_path.",
+            )
+            model_path = None
+            fell_back = True
+
+        if model_path is None and phrase.lower() not in _BUILTIN_PHRASES:
+            diagnostics.add(
+                "warning", "WakeWord",
+                f"'{phrase}' is not a built-in phrase — using 'hey jarvis' instead.",
+                hint='Valid built-in phrases: "hey jarvis", "alexa", "hey mycroft", "hey rhasspy". '
+                "For a custom phrase, train a model (training/train_hey_wony.ipynb or .sh).",
+            )
+            phrase = "hey jarvis"
+            fell_back = True
+
+        if fell_back:
+            # A threshold tuned for a specific (possibly weak) custom model
+            # would false-fire constantly on a different model — don't carry it over.
+            self._threshold = max(self._threshold, 0.5)
 
         # Silero VAD pre-gate cuts false triggers from non-speech noise.
         vad_threshold = float(cfg.get("vad_threshold", 0.5))
@@ -107,40 +149,50 @@ class WakeWordListener:
         noise_suppression = bool(cfg.get("noise_suppression", False))
         models = [model_path] if model_path else [phrase]
 
-        try:
-            from openwakeword.model import Model
+        from openwakeword.model import Model
 
+        def _build(model_list: list) -> typing.Any:
             kwargs: dict = {
-                "wakeword_models": models,
+                "wakeword_models": model_list,
                 "inference_framework": "onnx",
                 "vad_threshold": vad_threshold,
             }
             if noise_suppression:
                 kwargs["enable_speex_noise_suppression"] = True
             try:
-                self._oww = Model(**kwargs)
+                return Model(**kwargs)
             except Exception as inner:
                 # Retry without speex NS (unavailable on this platform) and/or
                 # without newer kwargs (older openwakeword).
                 if noise_suppression:
-                    print(
-                        f"[wakeword] noise suppression unavailable ({inner}) — "
-                        "continuing without it"
-                    )
+                    diagnostics.add("warning", "WakeWord", f"Noise suppression unavailable ({inner}) — continuing without it.")
                 kwargs.pop("enable_speex_noise_suppression", None)
                 try:
-                    self._oww = Model(**kwargs)
+                    return Model(**kwargs)
                 except TypeError:
-                    self._oww = Model(
-                        wakeword_models=models, inference_framework="onnx"
-                    )
+                    return Model(wakeword_models=model_list, inference_framework="onnx")
+
+        try:
+            self._oww = _build(models)
         except Exception as e:
-            print(f"[wakeword] disabled — openWakeWord init failed: {e}")
-            print(
-                f"[wakeword] hint: phrase '{phrase}' may not be a valid built-in name. "
-                'Valid built-in phrases: "hey jarvis", "alexa", "hey mycroft", "hey rhasspy"'
+            if models == ["hey jarvis"]:
+                diagnostics.add(
+                    "error", "WakeWord", f"Disabled — openWakeWord init failed: {e}",
+                    hint='Valid built-in phrases: "hey jarvis", "alexa", "hey mycroft", "hey rhasspy"',
+                )
+                return False
+            diagnostics.add(
+                "warning", "WakeWord",
+                f"Model init failed for '{models[0]}' ({e}) — retrying with built-in 'hey jarvis'.",
             )
-            return False
+            phrase = "hey jarvis"
+            models = [phrase]
+            self._threshold = max(self._threshold, 0.5)
+            try:
+                self._oww = _build(models)
+            except Exception as e2:
+                diagnostics.add("error", "WakeWord", f"Disabled — openWakeWord init failed even with built-in fallback: {e2}")
+                return False
 
         # Resolve the model key from the constructed model (avoids hardcoding)
         keys = (
@@ -157,7 +209,7 @@ class WakeWordListener:
                 keys[0],
             )
 
-        print(f"[wakeword] ready — listening for '{phrase}' (key: {self._model_key})")
+        diagnostics.add("info", "WakeWord", f"Ready — listening for '{phrase}' (key: {self._model_key}).")
         return True
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -177,37 +229,63 @@ class WakeWordListener:
 
     def stop(self) -> None:
         self._stop_event.set()
+        self._resume_event.set()  # wake a paused loop so it notices stop promptly
+        if self._thread is not None and self._thread is not threading.current_thread():
+            self._thread.join(timeout=2.0)
 
     def pause(self) -> None:
-        """Release mic so another caller can open it. Blocks until stream is closed."""
+        """Release mic so another caller can open it. Blocks until the stream is closed.
+
+        Never gives up: proceeding while the wake-word loop still holds the
+        stream would violate the single-input-stream contract, so this keeps
+        waiting (logging periodically) instead of racing ahead.
+        """
         if not self._enabled:
             return
         self._paused.set()
-        time.sleep(0.15)  # give _run loop one iteration to close the stream
+        while not self._mic_released.wait(2.0):
+            diagnostics.add("warning", "WakeWord", "pause() still waiting for mic release...")
 
     def resume(self) -> None:
         """Let the listener reopen the mic stream."""
         self._paused.clear()
+        self._resume_event.set()
 
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
-    # ── Main loop ─────────────────────────────────────────────────────────────
+    # ── Stream lifecycle ──────────────────────────────────────────────────────
 
-    def _open_stream(self, native_rate: int, native_block: int) -> typing.Any:
-        import sounddevice as sd
+    def _open_stream(self) -> None:
+        """Open a fresh input stream against the currently resolved device.
 
+        Backed by mic.FrameReader (callback-based) rather than a manual
+        blocking InputStream.read() — the latter has been observed to hang
+        indefinitely on some WASAPI endpoints. Rate/block are recomputed on
+        every call since recovery may land on a different-rate device.
+        """
         from helpers import mic
 
-        stream = sd.InputStream(
-            samplerate=native_rate,
-            channels=1,
-            dtype="float32",
-            blocksize=native_block,
-            device=mic.resolve_input_device(),
-        )
-        stream.start()
-        return stream
+        native_rate = mic.default_input_rate()
+        native_block = int(round(native_rate * _FRAME_SIZE / 16000))
+
+        # Short read timeout so a paused/stalled loop reliably notices within
+        # pause()'s 2s wait window — normal frame cadence (~80ms) never hits it.
+        self._reader = mic.FrameReader(native_rate, native_block, mic.resolve_input_device(), timeout=0.5)
+        self._native_rate = native_rate
+        self._native_block = native_block
+        self._mic_released.clear()
+
+    def _close_stream(self) -> None:
+        if self._reader is not None:
+            try:
+                self._reader.close()
+            except Exception:
+                pass
+            self._reader = None
+        self._mic_released.set()
+
+    # ── Main loop ─────────────────────────────────────────────────────────────
 
     def _run(self) -> None:
         try:
@@ -217,109 +295,132 @@ class WakeWordListener:
         except ImportError:
             return
 
-        native_rate = mic.default_input_rate()
-        # native block size that yields _FRAME_SIZE samples after resampling to 16k
-        native_block = int(round(native_rate * _FRAME_SIZE / 16000))
+        failures = 0
+        last_degraded_check = time.monotonic()
 
-        stream = None
+        def _recover() -> None:
+            nonlocal failures
+            failures += 1
+            mic._invalidate_input_device()
+            if failures >= 3:
+                # No-op (returns False) if another stream (e.g. TTS) is active —
+                # safe to call every time; it just won't do anything until free.
+                mic.try_reinitialize_portaudio()
+            backoff = min(_MAX_BACKOFF, 0.5 * (2 ** (min(failures, 5) - 1)))
+            time.sleep(backoff)
+
         try:
-            stream = self._open_stream(native_rate, native_block)
             while not self._stop_event.is_set():
-                # Pause: close stream and wait until resumed
-                if self._paused.is_set():
-                    if stream is not None:
+                try:
+                    # Pause: close stream and wait until resumed
+                    if self._paused.is_set():
+                        if self._reader is not None:
+                            self._close_stream()
+                        self._resume_event.clear()
+                        # Timeout only so stop_event still gets checked periodically.
+                        self._resume_event.wait(timeout=1.0)
+                        continue
+
+                    if self._reader is None:
                         try:
-                            stream.stop()
-                            stream.close()
-                        except Exception:
-                            pass
-                        stream = None
-                    time.sleep(0.05)
-                    continue
+                            self._open_stream()
+                            if failures > 0:
+                                diagnostics.add("info", "WakeWord", f"Mic capture recovered on [{mic.resolve_input_device()}].")
+                                failures = 0
+                        except Exception as e:
+                            diagnostics.add("warning", "WakeWord", f"Failed to open mic stream: {e} — retrying.")
+                            _recover()
+                            continue
 
-                if stream is None:
-                    try:
-                        stream = self._open_stream(native_rate, native_block)
-                    except Exception as e:
-                        print(f"[wakeword] failed to reopen mic after pause: {e}")
-                        time.sleep(0.5)
-                        continue
-
-                try:
-                    data, _overflowed = stream.read(native_block)
-                except Exception as e:
-                    print(f"[wakeword] stream read failed: {e} — reopening")
-                    try:
-                        stream.stop()
-                        stream.close()
-                    except Exception:
-                        pass
-                    stream = None
-                    from helpers import mic as _mic
-                    _mic._invalidate_input_device()
-                    native_rate = _mic.default_input_rate()
-                    native_block = int(round(native_rate * _FRAME_SIZE / 16000))
-                    time.sleep(0.3)
-                    continue
-
-                mono = data[:, 0]
-                frame16 = mic.to_16k_mono_f32(mono, native_rate)
-                pcm16 = np.clip(frame16 * 32768.0, -32768, 32767).astype(np.int16)
-                scores = self._oww.predict(pcm16)
-
-                # Pick score for our target model key
-                score = scores.get(self._model_key)
-                if score is None:
-                    score = max(scores.values()) if scores else 0.0
-
-                if score >= self._threshold:
+                    # Periodic upgrade check: once degraded (running on a
+                    # fallback device), re-probe every few minutes so a
+                    # returned preferred device (e.g. headset powered back on)
+                    # gets rediscovered without waiting for a read failure.
                     now = time.monotonic()
-                    if now - self._last_trigger < self._cooldown:
+                    if mic.resolution_is_degraded() and now - last_degraded_check > _DEGRADED_RECHECK_INTERVAL:
+                        last_degraded_check = now
+                        self._close_stream()
+                        if mic.try_reinitialize_portaudio():
+                            diagnostics.add("info", "WakeWord", "PortAudio reinitialized — re-checking for a better input device.")
                         continue
-                    self._last_trigger = now
 
-                    # Release mic so STT can record
+                    # Output side (TTS/notifications) requested a PortAudio
+                    # reinit — e.g. the default output device changed mid-
+                    # session and stayed stale. This loop holds the only
+                    # long-lived input stream, so it's the one place that can
+                    # safely close and re-enumerate (pa_stream_guard requires
+                    # zero open streams).
+                    if mic.consume_reinit_request():
+                        self._close_stream()
+                        if mic.try_reinitialize_portaudio():
+                            diagnostics.add("info", "WakeWord", "PortAudio reinitialized for output device change.")
+                        continue
+
                     try:
-                        stream.stop()
-                        stream.close()
-                    except Exception:
-                        pass
-                    stream = None
+                        mono = self._reader.read()
+                    except Exception as e:
+                        diagnostics.add("warning", "WakeWord", f"Mic read failed: {e} — reopening.")
+                        self._close_stream()
+                        _recover()
+                        continue
 
-                    try:
-                        self._handle_detection()
-                    finally:
-                        if not self._stop_event.is_set():
-                            try:
-                                self._oww.reset()
-                            except Exception:
-                                pass
-                            try:
-                                stream = self._open_stream(native_rate, native_block)
-                            except Exception as e:
-                                print(f"[wakeword] failed to reopen mic: {e}")
-                                break
+                    frame16 = mic.to_16k_mono_f32(mono, self._native_rate)
+                    pcm16 = np.clip(frame16 * 32768.0, -32768, 32767).astype(np.int16)
+                    scores = self._oww.predict(pcm16)
 
-        except Exception as e:
-            print(f"[wakeword] listener error: {e}")
+                    # Pick score for our target model key
+                    score = scores.get(self._model_key)
+                    if score is None:
+                        score = max(scores.values()) if scores else 0.0
+
+                    if score >= self._threshold:
+                        trigger_now = time.monotonic()
+                        if trigger_now - self._last_trigger < self._cooldown:
+                            continue
+                        self._last_trigger = trigger_now
+
+                        if not mic.voice_session.acquire(blocking=False):
+                            continue  # mic busy elsewhere (tray Listen now / Ctrl+L)
+
+                        self._close_stream()
+                        try:
+                            self._handle_detection()
+                        finally:
+                            mic.voice_session.release()
+                            if not self._stop_event.is_set():
+                                try:
+                                    self._oww.reset()
+                                except Exception:
+                                    pass
+                                try:
+                                    self._open_stream()
+                                except Exception as e:
+                                    diagnostics.add("warning", "WakeWord", f"Failed to reopen mic after detection: {e} — recovering.")
+                                    _recover()
+
+                except Exception as e:
+                    # Containment of last resort: nothing in this loop may kill
+                    # the thread — a dead wake-word thread means the assistant
+                    # goes permanently deaf.
+                    diagnostics.add("error", "WakeWord", f"Listener loop error: {e} — recovering.")
+                    self._close_stream()
+                    _recover()
         finally:
-            if stream is not None:
-                try:
-                    stream.stop()
-                    stream.close()
-                except Exception:
-                    pass
+            self._close_stream()
 
     def _handle_detection(self) -> None:
-        from helpers.audio import Audio
+        from helpers.audio import Audio, warm_tts_async
         from helpers.ducking import duck_others
         from helpers.events import emit_state
+        from helpers.recognizer import Recognizer, warm_async
 
         emit_state("listening")
+        # Overlap any cold-start model load (when models.preload is off) with
+        # the ack clip + the user speaking, instead of stalling silently.
+        warm_async()
+        warm_tts_async()
         with duck_others():
             Audio.play_cached("Yes?")
-
-            from helpers.recognizer import Recognizer
 
             text = Recognizer.recognize_speech_from_mic()
             if not text:
@@ -338,8 +439,7 @@ class WakeWordListener:
                     self._stop_event.set()
                     self._exit_event.set()
             except Exception as e:
-                import helpers.diagnostics
-                helpers.diagnostics.add("error", "WakeWord", f"Utterance error: {e}")
+                diagnostics.add("error", "WakeWord", f"Utterance error: {e}")
                 Audio.text_to_speech(f"Sorry, something went wrong: {e}")
             finally:
                 emit_state("idle")

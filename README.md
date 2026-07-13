@@ -192,22 +192,30 @@ cuFFT and cuRAND. Verify with `wony.py doctor` (look for `TTS (Kokoro): GPU`).
 
 Then run with `wony.py voice`.
 
-Speech-to-text uses [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (offline). GPU machines use `large-v3`; CPU-only machines use `distil-small.en` or `small`.
+Speech-to-text uses [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (offline). GPU machines use `distil-large-v3` (English) or `large-v3` (other languages, multilingual); CPU-only machines use `distil-small.en` or `small`.
 
 **Low-latency streaming**: the assistant starts speaking as soon as the first sentence is ready — you don't wait for the full AI response. The same streaming applies to the web UI (live text bubble) and console output.
 
 ### Wake word (hands-free trigger)
 
-1. `pip install -r requirements/wakeword.txt`
-2. Enable in `config.yaml`:
-   ```yaml
-   voice:
-     wake_word:
-       enabled: true
-       phrase: "hey jarvis"   # built-in: "alexa", "hey mycroft", "hey rhasspy"
-   ```
+By default (and out of the box after `pip install -r requirements/wakeword.txt`), wake word
+uses a **pre-trained built-in phrase** — no training required:
+
+```yaml
+voice:
+  wake_word:
+    enabled: true
+    phrase: "hey jarvis"   # built-in: "hey jarvis", "alexa", "hey mycroft", "hey rhasspy"
+```
+
+If `model_path` is set but the file is missing, or `phrase` isn't one of the built-ins above,
+Wony logs a diagnostic and falls back to `"hey jarvis"` automatically rather than silently
+disabling wake word — check `python wony.py doctor` or the tray diagnostics if it ever
+sounds like the wrong word is being listened for.
 
 ### Training a custom wake word ("Hey Wony")
+
+Want a custom phrase instead of a built-in? Train your own model:
 
 | | [train_hey_wony.sh](training/train_hey_wony.sh) | [train_hey_wony.ipynb](training/train_hey_wony.ipynb) |
 |---|---|---|
@@ -222,6 +230,10 @@ bash /mnt/d/Projekty/Wony/training/train_hey_wony.sh
 
 **Colab:** Open `training/train_hey_wony.ipynb`, set Runtime to GPU (T4), run all cells, download `hey_wony.onnx`.
 
+> If you ever change the training config in one of these files (target phrase, sample counts,
+> augmentation settings, etc.), update **both** — they're kept in lockstep on purpose so either
+> environment reproduces the same model.
+
 **After training:**
 ```bash
 cp hey_wony.onnx models/hey_wony.onnx
@@ -233,6 +245,14 @@ voice:
     model_path: "models/hey_wony.onnx"
     threshold: 0.5
 ```
+
+**Verify and tune:** run `python wony.py doctor` — it synthesizes the trained phrase and scores
+it against your deployed model, independent of the mic, so you can tell a threshold problem
+from a mic problem. Start `threshold` at `0.5`. Only lower it (toward `0.35`) if the doctor
+self-test scores real speech well but the live listener still misses triggers in a real room —
+a low threshold masks a model that doesn't generalize past its training data and will produce
+more false wakes than it's worth. If misses persist even after lowering the threshold, retrain
+with more samples/augmentation rounds rather than continuing to lower it.
 
 ### Voice barge-in
 

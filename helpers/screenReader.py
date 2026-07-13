@@ -14,7 +14,12 @@ class ScreenReader:
         if ScreenReader._reader is None:
             import easyocr
 
-            ScreenReader._reader = easyocr.Reader(["en"])
+            from helpers.compute import torch_cuda_available
+
+            use_gpu = torch_cuda_available()
+            import helpers.diagnostics
+            helpers.diagnostics.add("info", "ScreenReader", f"OCR using {'GPU' if use_gpu else 'CPU'}.")
+            ScreenReader._reader = easyocr.Reader(["en"], gpu=use_gpu, verbose=False)
         return ScreenReader._reader
 
     @staticmethod
@@ -107,7 +112,8 @@ class ScreenReader:
                 }
 
             except Exception as e:
-                print(f"Error finding text with AI: {e}")
+                import helpers.diagnostics
+                helpers.diagnostics.add("error", "ScreenReader", f"Error finding text with AI: {e}")
                 return None
 
         reader = ScreenReader._get_reader()

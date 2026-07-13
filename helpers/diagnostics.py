@@ -44,6 +44,18 @@ def add(
     except Exception:
         pass
 
+    # pythonw.exe (tray mode) has no console — print() above goes to a devnull
+    # sink, so this is the only durable trace of the failure.
+    try:
+        from helpers.logger import logger
+        full = f"{message} (hint: {hint})" if hint else message
+        if level == "error":
+            logger.log_error(full, context=source)
+        else:
+            logger.log_custom(f"diag_{level}", full)
+    except Exception:
+        pass
+
 
 def get_all() -> typing.List[typing.Dict]:
     with _lock:

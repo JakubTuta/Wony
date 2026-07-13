@@ -5,6 +5,8 @@ import typing
 from datetime import datetime
 from pathlib import Path
 
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
 
 class CSVFormatter(logging.Formatter):
     """Custom formatter for CSV logging"""
@@ -54,8 +56,10 @@ class Logger:
     def _setup_logging(self):
         """Initialize the logging system with both regular and CSV loggers"""
 
-        # Create logs directory if it doesn't exist
-        logs_dir = Path("logs")
+        # Create logs directory if it doesn't exist. Anchored to the repo root
+        # (not the process CWD) so tray mode (launched by Task Scheduler,
+        # which may set a different working directory) still writes here.
+        logs_dir = self.get_logs_directory()
         logs_dir.mkdir(exist_ok=True)
 
         # Generate timestamp for log files
@@ -77,15 +81,6 @@ class Logger:
         )
         file_handler.setFormatter(file_formatter)
         self.logger.addHandler(file_handler)
-
-        # Console handler (optional, for debugging)
-        console_handler = logging.StreamHandler()
-        console_formatter = logging.Formatter(
-            "%(asctime)s | %(levelname)s | %(message)s", datefmt="%H:%M:%S"
-        )
-        console_handler.setFormatter(console_formatter)
-        # Uncomment the next line if you want console logging
-        # self.logger.addHandler(console_handler)
 
         # Setup CSV logger
         self.csv_logger = logging.getLogger("ai_assistant_csv")
@@ -266,8 +261,8 @@ class Logger:
         self.csv_logger.handle(record)
 
     def get_logs_directory(self) -> Path:
-        """Get the logs directory path"""
-        return Path("logs")
+        """Get the logs directory path (anchored to the repo root)"""
+        return _REPO_ROOT / "logs"
 
     def cleanup_old_logs(self, days_to_keep: int = 30):
         """

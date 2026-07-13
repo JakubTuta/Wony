@@ -479,9 +479,12 @@ def install(chosen, detected):
     _ensure_gpu_onnxruntime(chosen, new)
     _ensure_wony_exe()
 
-    # Download Kokoro model files then pre-render cached voice clips.
+    # Download Kokoro (TTS) + faster-whisper (STT) model files once here, then
+    # pre-render cached voice clips. Downloading now (interactive terminal,
+    # visible progress) means the runtime path loads with local_files_only=True
+    # and never touches the network again — see helpers/recognizer.py.
     if any(f["key"] == "voice" for f in new):
-        for script in ("download_kokoro.py", "render_voice_clips.py"):
+        for script in ("download_kokoro.py", "download_whisper.py", "render_voice_clips.py"):
             path = os.path.join(ROOT, "scripts", script)
             if os.path.exists(path):
                 print(c(f"\n  Running {script}...", "1;36"))

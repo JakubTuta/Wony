@@ -21,7 +21,11 @@ frontend/package-lock.json
 # Wake word training artifacts (large data, generated files)
 training/
 !training/train_hey_wony.ipynb
-!training/train_get_wony.sh
+!training/train_hey_wony.sh
+
+# Ducking crash-recovery snapshots
+.ducking_snapshot.json
+.ducking_pending_recovery.json
 web/node_modules/
 web/dist/
 web/.vscode/

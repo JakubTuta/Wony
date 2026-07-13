@@ -7,14 +7,18 @@ Run with pythonw.exe for no console window:
 Threading model:
   MAIN thread  — pystray Icon.run() (required by pystray on Windows)
   daemon thread — uvicorn web server (WebServerController)
-  daemon thread — Porcupine wake-word listener (WakeWordListener)
+  daemon thread — openWakeWord wake-word listener (WakeWordListener)
+  daemon thread — global Ctrl+L hotkey listener (pynput, optional)
   daemon threads — pollers / scheduler (BackgroundJobs / APScheduler)
 """
 import atexit
 import os
 import socket
 import sys
+import threading
 import typing
+
+import helpers.diagnostics as diagnostics
 
 # pythonw.exe has no console; redirect stdout/stderr to a UTF-8 null sink so
 # print() calls don't raise AttributeError or UnicodeEncodeError.
@@ -155,7 +159,7 @@ def run_tray() -> None:
     from helpers.wakeword import WakeWordListener
     wakeword = WakeWordListener(employer)
 
-    if audio_mode or wakeword._enabled:
+    if (audio_mode or wakeword._enabled) and Config.get("models.preload", False):
         from helpers.recognizer import preload_model
         from helpers.audio import preload_tts
         preload_model()
@@ -172,6 +176,35 @@ def run_tray() -> None:
     # Forward references for closures
     _icon_ref: typing.List[typing.Any] = [None]
     _current_state: typing.List[str] = ["idle"]
+
+    # Defined early (before the menu, which references it) so both the tray's
+    # own exit path and the push-to-talk worker below can call it.
+    def _tray_exit_hook() -> None:
+        if _icon_ref[0] is not None:
+            _icon_ref[0].stop()
+
+    Employer.set_exit_hook(_tray_exit_hook)
+
+    # ── Push-to-talk: tray "Listen now" menu item + global Ctrl+L hotkey ────
+    from helpers.push_to_talk import do_speak, start_hotkey, stop_hotkey
+
+    def _do_listen_now() -> None:
+        do_speak(employer, wakeword, _tray_exit_hook, "listen_now")
+
+    def _on_listen_now(icon, item) -> None:
+        threading.Thread(target=_do_listen_now, daemon=True, name="listen-now").start()
+
+    _hotkey_listener_ref: typing.List[typing.Any] = [None]
+
+    def _start_hotkey() -> None:
+        def _fire() -> None:
+            threading.Thread(target=_do_listen_now, daemon=True, name="listen-now-hotkey").start()
+
+        _hotkey_listener_ref[0] = start_hotkey(_fire)
+
+    def _stop_hotkey() -> None:
+        stop_hotkey(_hotkey_listener_ref[0])
+        _hotkey_listener_ref[0] = None
 
     def _on_open_web(icon, item) -> None:
         import webbrowser
@@ -207,6 +240,7 @@ def run_tray() -> None:
     menu = pystray.Menu(
         pystray.MenuItem("Open in web", _on_open_web),
         pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Listen now", _on_listen_now),
         pystray.MenuItem("Stop speaking", _on_stop_speaking),
         pystray.MenuItem(_mute_label, _on_mute_toggle),
         pystray.Menu.SEPARATOR,
@@ -236,19 +270,12 @@ def run_tray() -> None:
     from helpers.events import subscribe, unsubscribe
     subscribe(_on_state_event)
 
-    # Hook the exit job so "exit" voice command shuts down gracefully.
-    # Only stop the icon here; controller.shutdown() runs after icon.run() returns.
-    def _tray_exit_hook() -> None:
-        if _icon_ref[0] is not None:
-            _icon_ref[0].stop()
-
-    Employer.set_exit_hook(_tray_exit_hook)
-
     # Ensure icon.stop() fires on process exit (e.g., sys.exit from a thread)
     atexit.register(lambda: _icon_ref[0].stop() if _icon_ref[0] else None)
 
     # Start everything
     controller.start()
+    _start_hotkey()
 
     if notify_on_ready:
         try:
@@ -270,7 +297,11 @@ def run_tray() -> None:
     # Run cleanup on the main thread, then force-exit. os._exit bypasses
     # atexit/gc finalizers that can block on audio/C-extension threads.
     unsubscribe(_on_state_event)
+    _stop_hotkey()
     controller.shutdown()
+    # os._exit below bypasses atexit — restore ducked audio explicitly first.
+    from helpers.ducking import restore_all
+    restore_all()
     import os as _os
     _os._exit(0)
 

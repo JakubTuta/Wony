@@ -26,6 +26,10 @@ def _get_engine() -> typing.Any:
         with _engine_lock:
             if _engine is None:
                 from fastembed import TextEmbedding
+                # Deliberately CPU (no providers=): bge-small is ~30MB and embeds
+                # in single-digit ms on CPU, so GPU has no meaningful latency win
+                # here — and fastembed's CUDA provider needs the separate
+                # fastembed-gpu extra, which isn't worth the dependency for this.
                 _engine = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
     return _engine
 

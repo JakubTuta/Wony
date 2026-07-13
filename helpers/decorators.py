@@ -115,6 +115,11 @@ def capture_exception(
 
             error_message = f"\n[{class_name} - {function_name}]: {e}"
             print(error_message)
+            try:
+                from helpers.logger import logger
+                logger.log_error(str(e), context=f"{class_name}.{function_name}")
+            except Exception:
+                pass
 
             return None
 
@@ -138,6 +143,11 @@ def exit_on_exception(func: typing.Callable[..., T]) -> typing.Callable[..., T]:
             )
             function_name = func.__name__ if hasattr(func, "__name__") else "Unknown"
             print(f"\n[{class_name} - {function_name}]: {e}")
+            try:
+                from helpers.logger import logger
+                logger.log_error(str(e), context=f"{class_name}.{function_name}")
+            except Exception:
+                pass
             sys.exit(1)
 
     return wrapper

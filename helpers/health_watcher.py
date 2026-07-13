@@ -31,6 +31,8 @@ def start(interval_minutes: float = 5.0) -> None:
 
 def stop() -> None:
     _stop_event.set()
+    if _thread is not None and _thread is not threading.current_thread():
+        _thread.join(timeout=2.0)
 
 
 def _loop(interval_minutes: float) -> None:
@@ -46,13 +48,12 @@ def _check_all() -> None:
     except Exception:
         return
 
+    import helpers.diagnostics
+
     for module_name in retryable:
         try:
-            if ServiceRegistry.reinitialize_module(module_name):
-                print(f"[health] '{module_name}' recovered — now enabled.")
+            if ServiceRegistry.reinitialize_module(module_name, interactive=False):
+                helpers.diagnostics.add("info", "Health", f"'{module_name}' recovered — now enabled.")
         except Exception as exc:
             # Keep trying next cycle; don't crash the watcher thread.
-            try:
-                print(f"[health] reinit '{module_name}' failed: {exc}")
-            except Exception:
-                pass
+            helpers.diagnostics.add("warning", "Health", f"Reinit '{module_name}' failed: {exc}")

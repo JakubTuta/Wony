@@ -24,7 +24,8 @@ def discover_services():
                     ModuleStatus.ERROR,
                     str(e),
                 )
-            print(f"Warning: could not load module '{module_name}': {e}")
+            import helpers.diagnostics
+            helpers.diagnostics.add("warning", "Modules", f"Could not load module '{module_name}': {e}")
 
 
 discover_services()

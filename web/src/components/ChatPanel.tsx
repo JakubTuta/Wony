@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Send, Trash2, Database, ChevronDown, ChevronRight, Loader2, Bot, User, Square, Mic } from 'lucide-react';
+import { Send, Trash2, Database, ChevronDown, ChevronRight, Loader2, Bot, User, Square, Mic, X } from 'lucide-react';
 import { clearChat, wipeData, fetchHistory, connectChatSocket, transcribeAudio, fetchConfig } from '../api';
 import type { AppConfig, ChatCall, HistoryTurn, AssistantState } from '../api';
 
@@ -38,6 +38,8 @@ export function ChatPanel() {
   const [expandedCalls, setExpandedCalls] = useState<Set<number>>(new Set());
   const [assistantState, setAssistantState] = useState<AssistantState>('idle');
   const [recording, setRecording] = useState(false);
+  const [micWarning, setMicWarning] = useState<string | null>(null);
+  const micWarningTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -236,6 +238,12 @@ export function ChatPanel() {
     socketRef.current.stop(pendingRef.current.sessionId);
   }
 
+  function showMicWarning(message: string) {
+    if (micWarningTimerRef.current) clearTimeout(micWarningTimerRef.current);
+    setMicWarning(message);
+    micWarningTimerRef.current = setTimeout(() => setMicWarning(null), 8000);
+  }
+
   function stopRecording() {
     if (silenceRafRef.current !== null) {
       cancelAnimationFrame(silenceRafRef.current);
@@ -265,10 +273,11 @@ export function ChatPanel() {
         setRecording(false);
         const blob = new Blob(audioChunksRef.current, { type: mr.mimeType || 'audio/webm' });
         try {
-          const text = await transcribeAudio(blob);
+          const { text, warning } = await transcribeAudio(blob);
+          if (warning) showMicWarning(warning);
           if (text) sendText(text);
         } catch {
-          // ignore transcription error
+          showMicWarning('Transcription failed — check your connection and try again.');
         }
       };
       mediaRecorderRef.current = mr;
@@ -316,7 +325,7 @@ export function ChatPanel() {
       }
       silenceRafRef.current = requestAnimationFrame(tick);
     } catch {
-      // mic permission denied or not available
+      showMicWarning('Could not access the microphone — check the browser\'s mic permission.');
     }
   }
 
@@ -504,6 +513,18 @@ export function ChatPanel() {
 
       {/* Input */}
       <div className="border-t border-gray-100 dark:border-gray-800 px-4 py-3">
+        {micWarning && (
+          <div className="flex items-start gap-2 mb-2 px-3 py-2 rounded-lg border text-xs bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-700 text-amber-800 dark:text-amber-200">
+            <span className="flex-1 min-w-0">{micWarning}</span>
+            <button
+              onClick={() => setMicWarning(null)}
+              className="shrink-0 opacity-50 hover:opacity-100 transition-opacity"
+              aria-label="Dismiss"
+            >
+              <X size={12} />
+            </button>
+          </div>
+        )}
         <div className="flex gap-2 items-end">
           {/* Mic button */}
           <button

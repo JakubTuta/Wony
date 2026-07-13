@@ -252,8 +252,10 @@ def numpy_image_to_base64_bytes(
         A bytes object containing the base64 encoded image data.
         Returns None if the conversion fails.
     """
+    import helpers.diagnostics
+
     if image_array.dtype != np.uint8:
-        print(f"Warning: Converting image data from {image_array.dtype} to uint8.")
+        helpers.diagnostics.add("warning", "Tools", f"Converting image data from {image_array.dtype} to uint8.")
         image_array = image_array.astype(np.uint8)
 
     try:
@@ -264,20 +266,20 @@ def numpy_image_to_base64_bytes(
         elif image_array.ndim == 3 and image_array.shape[2] == 4:
             pil_image = Image.fromarray(image_array, "RGBA")
         else:
-            print(f"Error: Unsupported image array shape: {image_array.shape}")
+            helpers.diagnostics.add("error", "Tools", f"Unsupported image array shape: {image_array.shape}")
             return None
     except Exception as e:
-        print(f"Error converting numpy array to Pillow image: {e}")
+        helpers.diagnostics.add("error", "Tools", f"Error converting numpy array to Pillow image: {e}")
         return None
 
     buffer = io.BytesIO()
     try:
         pil_image.save(buffer, format=image_format)
     except KeyError:
-        print(f"Error: Unsupported image format: {image_format}")
+        helpers.diagnostics.add("error", "Tools", f"Unsupported image format: {image_format}")
         return None
     except Exception as e:
-        print(f"Error saving Pillow image to buffer: {e}")
+        helpers.diagnostics.add("error", "Tools", f"Error saving Pillow image to buffer: {e}")
         return None
 
     return base64.b64encode(buffer.getvalue())

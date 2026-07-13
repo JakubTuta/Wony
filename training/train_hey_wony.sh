@@ -229,15 +229,29 @@ config = yaml.load(
     yaml.Loader
 )
 
-config["target_phrase"]             = ["hey wony", "hey wany", "hey woney"]
+config["target_phrase"]             = ["hey wony", "hey woney", "hey woni", "hey wany", "hay wony"]
 config["model_name"]                = "hey_wony"
 config["output_dir"]                = os.path.abspath("./hey_wony")
 config["piper_sample_generator_path"] = os.path.abspath("./piper-sample-generator")
-config["n_samples"]       = 30000
-config["n_samples_val"]   = 2000
+
+# ── Robustness on REAL voice ──────────────────────────────────────────────
+# Prior model scored ~0.8 on synthetic TTS but ~0.01 on real speech: it was
+# trained too conservatively and only fired on near-perfect (synthetic)
+# matches. Fixes:
+#  - more positive samples + augmentation rounds → more acoustic variety so
+#    the model generalizes beyond the TTS voices to real microphones/rooms.
+#  - loosen the false-positive target and lower the negative weight so
+#    auto_train keeps a more SENSITIVE (higher-recall) checkpoint instead of
+#    an ultra-strict one that suppresses real voice to ~0.
+config["n_samples"]       = 50000    # was 30000 (docs: 20k min, 100k+ best)
+config["n_samples_val"]   = 4000     # was 2000
+config["augmentation_rounds"] = 2    # was 1 — 2x unique RIR+noise augmentations per clip
 config["steps"]           = 50000
-config["target_accuracy"] = 0.7
-config["target_recall"]   = 0.5
+config["max_negative_weight"] = 1000              # was 1500 — less negative suppression
+config["target_false_positives_per_hour"] = 0.5   # was 0.2 — allow more sensitivity
+# NOTE: target_accuracy / target_recall are NOT read by auto_train (it selects
+# the best checkpoint by recall under target_false_positives_per_hour), so they
+# are intentionally omitted.
 config["rir_paths"]        = [os.path.abspath("./mit_rirs")]
 config["background_paths"] = [os.path.abspath("./background_noise")]
 config["false_positive_validation_data_path"] = os.path.abspath("validation_set_features.npy")

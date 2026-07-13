@@ -172,11 +172,12 @@ def cmd_voice(args: argparse.Namespace) -> None:
         print(f"\nCannot start: {e}\n")
         sys.exit(1)
 
-    from helpers.audio import preload_tts
-    from helpers.recognizer import preload_model
+    if Config.get("models.preload", False):
+        from helpers.audio import preload_tts
+        from helpers.recognizer import preload_model
 
-    preload_model()
-    preload_tts()
+        preload_model()
+        preload_tts()
 
     from helpers.audio import Audio
 
@@ -185,36 +186,21 @@ def cmd_voice(args: argparse.Namespace) -> None:
 
     import threading
 
-    from pynput import keyboard as pynput_keyboard
-
     _stop = threading.Event()
 
-    # Start Porcupine wake-word listener (no-op if disabled/missing)
+    # Start openWakeWord wake-word listener (no-op if disabled/missing)
     from helpers.wakeword import WakeWordListener
 
     ww = WakeWordListener(employer, exit_event=_stop)
     ww.start()
 
+    from helpers.push_to_talk import do_speak, start_hotkey, stop_hotkey
+
     def _do_speak() -> None:
-        from helpers.ducking import duck_others
-        from helpers.logger import logger
-
-        logger.log_system_event("hotkey_fired", "ctrl+l")
         print("[voice] Ctrl+L — listening")
-        ww.pause()
-        try:
-            with duck_others():
-                employer.speak()
-        except SystemExit:
-            _stop.set()
-        finally:
-            ww.resume()
+        do_speak(employer, ww, lambda: _stop.set(), "ctrl+l")
 
-    def _hotkey_speak() -> None:
-        threading.Thread(target=_do_speak, daemon=True).start()
-
-    hotkey_listener = pynput_keyboard.GlobalHotKeys({"<ctrl>+l": _hotkey_speak})
-    hotkey_listener.start()
+    hotkey_listener = start_hotkey(_do_speak)
 
     try:
         while not _stop.wait(timeout=1):
@@ -222,8 +208,10 @@ def cmd_voice(args: argparse.Namespace) -> None:
     except KeyboardInterrupt:
         print("\nExiting program...")
     finally:
-        hotkey_listener.stop()
+        stop_hotkey(hotkey_listener)
         ww.stop()
+        from helpers.ducking import restore_all
+        restore_all()
 
 
 def cmd_web(args: argparse.Namespace) -> None:
