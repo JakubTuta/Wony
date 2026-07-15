@@ -98,6 +98,10 @@ def build_agent_system_prompt() -> str:
 
         "\n\n6. NARRATE RESULTS: When done, write a concise answer in plain prose"
         " summarising what you did and found. Do not dump raw tool output."
+        " Do not write any narration text in the same step as a tool call —"
+        " no 'Let me check that' or 'Playing that now' before calling a tool."
+        " Call the tool silently, then narrate only in the final step once you"
+        " have its result."
 
         "\n\n7. REMEMBER FACTS: If the user states a personal preference or fact,"
         " call `remember` to store it for future sessions."

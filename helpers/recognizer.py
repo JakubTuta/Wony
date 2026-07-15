@@ -95,9 +95,15 @@ def unload_if_idle(idle_seconds: float) -> None:
 
 
 class Recognizer:
+    # True after a call that failed (STT exception), False after a call that
+    # simply captured no speech. Lets callers distinguish "didn't hear you"
+    # from "something broke" and pick the right spoken feedback.
+    last_call_failed: bool = False
+
     @staticmethod
     def recognize_speech_from_mic(start_timeout: typing.Optional[float] = None) -> str:
         global _last_used
+        Recognizer.last_call_failed = False
         try:
             audio = Audio.record_command(start_timeout=start_timeout)
             if audio is None or len(audio) == 0:
@@ -125,4 +131,5 @@ class Recognizer:
             return text
         except Exception as e:
             helpers.diagnostics.add("error", "STT", f"Transcription failed: {e}", hint="Check GPU/CPU model load and audio input.")
+            Recognizer.last_call_failed = True
             return ""

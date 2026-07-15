@@ -583,8 +583,8 @@ def build_app() -> FastAPI:
                 if data.get("type") == "chat":
                     asyncio.create_task(_ws_chat(ws, data))
                 elif data.get("type") == "stop":
-                    from helpers.audio import interrupt_current_speech
-                    interrupt_current_speech()
+                    from helpers.events import request_cancel
+                    request_cancel()
         except WebSocketDisconnect:
             pass
         finally:

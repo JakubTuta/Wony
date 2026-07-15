@@ -60,6 +60,9 @@ CACHED_CLIPS: dict[str, str] = {
     "Toggling light...": "voice/bot/toggle_light.wav",
     "Launching League of Legends...": "voice/bot/launch_league.wav",
     "Closing League of Legends...": "voice/bot/close_league.wav",
+    "I didn't catch that.": "voice/bot/didnt_catch.wav",
+    "Sorry, I couldn't process that.": "voice/bot/couldnt_process.wav",
+    "One moment.": "voice/bot/one_moment.wav",
 }
 
 _LANG_MAP: dict[str, str] = {
@@ -152,6 +155,14 @@ def _add_nvidia_dll_dirs() -> None:
             pass
 
 
+def _ort_version() -> str:
+    try:
+        import onnxruntime as ort
+        return str(ort.__version__)
+    except Exception:
+        return ""
+
+
 def _setup_onnx_provider() -> None:
     """Set ONNX_PROVIDER env var before Kokoro() construction.
 
@@ -159,6 +170,19 @@ def _setup_onnx_provider() -> None:
     """
     device = str(Config.get("voice.tts_device", "auto")).lower()
     provider = select_onnx_provider(device)
+    if provider and device != "cuda":
+        # A prior genuine CUDA failure was recorded for this onnxruntime build —
+        # skip straight to CPU instead of paying the failed-attempt cost again
+        # every time the engine is (re)built. An explicit voice.tts_device: cuda
+        # always overrides this and tries CUDA anyway.
+        from helpers.cache import Cache
+        failed = Cache.get_value("tts_cuda_failed")
+        if failed and failed.get("ort_version") == _ort_version():
+            helpers.diagnostics.add(
+                "info", "TTS",
+                f"Skipping CUDA (previously failed: {failed.get('reason')}) — using CPU.",
+            )
+            provider = None
     if provider:
         os.environ["ONNX_PROVIDER"] = provider
         helpers.diagnostics.add("info", "TTS", f"Using {provider} (GPU).")
@@ -274,6 +298,8 @@ class TTS_Engine:
         except Exception as e:
             if os.environ.get("ONNX_PROVIDER", ""):
                 helpers.diagnostics.add("warning", "TTS", f"GPU provider init failed ({e}) — retrying on CPU.", hint=_GPU_FIX_HINT)
+                from helpers.cache import Cache
+                Cache.set_value("tts_cuda_failed", {"reason": type(e).__name__, "ort_version": _ort_version()})
                 os.environ.pop("ONNX_PROVIDER", None)
                 self._kokoro = Kokoro(onnx_path, voices_path, espeak_config=espeak_cfg)
             else:
@@ -283,6 +309,8 @@ class TTS_Engine:
         from kokoro_onnx import Kokoro
 
         helpers.diagnostics.add("warning", "TTS", f"CUDA inference failed ({reason}) — rebuilt on CPU.", hint=_GPU_FIX_HINT)
+        from helpers.cache import Cache
+        Cache.set_value("tts_cuda_failed", {"reason": reason, "ort_version": _ort_version()})
         os.environ.pop("ONNX_PROVIDER", None)
         self._kokoro = Kokoro(self._onnx_path, self._voices_path, espeak_config=self._espeak_cfg)
 
@@ -292,8 +320,12 @@ class TTS_Engine:
                 text, voice=self._voice, speed=self._speed, lang=self._lang
             )
         except Exception as e:
-            # cuDNN errors surface on first inference when nvidia-cudnn-cu12 is missing.
-            if os.environ.get("ONNX_PROVIDER", "") or "cuda" in str(e).lower() or "cudnn" in str(e).lower():
+            # Only a genuine CUDA/cuDNN/cuBLAS failure warrants a CPU rebuild —
+            # any other synthesis error (e.g. an unphonemizable fragment) would
+            # just fail identically again on CPU, so don't misdiagnose it as a
+            # GPU problem and churn the engine.
+            msg = str(e).lower()
+            if os.environ.get("ONNX_PROVIDER", "") and any(tok in msg for tok in ("cuda", "cudnn", "cublas")):
                 self._rebuild_on_cpu(type(e).__name__)
                 samples, sr = self._kokoro.create(
                     text, voice=self._voice, speed=self._speed, lang=self._lang
@@ -464,7 +496,7 @@ class Audio:
     @staticmethod
     def record_command(start_timeout: typing.Optional[float] = None) -> np.ndarray:
         """Record a spoken command with VAD endpointing. Returns float32 @16kHz mono."""
-        from helpers import mic
+        from helpers import events, mic
 
         cfg = Config.get("voice.stt", {}) or {}
         effective_timeout = (
@@ -477,6 +509,7 @@ class Audio:
             start_timeout=effective_timeout,
             silence_ms=int(cfg.get("silence_ms", 700)),
             vad_aggressiveness=int(cfg.get("vad_aggressiveness", 2)),
+            cancel_event=events.session_cancel,
         )
 
 
@@ -618,37 +651,82 @@ def stream_text_to_speech(
         def _playback() -> None:
             out_stream = None
             interrupted = False
+
+            # Prebuffer a short run of sentences before the first sample plays,
+            # so a slow first synthesis doesn't leave the stream starved right
+            # out of the gate (the audible "pause every couple words" stutter).
+            # Skipped on CUDA — GPU synthesis is fast enough that buffering only
+            # adds onset latency without preventing any real underrun.
+            prebuffer_ms = int(Config.get("voice.tts.prebuffer_ms", 600) or 0)
+            if os.environ.get("ONNX_PROVIDER", "") == "CUDAExecutionProvider":
+                prebuffer_ms = 0
+            prebuffering = prebuffer_ms > 0
+            prebuffered: typing.List[typing.Tuple[str, np.ndarray, int]] = []
+            prebuffered_ms = 0.0
+
+            def _emit(item) -> None:
+                nonlocal out_stream, interrupted
+                sentence, samples, sr = item
+                if interrupted or interrupt_event.is_set():
+                    pending_playback.append(sentence)
+                    return
+                try:
+                    if out_stream is None:
+                        out_stream = sd.OutputStream(
+                            samplerate=sr, channels=1, dtype="float32",
+                            device=mic.resolve_output_device(), latency="high",
+                        )
+                        out_stream.start()
+                    if _play_samples(samples, sr, out_stream, interrupt_event):
+                        spoken_parts.append(sentence)
+                    else:
+                        interrupted = True
+                        pending_playback.append(sentence)
+                except Exception as e:
+                    # Output device failure — surface it, ask the wake loop to
+                    # reinit PortAudio, and keep draining so the producer never blocks.
+                    helpers.diagnostics.add("error", "Audio", f"Output device failed: {e}")
+                    mic.request_portaudio_reinit()
+                    interrupted = True
+                    pending_playback.append(sentence)
+
             # Held for the thread's whole life (not just while a stream is open) so
             # a PortAudio reinit can never land mid-sentence.
             with mic.pa_stream_guard():
                 try:
                     while True:
-                        item = audio_q.get()
-                        if item is None:
-                            return
-                        sentence, samples, sr = item
-                        if interrupted or interrupt_event.is_set():
-                            pending_playback.append(sentence)
-                            continue
                         try:
-                            if out_stream is None:
-                                out_stream = sd.OutputStream(
-                                    samplerate=sr, channels=1, dtype="float32",
-                                    device=mic.resolve_output_device(),
-                                )
-                                out_stream.start()
-                            if _play_samples(samples, sr, out_stream, interrupt_event):
-                                spoken_parts.append(sentence)
-                            else:
-                                interrupted = True
-                                pending_playback.append(sentence)
-                        except Exception as e:
-                            # Output device failure — surface it, ask the wake loop to
-                            # reinit PortAudio, and keep draining so the producer never blocks.
-                            helpers.diagnostics.add("error", "Audio", f"Output device failed: {e}")
-                            mic.request_portaudio_reinit()
-                            interrupted = True
-                            pending_playback.append(sentence)
+                            item = audio_q.get(timeout=0.05)
+                        except queue.Empty:
+                            # Keep an already-open stream primed with silence instead
+                            # of underrunning while the next sentence is still
+                            # synthesizing — this is the fix for the "stops every
+                            # couple words" stutter, not just a stall guard.
+                            if out_stream is not None and not interrupted and not interrupt_event.is_set():
+                                try:
+                                    silence = np.zeros(int(out_stream.samplerate * 0.05), dtype=np.float32)
+                                    out_stream.write(silence)
+                                except Exception:
+                                    pass
+                            continue
+
+                        if item is None:
+                            for pending_item in prebuffered:
+                                _emit(pending_item)
+                            prebuffered = []
+                            return
+
+                        if prebuffering:
+                            prebuffered.append(item)
+                            prebuffered_ms += (len(item[1]) / item[2]) * 1000.0
+                            if interrupted or interrupt_event.is_set() or prebuffered_ms >= prebuffer_ms:
+                                prebuffering = False
+                                for pending_item in prebuffered:
+                                    _emit(pending_item)
+                                prebuffered = []
+                            continue
+
+                        _emit(item)
                 finally:
                     if out_stream is not None:
                         if not interrupted:
@@ -666,14 +744,27 @@ def stream_text_to_speech(
             if interrupt_event.is_set():
                 pending_synth.append(sentence)
                 return
+            if not any(ch.isalnum() for ch in sentence):
+                return  # nothing phonemizable (e.g. a lone trailing emoji) — nothing to speak
+
             try:
                 with _tts_lock:
                     engine = _get_tts_singleton()
+            except Exception as e:
+                _warn_tts_unavailable(e)  # engine itself is broken — reset for next call
+                return
+
+            try:
+                with _tts_lock:
                     samples, sr = engine.synthesize(sentence)
                     _tts_last_used = time.monotonic()
             except Exception as e:
-                _warn_tts_unavailable(e)
+                # A single fragment failing to synthesize doesn't mean the engine
+                # is broken — skip it and keep the (working) engine for the rest
+                # of the reply instead of forcing a full rebuild.
+                helpers.diagnostics.add("warning", "TTS", f"Skipping fragment ({e}).")
                 return
+
             audio_q.put((sentence, samples, sr))
 
         from helpers.ducking import duck_others
@@ -708,6 +799,26 @@ def stream_text_to_speech(
                 _active_tts_interrupt = None
 
         return " ".join(spoken_parts), pending_playback + pending_synth
+
+
+def play_earcon() -> None:
+    """Short non-verbal acknowledgement tone (~120ms). Used when the wake word
+    lands while audio is muted — confirms the assistant heard the user without
+    a spoken "Yes?" that the mute toggle is meant to suppress."""
+    from helpers import mic
+
+    sr = 24000
+    duration = 0.12
+    t = np.linspace(0, duration, int(sr * duration), endpoint=False)
+    tone = (0.15 * np.sin(2 * np.pi * 880 * t)).astype(np.float32)
+    fade = min(200, len(tone) // 4)  # short fade in/out to avoid a click
+    if fade > 0:
+        tone[:fade] *= np.linspace(0, 1, fade, dtype=np.float32)
+        tone[-fade:] *= np.linspace(1, 0, fade, dtype=np.float32)
+    try:
+        mic.play_array(tone, sr, blocking=True)
+    except Exception:
+        pass
 
 
 def preload_tts() -> None:

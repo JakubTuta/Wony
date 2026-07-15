@@ -31,6 +31,7 @@ import collections
 import os
 import queue
 import threading
+import time
 import typing
 
 import numpy as np
@@ -675,12 +676,31 @@ def vad_frame_stream(
     native_block = int(round(native * out_frame / _SR_TARGET))
 
     reader = FrameReader(native, native_block, device)
+    t0 = time.monotonic()
+    delivered_ms = 0.0
     try:
         while not stop_event.is_set():
             try:
                 mono = reader.read()
             except Exception:
+                import helpers.diagnostics as diagnostics
+                diagnostics.add("warning", "MIC", "Input device stalled during capture — reopening.")
+                _invalidate_input_device()
                 break  # device stalled — end the utterance rather than hang forever
+
+            delivered_ms += frame_ms
+            elapsed = time.monotonic() - t0
+            # A healthy device delivers ~1 frame per frame_ms. If delivery has
+            # fallen behind wall clock by more than half (checked only after a
+            # couple of seconds to avoid false positives on stream startup),
+            # the device is dribbling frames — same effective hang as
+            # queue.Empty, just slow enough not to trip the read timeout.
+            if elapsed >= 2.0 and delivered_ms < elapsed * 1000 * 0.5:
+                import helpers.diagnostics as diagnostics
+                diagnostics.add("warning", "MIC", "Input device delivering audio too slowly — reopening.")
+                _invalidate_input_device()
+                break
+
             f16 = to_16k_mono_f32(mono, native)
             if len(f16) < out_frame:
                 f16 = np.pad(f16, (0, out_frame - len(f16)))
@@ -698,6 +718,7 @@ def record_until_silence(
     silence_ms: int = 700,
     vad_aggressiveness: int = 2,
     preroll_ms: int = 300,
+    cancel_event: typing.Optional[threading.Event] = None,
 ) -> np.ndarray:
     """Record until trailing silence (VAD endpointing). Returns 16k mono float32.
 
@@ -711,6 +732,13 @@ def record_until_silence(
         silence_ms: trailing silence that ends the utterance.
         vad_aggressiveness: webrtcvad 0..3 (higher = more aggressive filtering).
         preroll_ms: audio kept before detected speech onset.
+        cancel_event: if set while recording, capture aborts and returns empty
+            immediately (deliberate cancel — never transcribe a half-capture).
+
+    Deadlines are wall-clock (time.monotonic), not frame counts — a stalled or
+    slow-delivering mic (see vad_frame_stream) no longer stretches a nominal
+    4-12s window into minutes; worst-case overshoot is bounded by one
+    FrameReader read timeout.
 
     Caller must ensure no other input stream is open (single-stream contract).
     Falls back to a fixed 3 s window if webrtcvad is unavailable.
@@ -723,25 +751,26 @@ def record_until_silence(
 
     frame_ms = 30
     preroll_frames = max(1, int(preroll_ms / frame_ms))
-    silence_frames_needed = max(1, int(silence_ms / frame_ms))
-    max_frames = int(max_seconds * 1000 / frame_ms)
-    timeout_frames = int(start_timeout * 1000 / frame_ms)
+    silence_needed_s = silence_ms / 1000.0
 
     ring: typing.Deque[np.ndarray] = collections.deque(maxlen=preroll_frames)
     voiced: typing.List[np.ndarray] = []
     started = False
-    silence_run = 0
-    frames_seen = 0
+    last_voice_t = 0.0
 
+    t0 = time.monotonic()
     stop = threading.Event()
     gen = vad_frame_stream(stop, vad_aggressiveness)
     try:
         for is_speech, f16 in gen:
-            frames_seen += 1
+            now = time.monotonic()
 
-            if frames_seen > max_frames:
+            if cancel_event is not None and cancel_event.is_set():
+                voiced = []
                 break
-            if not started and frames_seen > timeout_frames:
+            if now - t0 >= max_seconds:
+                break
+            if not started and now - t0 >= start_timeout:
                 break
 
             if not started:
@@ -750,15 +779,13 @@ def record_until_silence(
                     started = True
                     voiced.extend(ring)
                     ring.clear()
-                    silence_run = 0
+                    last_voice_t = now
             else:
                 voiced.append(f16)
                 if is_speech:
-                    silence_run = 0
-                else:
-                    silence_run += 1
-                    if silence_run >= silence_frames_needed:
-                        break
+                    last_voice_t = now
+                elif now - last_voice_t >= silence_needed_s:
+                    break
     finally:
         gen.close()
         stop.set()

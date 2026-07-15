@@ -24,6 +24,7 @@ def do_speak(
     """
     from helpers import mic
     from helpers.ducking import duck_others
+    from helpers.events import clear_cancel
     from helpers.logger import logger
 
     if not mic.voice_session.acquire(blocking=False):
@@ -31,6 +32,7 @@ def do_speak(
         helpers.diagnostics.add("info", "PushToTalk", f"{log_label} skipped — mic already in use.")
         return
     try:
+        clear_cancel()  # new session — a cancel from a prior turn must not leak in
         logger.log_system_event("push_to_talk", log_label)
         if wakeword_listener is not None:
             wakeword_listener.pause()

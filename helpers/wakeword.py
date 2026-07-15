@@ -359,7 +359,7 @@ class WakeWordListener:
                     try:
                         mono = self._reader.read()
                     except Exception as e:
-                        diagnostics.add("warning", "WakeWord", f"Mic read failed: {e} — reopening.")
+                        diagnostics.add("warning", "WakeWord", f"Mic read failed: {type(e).__name__}: {e} — reopening.")
                         self._close_stream()
                         _recover()
                         continue
@@ -409,22 +409,33 @@ class WakeWordListener:
             self._close_stream()
 
     def _handle_detection(self) -> None:
-        from helpers.audio import Audio, warm_tts_async
+        from helpers.audio import Audio, play_earcon, warm_tts_async
+        from helpers.cache import Cache
+        from helpers.config import Config
         from helpers.ducking import duck_others
-        from helpers.events import emit_state
+        from helpers.events import clear_cancel, emit_state
         from helpers.recognizer import Recognizer, warm_async
 
+        clear_cancel()  # new session — a cancel from a prior turn must not leak in
         emit_state("listening")
         # Overlap any cold-start model load (when models.preload is off) with
         # the ack clip + the user speaking, instead of stalling silently.
         warm_async()
         warm_tts_async()
         with duck_others():
-            Audio.play_cached("Yes?")
+            if Cache.get_audio():
+                Audio.play_cached("Yes?")
+            elif bool(Config.get("voice.feedback.ack_when_muted", True)):
+                # Muted: no spoken ack, but a short tone still confirms the
+                # wake word landed instead of leaving the user guessing.
+                play_earcon()
 
             text = Recognizer.recognize_speech_from_mic()
             if not text:
-                Audio.play_cached("I didn't catch that.")
+                from helpers.events import session_cancel
+                if not session_cancel.is_set():
+                    msg = "Sorry, I couldn't process that." if Recognizer.last_call_failed else "I didn't catch that."
+                    Audio.play_cached(msg)
                 emit_state("idle")
                 return
 

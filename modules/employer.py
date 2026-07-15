@@ -7,7 +7,8 @@ from helpers.agent import run_agent
 from helpers.audio import Audio
 from helpers.cache import Cache
 from helpers.conversation import Conversation
-from helpers.decorators import capture_response, set_agent_active
+from helpers.decorators import begin_tool_outcomes, capture_response, set_agent_active, turn_is_quiet_success
+from helpers.events import session_cancel
 from helpers.jobs import BackgroundJobs
 from helpers.logger import logger
 from helpers.recognizer import Recognizer
@@ -36,6 +37,9 @@ class Employer:
             logger.log_system_event(
                 "speech_recognition_failed", "No speech detected or recognized"
             )
+            if not session_cancel.is_set():
+                msg = "Sorry, I couldn't process that." if Recognizer.last_call_failed else "I didn't catch that."
+                Audio.play_cached(msg)
             return
         self.converse(first_text=first_text)
 
@@ -128,6 +132,9 @@ class Employer:
             else:
                 response = self.job_on_command(text)
 
+            if session_cancel.is_set():
+                break  # deliberate stop mid-turn — don't keep listening for a follow-up
+
             # Choose next listen timeout based on whether assistant asked a question
             if self._is_question(response):
                 next_timeout = clarify_timeout
@@ -153,6 +160,8 @@ class Employer:
         interrupt_event: typing.Optional[threading.Event] = None,
     ) -> typing.Optional[str]:
         if not user_input or not user_input.strip():
+            return None
+        if session_cancel.is_set():
             return None
 
         self._refresh_available_jobs()
@@ -215,7 +224,18 @@ class Employer:
 
             tts_thread = threading.Thread(target=_tts_worker, daemon=True, name="tts-stream")
             tts_thread.start()
-            on_text = tts_queue.put
+
+            first_chunk_seen = threading.Event()
+
+            def on_text(chunk: str) -> None:
+                first_chunk_seen.set()
+                # Drop speech (not the narration text itself — that's still
+                # recorded/returned/shown in web) once the turn is a deliberate
+                # cancel or a quiet-on-success tool outcome (e.g. "pause") that
+                # doesn't need a spoken confirmation on top of the audible change.
+                if session_cancel.is_set() or turn_is_quiet_success():
+                    return
+                tts_queue.put(chunk)
         else:
             def on_text(chunk: str) -> None:
                 sys.stdout.write(chunk)
@@ -225,8 +245,25 @@ class Employer:
         _agent_err: typing.Optional[Exception] = None
         from helpers.events import emit_state
         emit_state("thinking")
+
+        # A long tool call (web search, a slow API) can leave the user in
+        # silence wondering if anything is happening — a one-shot spoken cue
+        # if no narration has started by the deadline reassures them without
+        # interrupting a fast reply.
+        thinking_timer: typing.Optional[threading.Timer] = None
+        if audio:
+            thinking_cue_seconds = float(Config.get("voice.feedback.thinking_cue_seconds", 6) or 0)
+            if thinking_cue_seconds > 0:
+                def _thinking_cue() -> None:
+                    if not first_chunk_seen.is_set() and not session_cancel.is_set():
+                        Audio.play_cached("One moment.")
+                thinking_timer = threading.Timer(thinking_cue_seconds, _thinking_cue)
+                thinking_timer.daemon = True
+                thinking_timer.start()
+
         with agent_lock:
             set_agent_active(True)
+            begin_tool_outcomes()
             try:
                 agent_result = run_agent(
                     client=self.ai_model.client,
@@ -236,11 +273,14 @@ class Employer:
                     history=Conversation.get_messages(),
                     max_steps=max_steps,
                     on_text=on_text,
+                    cancel_event=session_cancel,
                 )
             except Exception as _e:
                 _agent_err = _e
             finally:
                 set_agent_active(False)
+                if thinking_timer is not None:
+                    thinking_timer.cancel()
                 if tts_queue is not None:
                     tts_queue.put(None)
 

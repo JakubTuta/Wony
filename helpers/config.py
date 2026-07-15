@@ -22,6 +22,15 @@ class SttSettings(BaseModel):
     vad_aggressiveness: int = 2
 
 
+class TtsSettings(BaseModel):
+    prebuffer_ms: int = 600
+
+
+class FeedbackSettings(BaseModel):
+    thinking_cue_seconds: float = 6.0
+    ack_when_muted: bool = True
+
+
 class DuckingSettings(BaseModel):
     enabled: bool = True
     level: float = 0.15
@@ -58,6 +67,8 @@ class VoiceSettings(BaseModel):
     input_device: typing.Optional[typing.Union[int, str]] = None
     output_device: typing.Optional[typing.Union[int, str]] = None
     stt: SttSettings = Field(default_factory=SttSettings)
+    tts: TtsSettings = Field(default_factory=TtsSettings)
+    feedback: FeedbackSettings = Field(default_factory=FeedbackSettings)
     ducking: DuckingSettings = Field(default_factory=DuckingSettings)
     conversation: ConversationSettings = Field(default_factory=ConversationSettings)
     barge_in: BargeInSettings = Field(default_factory=BargeInSettings)

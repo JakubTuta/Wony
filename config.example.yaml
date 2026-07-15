@@ -48,6 +48,15 @@ voice:
   # falls back to CPU automatically on machines without CUDA. Force with 'cuda' or 'cpu'.
   tts_device: auto
 
+  tts:
+    prebuffer_ms: 600   # buffer this much synthesized audio before playback starts, so slow
+                        # first-sentence synthesis doesn't stutter; 0 disables. Auto-0 on CUDA.
+
+  # Spoken/audible feedback for wake-word and thinking states.
+  feedback:
+    thinking_cue_seconds: 6   # spoken "One moment." if no reply has started by this deadline; 0 disables
+    ack_when_muted: true      # play a short earcon on wake detection when audio replies are muted
+
   # Detect speech during playback and stop the assistant mid-sentence.
   barge_in:
     enabled: true

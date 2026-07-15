@@ -6,10 +6,12 @@ Usage:
     # result.text: final assistant answer (or clarifying question)
     # result.calls: list of {"name", "args", "result"} for logging
 """
+import threading
 import typing
 import uuid
 
 import helpers.model as helpers_model
+from helpers.decorators import record_tool_outcome
 from helpers.logger import logger
 
 
@@ -56,6 +58,7 @@ def run_agent(
     history: typing.Optional[typing.List[typing.Dict[str, str]]] = None,
     max_steps: int = 5,
     on_text: typing.Optional[typing.Callable[[str], None]] = None,
+    cancel_event: typing.Optional[threading.Event] = None,
 ) -> AgentResult:
     """Run the agent loop for one user turn.
 
@@ -66,6 +69,10 @@ def run_agent(
     emitted through this callback as they arrive (for live TTS). Any text the
     model did NOT stream (fallbacks, error messages) is also emitted, so the
     callback always receives the full spoken answer.
+
+    cancel_event: checked before each step and before each tool execution; if
+    set, the turn aborts immediately with empty text rather than continuing to
+    call tools or narrate a result the user already walked away from.
     """
     available_functions = list(available_jobs.values())
 
@@ -82,6 +89,9 @@ def run_agent(
             on_text(text)
 
     for step in range(max_steps):
+        if cancel_event is not None and cancel_event.is_set():
+            return AgentResult(text="", calls=calls_made)
+
         text = ""
         tool_calls: typing.List[typing.Dict[str, typing.Any]] = []
         streamed = False
@@ -138,6 +148,9 @@ def run_agent(
             messages.append(msg)
 
         for tc in tool_calls:
+            if cancel_event is not None and cancel_event.is_set():
+                return AgentResult(text="", calls=calls_made)
+
             name = tc["name"]
             args = tc["args"]
             tool_id = tc["id"]
@@ -146,15 +159,25 @@ def run_agent(
 
             exec_name = _resolve_job_name(name, available_jobs)
             if exec_name is not None:
+                func = available_jobs[exec_name]
+                # capture_response-wrapped jobs record their own outcome (with
+                # the correct quiet/mute flag); anything else must be recorded
+                # here as non-quiet so it can never silence the turn's narration.
+                self_recording = hasattr(func, "_quiet_success")
                 try:
-                    result = available_jobs[exec_name](**args)
+                    result = func(**args)
                     result_str = str(result) if result is not None else ""
+                    if not self_recording:
+                        record_tool_outcome(exec_name, False, True)
                 except Exception as e:
                     result_str = f"Error executing {exec_name}: {e}"
                     logger.log_error(result_str, "agent_loop.execute")
+                    if not self_recording:
+                        record_tool_outcome(exec_name, False, False)
             else:
                 result_str = f"Unknown function: {name}"
                 logger.log_error(result_str, "agent_loop.execute")
+                record_tool_outcome(name, False, False)
 
             logger.log_function_response(name, result_str[:200], user_input)
             calls_made.append({"name": name, "args": args, "result": result_str})

@@ -219,8 +219,8 @@ def run_tray() -> None:
         icon.update_menu()
 
     def _on_stop_speaking(icon, item) -> None:
-        from helpers.audio import interrupt_current_speech
-        interrupt_current_speech()
+        from helpers.events import request_cancel
+        request_cancel()
 
     def _on_mute_toggle(icon, item) -> None:
         from helpers.cache import Cache
@@ -241,7 +241,7 @@ def run_tray() -> None:
         pystray.MenuItem("Open in web", _on_open_web),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Listen now", _on_listen_now),
-        pystray.MenuItem("Stop speaking", _on_stop_speaking),
+        pystray.MenuItem("Stop", _on_stop_speaking),
         pystray.MenuItem(_mute_label, _on_mute_toggle),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem(_toggle_label, _on_toggle),

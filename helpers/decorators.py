@@ -25,6 +25,35 @@ def is_agent_active() -> bool:
     return _agent_active
 
 
+# ── Per-turn tool outcome ledger ────────────────────────────────────────────
+# Gates whether the agent's final narration gets spoken: if every tool call
+# this turn was a quiet-on-success job (mute=True) that actually succeeded,
+# the outcome is already audible/visible on its own (e.g. music started) and
+# narrating it too just wastes time under a duck. Only ever touched while
+# agent_lock is held (agent runs are serialized process-wide), so a plain
+# module-level list is safe without its own lock.
+_tool_outcomes: typing.List[typing.Tuple[str, bool, bool]] = []  # (name, quiet, ok)
+
+
+def begin_tool_outcomes() -> None:
+    global _tool_outcomes
+    _tool_outcomes = []
+
+
+def record_tool_outcome(name: str, quiet: bool, ok: bool) -> None:
+    _tool_outcomes.append((name, quiet, ok))
+
+
+def turn_is_quiet_success() -> bool:
+    """True if at least one tool ran this turn and every one was quiet-on-
+    success and actually succeeded. False (speak) for zero tool calls, any
+    non-quiet job, any failure, or any untracked/unwrapped call — the gate
+    must never silence a call it didn't fully account for."""
+    if not _tool_outcomes:
+        return False
+    return all(quiet and ok for _, quiet, ok in _tool_outcomes)
+
+
 def capture_response(
     func: typing.Callable[..., typing.Any] = None,
     *,
@@ -68,8 +97,10 @@ def capture_response(
                 if logger:
                     logger.log_error(traceback.format_exc(), f"{class_name}.{function_name}")
 
+                if _agent_active:
+                    record_tool_outcome(function_name, mute, False)
                 # Always vocalize errors so user knows the action failed.
-                if not _agent_active and Cache and Audio and Cache.get_audio():
+                elif Cache and Audio and Cache.get_audio():
                     Audio.text_to_speech(error_msg)
 
                 return error_msg
@@ -78,13 +109,16 @@ def capture_response(
 
             # Suppress per-tool output while the agent loop is running;
             # the agent will narrate the final answer once.
-            if not _agent_active:
+            if _agent_active:
+                record_tool_outcome(function_name, mute, True)
+            else:
                 if not mute and Cache and Audio and Cache.get_audio():
                     Audio.text_to_speech(str_response)
                 print(str_response)
 
             return str_response
 
+        wrapper._quiet_success = bool(mute)
         return wrapper
 
     if func is not None:

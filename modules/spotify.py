@@ -131,13 +131,18 @@ class Spotify:
         search_response = self._search(query=title, artist=artist, content_type=content_type)
 
         if not search_response:
-            return f"Could not find '{title}'" + (f" by {artist}" if artist else "") + "."
+            # This job is mute=True (music starting IS the feedback) — a soft
+            # "not found" return would be silently swallowed just like a real
+            # success. Raise instead so the always-spoken error path fires.
+            raise Exception(f"Could not find '{title}'" + (f" by {artist}" if artist else "") + ".")
 
         songs = self._get_songs_from_search(search_response)
         url = self._build_url_with_device("https://api.spotify.com/v1/me/player/play")
 
         self._set_shuffle(False)
         self._make_spotify_request("put", url, json={"uris": songs})
+        if search_response.get("type") == "artists":
+            return f"Playing {search_response['name']}."
         return f"Playing {search_response['name']} by {search_response['artist']}."
 
     @capture_response
@@ -373,7 +378,7 @@ class Spotify:
         """
         playback_state = self._get_playback_state()
         if not playback_state:
-            return "No active Spotify device."
+            raise Exception("No active Spotify device.")
 
         current_volume = playback_state.get("device", {}).get("volume_percent", 50)
         new_volume = min(current_volume + 10, 100)
@@ -439,10 +444,10 @@ class Spotify:
         try:
             volume = int(volume)
         except ValueError:
-            return "Error: Invalid volume value."
+            raise Exception("Invalid volume value.")
 
         if not 0 <= volume <= 100:
-            return "Error: Volume must be between 0 and 100."
+            raise Exception("Volume must be between 0 and 100.")
 
         base_url = (
             f"https://api.spotify.com/v1/me/player/volume?volume_percent={volume}"
@@ -636,7 +641,9 @@ class Spotify:
         )
 
         if not match:
-            return f"Playlist '{name}' not found."
+            # mute=True job — raise so the always-spoken error path fires
+            # instead of a soft-fail string being swallowed like a success.
+            raise Exception(f"Playlist '{name}' not found.")
 
         url = self._build_url_with_device("https://api.spotify.com/v1/me/player/play")
         self._make_spotify_request("put", url, json={"context_uri": match["uri"]})
