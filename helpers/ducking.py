@@ -33,6 +33,58 @@ def duck_others() -> "AudioDucker":
     return _singleton
 
 
+def _iter_foreign_sessions(own_pid: int) -> typing.Iterator[typing.Tuple[int, str, typing.Any]]:
+    """Yield (pid, name, IAudioSessionControl) for every foreign audio session
+    across ALL active render devices.
+
+    COM must already be initialized on the calling thread. Deliberately NOT
+    deduplicated by PID — see AudioDucker._get_foreign_volumes for why.
+    """
+    import comtypes
+    import psutil
+    from comtypes import GUID
+    from pycaw.pycaw import (
+        IAudioSessionControl2,
+        IAudioSessionManager2,
+        IMMDeviceEnumerator,
+    )
+
+    CLSID_MMDeviceEnumerator = GUID("{BCDE0395-E52F-467C-8E3D-C4579291692E}")
+    enumerator = comtypes.CoCreateInstance(CLSID_MMDeviceEnumerator, IMMDeviceEnumerator)
+    # eRender=0, DEVICE_STATE_ACTIVE=1
+    collection = enumerator.EnumAudioEndpoints(0, 1)
+
+    for i in range(collection.GetCount()):
+        try:
+            device = collection.Item(i)
+            mgr = device.Activate(IAudioSessionManager2._iid_, comtypes.CLSCTX_ALL, None)
+            mgr = mgr.QueryInterface(IAudioSessionManager2)
+            sess_enum = mgr.GetSessionEnumerator()
+        except Exception:
+            continue
+
+        for j in range(sess_enum.GetCount()):
+            try:
+                ctrl = sess_enum.GetSession(j)
+                ctrl2 = ctrl.QueryInterface(IAudioSessionControl2)
+                try:
+                    pid = ctrl2.GetProcessId()
+                except Exception:
+                    continue
+                if pid == own_pid or pid == 0:
+                    continue
+                name = ""
+                try:
+                    name = psutil.Process(pid).name().lower()
+                    if name in _SKIP_NAMES:
+                        continue
+                except Exception:
+                    pass
+                yield pid, name, ctrl
+            except Exception:
+                continue
+
+
 def restore_all() -> None:
     """Force every ducked session back to its original volume, synchronously.
 
@@ -97,6 +149,15 @@ class AudioDucker:
     # Duck fast so the assistant is audible immediately; restore gently.
     _DUCK_DURATION = 0.25
     _RESTORE_DURATION = 1.0
+    # A voice turn is several back-to-back `with duck_others():` blocks (wake
+    # ack, capture, reply). Restoring between them would fade every other app
+    # up and straight back down — audible pumping. Holding the duck briefly
+    # lets the next block reuse it, so one turn ducks and restores exactly once.
+    _RESTORE_LINGER = 1.5
+    # Hard ceiling on how long anything may stay ducked. If a turn hangs, or a
+    # refcount is somehow leaked, the worker restores anyway — nothing can be
+    # left quiet indefinitely.
+    _MAX_DUCK_SECONDS = 120.0
 
     def __init__(self) -> None:
         self._ref_lock = threading.RLock()
@@ -163,19 +224,67 @@ class AudioDucker:
             pass
 
         snapshot: list = []  # [{"pid", "name", "iface", "orig"}]
+        ducked_since: typing.Optional[float] = None
+        restore_at: typing.Optional[float] = None  # deferred restore deadline
+
+        def _restore_now() -> None:
+            nonlocal snapshot, ducked_since, restore_at
+            snapshot = self._do_restore(snapshot)
+            restore_at = None
+            ducked_since = None
+
         try:
             while True:
-                cmd = self._cmd_q.get()
-                kind = cmd[0]
-                if kind == "duck":
-                    snapshot = self._do_duck(cmd[1], snapshot)
-                elif kind == "restore":
-                    snapshot = self._do_restore(snapshot)
-                elif kind == "force_restore":
-                    snapshot = self._do_restore(snapshot)
-                    cmd[1].set()
-                elif kind == "recover":
-                    self._do_recover(cmd[1], cmd[2])
+                # Wake for whichever deadline lands first, so a lingering
+                # restore and the max-duck watchdog are both honoured even
+                # while no commands arrive.
+                deadlines = [d for d in (restore_at, (ducked_since + self._MAX_DUCK_SECONDS) if ducked_since else None) if d]
+                timeout = max(0.05, min(deadlines) - time.monotonic()) if deadlines else None
+                try:
+                    cmd = self._cmd_q.get(timeout=timeout)
+                except queue.Empty:
+                    now = time.monotonic()
+                    if restore_at is not None and now >= restore_at:
+                        _restore_now()
+                    elif ducked_since is not None and now - ducked_since >= self._MAX_DUCK_SECONDS:
+                        helpers.diagnostics.add(
+                            "warning", "Ducking",
+                            f"Ducked for over {int(self._MAX_DUCK_SECONDS)}s — restoring volumes anyway "
+                            "(a voice turn did not finish cleanly).",
+                        )
+                        _restore_now()
+                    continue
+
+                try:
+                    kind = cmd[0]
+                    if kind == "duck":
+                        restore_at = None  # cancel a pending linger
+                        if snapshot:
+                            continue  # already ducked and still held — don't re-fade
+                        snapshot = self._do_duck(cmd[1], snapshot)
+                        ducked_since = time.monotonic() if snapshot else None
+                    elif kind == "restore":
+                        # Deferred — see _RESTORE_LINGER.
+                        restore_at = time.monotonic() + self._RESTORE_LINGER if snapshot else None
+                    elif kind == "force_restore":
+                        _restore_now()
+                        cmd[1].set()
+                    elif kind == "recover":
+                        self._do_recover(cmd[1], cmd[2])
+                except Exception as e:
+                    # The worker owns every COM interface we hold; if it dies,
+                    # nothing can ever restore those volumes in-process. Never
+                    # let one bad command take it down — unduck and carry on.
+                    helpers.diagnostics.add("error", "Ducking", f"Worker command '{cmd[0]}' failed: {e}")
+                    try:
+                        _restore_now()
+                    except Exception:
+                        pass
+                    if cmd[0] == "force_restore":
+                        try:
+                            cmd[1].set()
+                        except Exception:
+                            pass
         finally:
             try:
                 import comtypes
@@ -184,12 +293,42 @@ class AudioDucker:
             except Exception:
                 pass
 
+    def _rescue_stale_snapshot_before_duck(self) -> None:
+        """Restore a crashed run's volumes BEFORE capturing new originals.
+
+        _SNAPSHOT_PATH only exists while a duck is in progress, so finding one
+        here — with nothing ducked in this worker — means a previous run died
+        mid-duck and its apps are still sitting at the duck level. Ducking on
+        top of that would record 0.15 as the "original", write it over the
+        crash snapshot (which is always fully overwritten), and then faithfully
+        restore 0.15 and delete the file — losing the true volume permanently
+        and leaving the user quietly ducked forever. Observed live.
+
+        _do_recover also moves anything it can't match to the pending-recovery
+        file, so the originals survive even if the app isn't running yet.
+        """
+        if not os.path.exists(_SNAPSHOT_PATH):
+            return
+        try:
+            with open(_SNAPSHOT_PATH, "r", encoding="utf-8") as f:
+                stale = json.load(f)
+        except Exception:
+            self._delete_snapshot_file()
+            return
+        helpers.diagnostics.add(
+            "warning", "Ducking",
+            "Found volumes stranded by a previous run — restoring them before ducking.",
+        )
+        self._do_recover(stale, _SNAPSHOT_PATH)
+
     def _do_duck(self, level: float, prev_snapshot: list) -> list:
         try:
             # Flush any lingering restore fade to true originals first, so we
             # never snapshot a mid-fade volume as a session's "original".
             if prev_snapshot:
                 self._flush_snapshot(prev_snapshot)
+            else:
+                self._rescue_stale_snapshot_before_duck()
 
             targets = self._get_foreign_volumes()
             snapshot = []
@@ -474,59 +613,14 @@ class AudioDucker:
         a PID is idempotent, so there's no downside to controlling all of them.
         """
         try:
-            import comtypes
-            import psutil
-            from comtypes import GUID
-            from pycaw.pycaw import (
-                IAudioSessionControl2,
-                IAudioSessionManager2,
-                IMMDeviceEnumerator,
-                ISimpleAudioVolume,
-            )
-
-            CLSID_MMDeviceEnumerator = GUID("{BCDE0395-E52F-467C-8E3D-C4579291692E}")
-            enumerator = comtypes.CoCreateInstance(CLSID_MMDeviceEnumerator, IMMDeviceEnumerator)
-            # eRender=0, DEVICE_STATE_ACTIVE=1
-            collection = enumerator.EnumAudioEndpoints(0, 1)
-            device_count = collection.GetCount()
+            from pycaw.pycaw import ISimpleAudioVolume
 
             result = []
-
-            for i in range(device_count):
+            for pid, name, ctrl in _iter_foreign_sessions(self._own_pid):
                 try:
-                    device = collection.Item(i)
-                    mgr = device.Activate(IAudioSessionManager2._iid_, comtypes.CLSCTX_ALL, None)
-                    mgr = mgr.QueryInterface(IAudioSessionManager2)
-                    sess_enum = mgr.GetSessionEnumerator()
-                    sess_count = sess_enum.GetCount()
-
-                    for j in range(sess_count):
-                        try:
-                            ctrl = sess_enum.GetSession(j)
-                            ctrl2 = ctrl.QueryInterface(IAudioSessionControl2)
-
-                            # get PID — skip own process and system sessions
-                            try:
-                                pid = ctrl2.GetProcessId()
-                            except Exception:
-                                continue
-                            if pid == self._own_pid or pid == 0:
-                                continue
-                            # skip audio infrastructure
-                            name = ""
-                            try:
-                                name = psutil.Process(pid).name().lower()
-                                if name in _SKIP_NAMES:
-                                    continue
-                            except Exception:
-                                pass
-                            vol = ctrl.QueryInterface(ISimpleAudioVolume)
-                            result.append((pid, name, vol))
-                        except Exception:
-                            continue
+                    result.append((pid, name, ctrl.QueryInterface(ISimpleAudioVolume)))
                 except Exception:
                     continue
-
             return result
         except Exception:
             return []

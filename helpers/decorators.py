@@ -32,7 +32,7 @@ def is_agent_active() -> bool:
 # narrating it too just wastes time under a duck. Only ever touched while
 # agent_lock is held (agent runs are serialized process-wide), so a plain
 # module-level list is safe without its own lock.
-_tool_outcomes: typing.List[typing.Tuple[str, bool, bool]] = []  # (name, quiet, ok)
+_tool_outcomes: typing.List[typing.Tuple[str, bool, bool, bool]] = []  # (name, quiet, one_message, ok)
 
 
 def begin_tool_outcomes() -> None:
@@ -40,8 +40,8 @@ def begin_tool_outcomes() -> None:
     _tool_outcomes = []
 
 
-def record_tool_outcome(name: str, quiet: bool, ok: bool) -> None:
-    _tool_outcomes.append((name, quiet, ok))
+def record_tool_outcome(name: str, quiet: bool, ok: bool, one_message: bool = False) -> None:
+    _tool_outcomes.append((name, quiet, one_message, ok))
 
 
 def turn_is_quiet_success() -> bool:
@@ -51,13 +51,22 @@ def turn_is_quiet_success() -> bool:
     must never silence a call it didn't fully account for."""
     if not _tool_outcomes:
         return False
-    return all(quiet and ok for _, quiet, ok in _tool_outcomes)
+    return all(quiet and ok for _, quiet, _one_message, ok in _tool_outcomes)
+
+
+def turn_wants_one_message() -> bool:
+    """True if any tool called this turn is flagged one_message=True and
+    succeeded — the voice conversation loop ends the session after this turn
+    instead of listening for a follow-up (e.g. "play song X" shouldn't leave
+    the mic open waiting for more)."""
+    return any(one_message and ok for _, _quiet, one_message, ok in _tool_outcomes)
 
 
 def capture_response(
     func: typing.Callable[..., typing.Any] = None,
     *,
     mute: bool = False,
+    one_message: bool = False,
 ) -> typing.Callable[..., typing.Optional[str]]:
     """
     Decorator that captures the response, prints it to console, and handles audio output.
@@ -66,6 +75,10 @@ def capture_response(
     Args:
         mute: When True, suppresses TTS on success but still vocalizes errors.
               Use for actions with immediate audible feedback (play, pause, volume).
+        one_message: When True and the call succeeds, the voice conversation loop
+                     ends the session after this turn instead of listening for a
+                     follow-up. Use for one-shot actions (play a song, change volume)
+                     where continuing to listen would just be dead air.
     """
 
     def decorator(f: typing.Callable[..., typing.Any]) -> typing.Callable[..., typing.Optional[str]]:
@@ -98,7 +111,7 @@ def capture_response(
                     logger.log_error(traceback.format_exc(), f"{class_name}.{function_name}")
 
                 if _agent_active:
-                    record_tool_outcome(function_name, mute, False)
+                    record_tool_outcome(function_name, mute, False, one_message)
                 # Always vocalize errors so user knows the action failed.
                 elif Cache and Audio and Cache.get_audio():
                     Audio.text_to_speech(error_msg)
@@ -110,7 +123,7 @@ def capture_response(
             # Suppress per-tool output while the agent loop is running;
             # the agent will narrate the final answer once.
             if _agent_active:
-                record_tool_outcome(function_name, mute, True)
+                record_tool_outcome(function_name, mute, True, one_message)
             else:
                 if not mute and Cache and Audio and Cache.get_audio():
                     Audio.text_to_speech(str_response)

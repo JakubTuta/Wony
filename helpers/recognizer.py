@@ -100,13 +100,21 @@ class Recognizer:
     # from "something broke" and pick the right spoken feedback.
     last_call_failed: bool = False
 
+    # True after a call where the VAD never heard speech begin at all (nothing
+    # to transcribe), as opposed to speech that was captured but came back
+    # empty/unintelligible. A wake word followed by pure silence is almost
+    # always a false trigger, and callers use this to stay quiet about it.
+    last_capture_empty: bool = False
+
     @staticmethod
     def recognize_speech_from_mic(start_timeout: typing.Optional[float] = None) -> str:
         global _last_used
         Recognizer.last_call_failed = False
+        Recognizer.last_capture_empty = False
         try:
             audio = Audio.record_command(start_timeout=start_timeout)
             if audio is None or len(audio) == 0:
+                Recognizer.last_capture_empty = True
                 return ""
             raw_lang = str(Config.get("assistant.language", "en")).lower()
             # Normalize "en-us" / "en_US" → "en"; faster-whisper expects ISO 639-1 codes.

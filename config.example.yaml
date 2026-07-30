@@ -14,54 +14,28 @@ voice:
   # Run `python -c "from kokoro_onnx import Kokoro; k=Kokoro('models/kokoro-v1.0.onnx','models/voices-v1.0.bin'); print(k.get_voices())"` to list all voices.
   tts_voice: "af_heart"   # af_heart, af_sarah, am_michael, bf_emma, bm_george …
   speed: 1.0              # 0.5–2.0 speaking rate
-  volume: 0.6             # 0.0–1.0 output gain
-  model_path: "models/kokoro-v1.0.onnx"
-  voices_path: "models/voices-v1.0.bin"
+  volume: 0.6             # 0.0–1.0 how loud Wony speaks
 
-  # Override which microphone to capture from. null = auto (recommended): picks the
-  # best physical mic, skipping virtual/loopback devices (Sonar, VoiceMeeter, etc.).
-  # Set to a device index (int) or a name substring (str) only if auto-select
-  # chooses the wrong mic. Run `python wony.py doctor` to see what was selected.
+  # Which microphone / speakers to use. null = follow whatever Windows is set to
+  # (recommended). Set to a device name substring only if the wrong one is picked.
+  # Run `python wony.py doctor` to see what was selected.
   input_device: null
-
-  # Override which output device to play TTS/notifications through. null = OS
-  # default (recommended) — automatically follows the Windows default output
-  # device. Set to a device index (int) or a name substring (str) to pin it.
   output_device: null
 
   stt:
-    start_timeout: 4      # give up if no speech starts within this many seconds
-    max_seconds: 12       # hard cap on total capture length
-    silence_ms: 700       # trailing silence (ms) that ends the command
-    vad_aggressiveness: 2 # webrtcvad 0–3 (higher = more aggressive filtering)
+    start_timeout: 4   # seconds to wait for you to start speaking before giving up
+    silence_ms: 700    # how long you have to stop talking before Wony answers
+                       # raise if she cuts you off mid-sentence
 
   # Continuous conversation: mic reopens after each response for chained commands.
   # Session ends on silence or a stop phrase ("stop", "thanks", "done", …).
   conversation:
     enabled: true
-    follow_up_timeout: 4.0  # seconds of silence before closing the session
+    follow_up_timeout: 3.0  # seconds of silence before closing the session
 
-  # Note: streaming is always on now — the assistant starts speaking as soon as
-  # the first sentence is ready (and the web/console UIs stream too). No toggle.
-
-  # TTS inference device. 'auto' picks CUDA if onnxruntime-gpu detects a GPU,
-  # falls back to CPU automatically on machines without CUDA. Force with 'cuda' or 'cpu'.
-  tts_device: auto
-
-  tts:
-    prebuffer_ms: 600   # buffer this much synthesized audio before playback starts, so slow
-                        # first-sentence synthesis doesn't stutter; 0 disables. Auto-0 on CUDA.
-
-  # Spoken/audible feedback for wake-word and thinking states.
-  feedback:
-    thinking_cue_seconds: 6   # spoken "One moment." if no reply has started by this deadline; 0 disables
-    ack_when_muted: true      # play a short earcon on wake detection when audio replies are muted
-
-  # Detect speech during playback and stop the assistant mid-sentence.
+  # Let you interrupt Wony by talking over her.
   barge_in:
     enabled: true
-    sustain_frames: 15   # consecutive VAD frames (~30ms each) of speech required to trigger
-                        # increase to reduce false triggers from speaker echo (e.g. 7–10)
 
   # Lower other apps' volume while Wony speaks or listens (Windows-only; no-ops elsewhere).
   ducking:
@@ -76,10 +50,7 @@ voice:
     # Path to a custom .onnx model (overrides phrase).
     # Train with training/train_hey_wony.ipynb (Colab) or training/train_hey_wony.sh (WSL).
     model_path: null
-    threshold: 0.5          # 0.0–1.0 detection score cutoff (lower = more sensitive)
-    cooldown_seconds: 2.0   # minimum seconds between consecutive wake-word triggers
-    vad_threshold: 0.5      # VAD confidence required before passing audio to wake word model
-    noise_suppression: false
+    threshold: 0.5   # 0.0–1.0 sensitivity; lower = triggers more easily
 
 ai:
   # Options: anthropic | gemini | ollama | null (auto-detect from .env keys).
@@ -87,19 +58,13 @@ ai:
   anthropic_model: null   # null = latest
   gemini_model: null      # null = latest
   ollama_model: "llama3.1"  # required when provider is 'ollama'
-  max_tokens: 8192
   # Reasoning policy (all providers):
   #   on (default) — think only on direct knowledge questions; never on
   #                  tool-using steps, so voice replies stay fast.
   #   off          — never think anywhere (lowest latency).
   thinking: "on"
   history:
-    max_turns: 5          # past exchanges (user+assistant pairs) kept in context
-    tool_results_turns: 2        # recent turns whose raw tool output is replayed into context
-                                 # so the model can answer follow-ups without re-calling tools
-                                 # 0 = disabled; lower = leaner prompt = faster voice first-token
-  agent:
-    max_steps: 5          # maximum tool-call iterations per request
+    max_turns: 5   # how many past exchanges Wony remembers within a session
 
 # Only listed modules load. A module still won't run if credentials/deps are missing.
 # Run "check setup" to see what each broken module needs.
@@ -127,29 +92,18 @@ modules:
   weather:
     default_units: "metric"   # metric | imperial
   gmail:
-    poll_interval_minutes: 15
-    max_results: 20
-    max_body_chars: 1500
     # Safety gate — set to true to allow sending/replying to emails.
     allow_send: false
     # Set to true to have AI summarize email lists (sends content to your AI provider).
     use_ai: false
-    ai_summary_max_emails: 30
   calendar:
-    poll_interval_minutes: 15
-    lookahead_hours: 24       # how far ahead to look for upcoming events
-    max_results: 10
-    search_days_back: 30
-    search_days_ahead: 90
-    work_start_hour: 9        # used by find_free_slots
+    work_start_hour: 9        # your working day, used when finding free slots
     work_end_hour: 18
     # Safety gate — set to true to allow creating, editing, and deleting events.
     # Note: requires re-authentication after upgrading from the old readonly scope.
     allow_write: false
-  web:
-    max_content_chars: 3000   # max page content returned by fetch_url
-    # Add TAVILY_API_KEY to .env for higher-quality search (free tier available).
-    # Without it, DuckDuckGo is used automatically.
+  # web search needs no settings here — add TAVILY_API_KEY to .env for
+  # higher-quality results (free tier). Without it, DuckDuckGo is used.
   desktop:
     # Safety gate — set to true to enable type/click/clipboard-write/file-open actions.
     allow_actions: false
@@ -166,10 +120,8 @@ server:
 logging:
   keep_days: 14   # log/csv files older than this are deleted at startup
 
-# Whisper (STT) and Kokoro (TTS) resource lifecycle.
 models:
-  # false (recommended): load on first wake, so idle tray only holds the tiny
-  # always-on wake-word model. true: load both at startup (instant first
-  # response, but ~holds GPU/RAM the whole time the app runs).
+  # false (recommended): load the speech models on first wake, so an idle tray
+  # stays light. true: load them at startup — instant first response, but holds
+  # GPU/RAM the whole time the app runs.
   preload: false
-  idle_unload_minutes: 15   # unload both after this many idle minutes; 0 = never

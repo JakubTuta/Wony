@@ -95,7 +95,7 @@ class Spotify:
         if not self.device_id:
             raise Exception("No active Spotify device found")
 
-    @capture_response(mute=True)
+    @capture_response(mute=True, one_message=True)
     @retry_on_unauthorized("_refresh_access_token")
     @method_job
     def play_songs(self, title: str, artist: str, content_type: str = "") -> typing.Optional[str]:
@@ -188,7 +188,7 @@ class Spotify:
 
         return f"Added {search_response['name']} by {search_response['artist']} to the queue."
 
-    @capture_response(mute=True)
+    @capture_response(mute=True, one_message=True)
     @method_job
     def toggle_playback(self) -> str:
         """
@@ -217,7 +217,7 @@ class Spotify:
             return self.stop_playback()
         return self.start_playback()
 
-    @capture_response(mute=True)
+    @capture_response(mute=True, one_message=True)
     @retry_on_unauthorized("_refresh_access_token")
     @method_job
     def start_playback(self) -> str:
@@ -246,7 +246,7 @@ class Spotify:
         self._make_spotify_request("put", url)
         return "Playback resumed."
 
-    @capture_response(mute=True)
+    @capture_response(mute=True, one_message=True)
     @retry_on_unauthorized("_refresh_access_token")
     @method_job
     def stop_playback(self) -> str:
@@ -275,7 +275,7 @@ class Spotify:
         self._make_spotify_request("put", url)
         return "Playback paused."
 
-    @capture_response(mute=True)
+    @capture_response(mute=True, one_message=True)
     @retry_on_unauthorized("_refresh_access_token")
     @method_job
     def skip_song(self) -> str:
@@ -304,7 +304,7 @@ class Spotify:
         self._make_spotify_request("post", url)
         return "Skipped to next song."
 
-    @capture_response(mute=True)
+    @capture_response(mute=True, one_message=True)
     @retry_on_unauthorized("_refresh_access_token")
     @method_job
     def previous_song(self) -> str:
@@ -326,7 +326,7 @@ class Spotify:
         self._make_spotify_request("post", url)
         return "Playing previous song."
 
-    @capture_response(mute=True)
+    @capture_response(mute=True, one_message=True)
     @retry_on_unauthorized("_refresh_access_token")
     @method_job
     def restart_song(self) -> str:
@@ -352,7 +352,7 @@ class Spotify:
         self._make_spotify_request("put", url)
         return "Restarted song from the beginning."
 
-    @capture_response(mute=True)
+    @capture_response(mute=True, one_message=True)
     @retry_on_unauthorized("_refresh_access_token")
     @method_job
     def volume_up(self) -> str:
@@ -384,7 +384,7 @@ class Spotify:
         new_volume = min(current_volume + 10, 100)
         return self.set_volume(volume=new_volume)
 
-    @capture_response(mute=True)
+    @capture_response(mute=True, one_message=True)
     @retry_on_unauthorized("_refresh_access_token")
     @method_job
     def volume_down(self) -> str:
@@ -401,13 +401,15 @@ class Spotify:
         """
         playback_state = self._get_playback_state()
         if not playback_state:
-            return "No active Spotify device."
+            # mute=True job — raise so the always-spoken error path fires
+            # instead of a soft-fail string being swallowed like a success.
+            raise Exception("No active Spotify device.")
 
         current_volume = playback_state.get("device", {}).get("volume_percent", 50)
         new_volume = max(current_volume - 10, 0)
         return self.set_volume(volume=new_volume)
 
-    @capture_response(mute=True)
+    @capture_response(mute=True, one_message=True)
     @retry_on_unauthorized("_refresh_access_token")
     @method_job
     def max_volume(self) -> str:
@@ -425,7 +427,7 @@ class Spotify:
 
         return self.set_volume(volume=100)
 
-    @capture_response(mute=True)
+    @capture_response(mute=True, one_message=True)
     @retry_on_unauthorized("_refresh_access_token")
     @method_job
     def set_volume(self, volume: int) -> str:
@@ -612,7 +614,7 @@ class Spotify:
             return "No playlists found."
         return "Your playlists:\n" + "\n".join(f"  {p['name']}" for p in playlists)
 
-    @capture_response(mute=True)
+    @capture_response(mute=True, one_message=True)
     @retry_on_unauthorized("_refresh_access_token")
     @method_job
     def play_playlist(self, name: str) -> typing.Optional[str]:
@@ -827,7 +829,20 @@ class Spotify:
         """Make a Spotify API request with standard headers and error handling"""
         headers = kwargs.pop("headers", self._get_auth_headers())
         response = getattr(requests, method.lower())(url, headers=headers, **kwargs)
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except requests.exceptions.HTTPError as e:
+            # Bare "404 Client Error: Not Found for url: ..." is meaningless when
+            # spoken aloud — translate the common cases so capture_response's
+            # always-vocalized error path actually tells the user something.
+            # 401/403 are left as HTTPError so retry_on_unauthorized can still
+            # catch them and attempt a token refresh.
+            status = response.status_code
+            if status == 404:
+                raise Exception("Spotify device is no longer available — open Spotify and try again.") from e
+            if status == 429:
+                raise Exception("Spotify is rate-limiting requests — try again in a moment.") from e
+            raise
         return response
 
     def _is_playback_playing(self):

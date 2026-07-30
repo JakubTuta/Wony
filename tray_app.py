@@ -228,11 +228,25 @@ def run_tray() -> None:
         icon.update_menu()
 
     def _toggle_label(item) -> str:
-        return "Stop" if controller.is_running() else "Start"
+        return "Pause assistant" if controller.is_running() else "Resume assistant"
 
     def _mute_label(item) -> str:
         from helpers.cache import Cache
         return "Mute" if Cache.get_audio() else "Unmute"
+
+    def _wakeword_visible(item) -> bool:
+        return wakeword._enabled
+
+    def _wakeword_label(item) -> str:
+        return "Wake word: On (click to disable)" if wakeword.is_running() \
+            else "Wake word: Off (manual only)"
+
+    def _on_wakeword_toggle(icon, item) -> None:
+        if wakeword.is_running():
+            wakeword.stop()
+        else:
+            wakeword.start()
+        icon.update_menu()
 
     def _on_exit(icon, item) -> None:
         icon.stop()
@@ -241,8 +255,9 @@ def run_tray() -> None:
         pystray.MenuItem("Open in web", _on_open_web),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Listen now", _on_listen_now),
-        pystray.MenuItem("Stop", _on_stop_speaking),
+        pystray.MenuItem("Stop speaking", _on_stop_speaking),
         pystray.MenuItem(_mute_label, _on_mute_toggle),
+        pystray.MenuItem(_wakeword_label, _on_wakeword_toggle, visible=_wakeword_visible),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem(_toggle_label, _on_toggle),
         pystray.Menu.SEPARATOR,
@@ -289,6 +304,13 @@ def run_tray() -> None:
             webbrowser.open(f"http://{host}:{port}")
         except Exception:
             pass
+
+    print(
+        f"{assistant_name} is running in the system tray.\n"
+        f"  Web UI:    http://{host}:{port}\n"
+        f"  Ctrl+L:    push-to-talk from anywhere\n"
+        f"  Tray icon: right-click for menu (listen now, mute, pause, exit)"
+    )
 
     # Block main thread on the tray icon (pystray requirement on Windows)
     icon.run()

@@ -234,7 +234,8 @@ def cancel_timers() -> str:
 
 
 @register_job(module_name="basics")
-def close_computer() -> None:
+@capture_response
+def close_computer() -> str:
     """
     [SYSTEM CONTROL JOB] Immediately shuts down the entire computer system.
     This is a critical system operation that forcefully terminates all processes
@@ -253,18 +254,26 @@ def close_computer() -> None:
         None
 
     Returns:
-        None: System will shut down immediately after execution.
+        str: Confirmation of shutdown, cancellation, or why it couldn't be confirmed.
     """
-    confirmation = input("Shut down the computer? Type 'yes' to confirm: ").strip().lower()
+    try:
+        confirmation = input("Shut down the computer? Type 'yes' to confirm: ").strip().lower()
+    except (EOFError, RuntimeError):
+        # No console attached (tray/pythonw mode) — input() can't prompt at all.
+        # Refuse rather than either hanging forever or shutting down unconfirmed.
+        logger.log_system_event("shutdown_refused", "No console available to confirm shutdown.")
+        return "Can't confirm a shutdown without a console — run 'wony.py text' or 'wony.py voice' to do this."
+
     if confirmation != "yes":
         logger.log_system_event("shutdown_cancelled", "User did not confirm shutdown.")
-        return
+        return "Shutdown cancelled."
 
     audio = Cache.get_audio()
     if audio:
         Audio.play_cached("Closing computer. o7")
     logger.log_system_event("shutdown", "Shutting down computer.")
     os.system("shutdown /s /f /t 0")
+    return "Shutting down now."
 
 
 # --- greeting ---

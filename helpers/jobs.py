@@ -40,22 +40,39 @@ class BackgroundJobs:
                 else:
                     target()
 
+            def _report_failure(e: Exception, announce: bool) -> None:
+                from helpers.logger import logger
+                logger.log_error(str(e), context=f"job:{name}")
+                # File-only logging is invisible to the user — a background
+                # job dying silently leaves them assuming it's still running.
+                print(f"[job:{name}] failed: {e}")
+                if not announce:
+                    return
+                try:
+                    from helpers.audio import Audio
+                    Audio.notify(f"Background job {name} failed: {e}")
+                except Exception:
+                    pass
+
             if interval is not None:
                 def _loop():
+                    announced = False
                     while not stop_event.wait(interval):
                         try:
                             _call()
                         except Exception as e:
-                            from helpers.logger import logger
-                            logger.log_error(str(e), context=f"job:{name}")
+                            # Only speak the first failure of a recurring job —
+                            # a broken poller ticking every few seconds would
+                            # otherwise nag on every retry.
+                            _report_failure(e, announce=not announced)
+                            announced = True
                 thread_target = _loop
             else:
                 def _once():
                     try:
                         _call()
                     except Exception as e:
-                        from helpers.logger import logger
-                        logger.log_error(str(e), context=f"job:{name}")
+                        _report_failure(e, announce=True)
                 thread_target = _once
 
             thread = threading.Thread(target=thread_target, name=name, daemon=True)

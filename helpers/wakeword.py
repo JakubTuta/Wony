@@ -28,11 +28,16 @@ Config keys (voice.wake_word.*):
   threshold        float - detection score cutoff, 0..1 (default 0.5)
   cooldown_seconds float - ignore re-triggers within this window after detection
 
+False-trigger tuning lives in the constants below (_PATIENCE_FRAMES,
+_VAD_THRESHOLD) rather than config.yaml — they are developer knobs, not
+settings a user should have to understand to get a working app.
+
 Required pip packages: openwakeword onnxruntime sounddevice soxr numpy
 No account or API key required.
 """
 
 import os
+import queue
 import threading
 import time
 import typing
@@ -43,7 +48,24 @@ _FRAME_SIZE = 1280  # 80 ms at 16 kHz
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _MAX_BACKOFF = 5.0
 _DEGRADED_RECHECK_INTERVAL = 300.0  # 5 min
+# Floor between full PortAudio re-inits. See _recover() — a re-init disturbs
+# every audio app on the machine, so a persistently failing mic must not cause
+# one on every retry cycle.
+_MIN_REINIT_INTERVAL = 60.0
+# Consecutive FrameReader read timeouts (0.5s each) tolerated before the stream
+# is considered stalled and reopened. See the read() call site.
+_MAX_READ_TIMEOUTS = 4
 _BUILTIN_PHRASES = {"hey jarvis", "alexa", "hey mycroft", "hey rhasspy"}
+# Consecutive frames (80 ms each) that must all clear `threshold` before firing.
+# A spoken wake word keeps the model confident across several frames; a
+# transient — a keyboard clack, a notification chirp, one syllable off a video —
+# spikes a single frame and drops. This is the main false-trigger gate, and it
+# is preferred over simply raising `threshold`, because the hey_wony model is
+# weak on real voice and needs a low cutoff to fire at all.
+_PATIENCE_FRAMES = 2
+# Silero speech pre-gate (openWakeWord's own): audio it scores below this never
+# reaches the wake-word model. Raise toward 0.7 if music or game audio triggers.
+_VAD_THRESHOLD = 0.5
 
 
 class WakeWordListener:
@@ -143,7 +165,7 @@ class WakeWordListener:
             self._threshold = max(self._threshold, 0.5)
 
         # Silero VAD pre-gate cuts false triggers from non-speech noise.
-        vad_threshold = float(cfg.get("vad_threshold", 0.5))
+        vad_threshold = _VAD_THRESHOLD
         # Speex noise suppression helps in noisy/far-field rooms, but the
         # speexdsp-ns package is effectively Linux-only — guarded below.
         noise_suppression = bool(cfg.get("noise_suppression", False))
@@ -209,7 +231,11 @@ class WakeWordListener:
                 keys[0],
             )
 
-        diagnostics.add("info", "WakeWord", f"Ready — listening for '{phrase}' (key: {self._model_key}).")
+        diagnostics.add(
+            "info", "WakeWord",
+            f"Ready — listening for '{phrase}' (key: {self._model_key}, "
+            f"threshold {self._threshold}, patience {_PATIENCE_FRAMES} frames).",
+        )
         return True
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -257,12 +283,13 @@ class WakeWordListener:
     # ── Stream lifecycle ──────────────────────────────────────────────────────
 
     def _open_stream(self) -> None:
-        """Open a fresh input stream against the currently resolved device.
+        """Subscribe to the shared capture stream (see helpers.mic._CaptureHub).
 
         Backed by mic.FrameReader (callback-based) rather than a manual
         blocking InputStream.read() — the latter has been observed to hang
-        indefinitely on some WASAPI endpoints. Rate/block are recomputed on
-        every call since recovery may land on a different-rate device.
+        indefinitely on some WASAPI endpoints. This does not necessarily touch
+        the device: the hub reuses an already-open stream, which is why
+        subscribing and unsubscribing around a voice turn is silent.
         """
         from helpers import mic
 
@@ -271,9 +298,9 @@ class WakeWordListener:
 
         # Short read timeout so a paused/stalled loop reliably notices within
         # pause()'s 2s wait window — normal frame cadence (~80ms) never hits it.
-        self._reader = mic.FrameReader(native_rate, native_block, mic.resolve_input_device(), timeout=0.5)
-        self._native_rate = native_rate
-        self._native_block = native_block
+        self._reader = mic.FrameReader(native_rate, native_block, timeout=0.5)
+        self._native_rate = self._reader.rate  # shared stream's actual rate
+        self._native_block = self._reader.blocksize
         self._mic_released.clear()
 
     def _close_stream(self) -> None:
@@ -296,26 +323,40 @@ class WakeWordListener:
             return
 
         failures = 0
+        streak = 0  # consecutive frames at/above threshold (see _PATIENCE_FRAMES)
         last_degraded_check = time.monotonic()
+        last_reinit = 0.0
+        read_timeouts = 0
 
         def _recover() -> None:
-            nonlocal failures
+            nonlocal failures, last_reinit
             failures += 1
             mic._invalidate_input_device()
-            if failures >= 3:
+            now = time.monotonic()
+            # A full re-init re-enumerates every host API (MME, DirectSound,
+            # WASAPI, WDM-KS) and WDM-KS enumeration pokes kernel pins on every
+            # audio device on the machine — audible as clicks in whatever else
+            # is playing. Reopening the stream is cheap and is retried on every
+            # failure; the re-init is the heavy hammer, so a device that keeps
+            # failing must not trigger one every backoff cycle.
+            if failures >= 3 and now - last_reinit >= _MIN_REINIT_INTERVAL:
                 # No-op (returns False) if another stream (e.g. TTS) is active —
                 # safe to call every time; it just won't do anything until free.
-                mic.try_reinitialize_portaudio()
+                if mic.try_reinitialize_portaudio():
+                    last_reinit = now
             backoff = min(_MAX_BACKOFF, 0.5 * (2 ** (min(failures, 5) - 1)))
             time.sleep(backoff)
 
         try:
             while not self._stop_event.is_set():
                 try:
-                    # Pause: close stream and wait until resumed
+                    # Paused (STT / push-to-talk owns the mic) or suspended by
+                    # the user: let go of the stream and idle until that clears.
                     if self._paused.is_set():
                         if self._reader is not None:
                             self._close_stream()
+                            streak = 0
+                            read_timeouts = 0
                         self._resume_event.clear()
                         # Timeout only so stop_event still gets checked periodically.
                         self._resume_event.wait(timeout=1.0)
@@ -358,8 +399,27 @@ class WakeWordListener:
 
                     try:
                         mono = self._reader.read()
+                        read_timeouts = 0
+                    except queue.Empty:
+                        # A single late block is a hiccup, not a dead device, and
+                        # tearing the stream down costs more than it fixes: the
+                        # reopen toggles the mic off and on, which on a wireless
+                        # headset re-negotiates the link (audible in whatever
+                        # else is playing). Only give up after a real stall.
+                        read_timeouts += 1
+                        if read_timeouts < _MAX_READ_TIMEOUTS:
+                            continue
+                        diagnostics.add(
+                            "warning", "WakeWord",
+                            f"No mic audio for {read_timeouts * self._reader.timeout:.1f}s — reopening.",
+                        )
+                        read_timeouts = 0
+                        self._close_stream()
+                        _recover()
+                        continue
                     except Exception as e:
                         diagnostics.add("warning", "WakeWord", f"Mic read failed: {type(e).__name__}: {e} — reopening.")
+                        read_timeouts = 0
                         self._close_stream()
                         _recover()
                         continue
@@ -373,11 +433,21 @@ class WakeWordListener:
                     if score is None:
                         score = max(scores.values()) if scores else 0.0
 
-                    if score >= self._threshold:
+                    # Require the score to hold across consecutive frames —
+                    # see _PATIENCE_FRAMES. This is what stops "Wony woke up
+                    # on its own".
+                    streak = streak + 1 if score >= self._threshold else 0
+
+                    if streak >= _PATIENCE_FRAMES:
+                        streak = 0
                         trigger_now = time.monotonic()
                         if trigger_now - self._last_trigger < self._cooldown:
                             continue
                         self._last_trigger = trigger_now
+                        # Logged so threshold/patience can be tuned from real
+                        # data: compare the scores of genuine wakes against the
+                        # ones that turn out to be false triggers.
+                        diagnostics.add("info", "WakeWord", f"Detected (score {score:.2f}).")
 
                         if not mic.voice_session.acquire(blocking=False):
                             continue  # mic busy elsewhere (tray Listen now / Ctrl+L)
@@ -387,7 +457,7 @@ class WakeWordListener:
                             self._handle_detection()
                         finally:
                             mic.voice_session.release()
-                            if not self._stop_event.is_set():
+                            if not self._stop_event.is_set() and not self._paused.is_set():
                                 try:
                                     self._oww.reset()
                                 except Exception:
@@ -433,7 +503,15 @@ class WakeWordListener:
             text = Recognizer.recognize_speech_from_mic()
             if not text:
                 from helpers.events import session_cancel
-                if not session_cancel.is_set():
+                if Recognizer.last_capture_empty and not Recognizer.last_call_failed:
+                    # Woke up, then heard nothing at all — treat it as a false
+                    # trigger and say nothing rather than announcing it.
+                    diagnostics.add(
+                        "info", "WakeWord",
+                        "Triggered but no speech followed — ignoring as a false trigger.",
+                        hint="Raise voice.wake_word.threshold or patience if this happens often.",
+                    )
+                elif not session_cancel.is_set():
                     msg = "Sorry, I couldn't process that." if Recognizer.last_call_failed else "I didn't catch that."
                     Audio.play_cached(msg)
                 emit_state("idle")

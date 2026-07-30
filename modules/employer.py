@@ -7,7 +7,7 @@ from helpers.agent import run_agent
 from helpers.audio import Audio
 from helpers.cache import Cache
 from helpers.conversation import Conversation
-from helpers.decorators import begin_tool_outcomes, capture_response, set_agent_active, turn_is_quiet_success
+from helpers.decorators import begin_tool_outcomes, capture_response, set_agent_active, turn_is_quiet_success, turn_wants_one_message
 from helpers.events import session_cancel
 from helpers.jobs import BackgroundJobs
 from helpers.logger import logger
@@ -73,7 +73,7 @@ class Employer:
 
         stt_cfg = Config.get("voice.stt", {}) or {}
         clarify_timeout = float(stt_cfg.get("start_timeout", 4.0))
-        follow_up_timeout = float(cfg.get("follow_up_timeout", 4.0))
+        follow_up_timeout = float(cfg.get("follow_up_timeout", 3.0))
         stop_phrases = [
             "thanks",
             "thank you",
@@ -134,6 +134,9 @@ class Employer:
 
             if session_cancel.is_set():
                 break  # deliberate stop mid-turn — don't keep listening for a follow-up
+
+            if turn_wants_one_message():
+                break  # a one_message job ran (e.g. play a song) — one action, done
 
             # Choose next listen timeout based on whether assistant asked a question
             if self._is_question(response):
@@ -432,6 +435,10 @@ class Employer:
         audio = Cache.get_audio()
         if audio:
             Audio.play_cached("Exiting program. o7")
+        else:
+            # SystemExit below bypasses capture_response's normal print path —
+            # without this, a text-mode "exit" closes with zero visible feedback.
+            print("Exiting program. o7")
         logger.log_system_event("exit", "Exiting program.")
 
         if Employer._exit_hook is not None:

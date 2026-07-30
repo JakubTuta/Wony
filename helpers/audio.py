@@ -234,32 +234,6 @@ def unload_tts_if_idle(idle_seconds: float) -> None:
     helpers.diagnostics.add("info", "TTS", "Engine unloaded (idle).")
 
 
-def _play_samples(
-    samples: np.ndarray,
-    sr: int,
-    out_stream,
-    interrupt_event: typing.Optional[threading.Event] = None,
-) -> bool:
-    """Play samples in 50ms chunks on a caller-owned stream.
-
-    Returns True if fully played, False if interrupted. Caller owns the
-    stream's lifecycle; on interrupt it is aborted (buffered audio discarded).
-    """
-    chunk_size = int(sr * 0.05)  # 50ms chunks for responsive interruption
-    completed = True
-    try:
-        for i in range(0, len(samples), chunk_size):
-            if interrupt_event is not None and interrupt_event.is_set():
-                out_stream.abort()  # discard buffered audio immediately
-                completed = False
-                break
-            out_stream.write(samples[i : i + chunk_size])
-    except Exception:
-        completed = False
-
-    return completed
-
-
 class TTS_Engine:
     def __init__(self) -> None:
         # Must register nvidia DLL dirs before kokoro_onnx/onnxruntime import.
@@ -395,33 +369,19 @@ def _notify_dispatcher_loop() -> None:
 def _play_cached_wav(path: str) -> None:
     """Play a WAV file with the same interrupt-slot registration as streamed
     TTS, so tray "Stop speaking" / web `stop` can interrupt cached clips too."""
-    import sounddevice as sd
     import soundfile as sf
 
     from helpers import mic
 
     samples, sr = sf.read(path, dtype="float32", always_2d=False)
-    if samples.ndim > 1:
-        samples = samples.mean(axis=1).astype(np.float32)
 
     interrupt_event = threading.Event()
     with _active_tts_interrupt_lock:
         global _active_tts_interrupt
         _active_tts_interrupt = interrupt_event
     try:
-        with mic.pa_stream_guard():
-            out_stream = sd.OutputStream(
-                samplerate=sr, channels=1, dtype="float32", device=mic.resolve_output_device()
-            )
-            out_stream.start()
-            try:
-                _play_samples(samples, sr, out_stream, interrupt_event)
-            finally:
-                try:
-                    out_stream.stop()
-                except Exception:
-                    pass
-                out_stream.close()
+        with mic.playback_session() as out:
+            out.play(samples, sr, interrupt_event)
     finally:
         with _active_tts_interrupt_lock:
             if _active_tts_interrupt is interrupt_event:
@@ -620,8 +580,6 @@ def stream_text_to_speech(
         spoken_text: everything that was actually spoken aloud
         remaining_sentences: unspoken sentences buffered when interrupted
     """
-    import sounddevice as sd
-
     from helpers import mic
 
     if interrupt_event is None:
@@ -649,7 +607,6 @@ def stream_text_to_speech(
         audio_q: "queue.Queue" = queue.Queue(maxsize=3)
 
         def _playback() -> None:
-            out_stream = None
             interrupted = False
 
             # Prebuffer a short run of sentences before the first sample plays,
@@ -664,20 +621,17 @@ def stream_text_to_speech(
             prebuffered: typing.List[typing.Tuple[str, np.ndarray, int]] = []
             prebuffered_ms = 0.0
 
-            def _emit(item) -> None:
-                nonlocal out_stream, interrupted
+            def _emit(out, item) -> None:
+                nonlocal interrupted
                 sentence, samples, sr = item
                 if interrupted or interrupt_event.is_set():
                     pending_playback.append(sentence)
                     return
                 try:
-                    if out_stream is None:
-                        out_stream = sd.OutputStream(
-                            samplerate=sr, channels=1, dtype="float32",
-                            device=mic.resolve_output_device(), latency="high",
-                        )
-                        out_stream.start()
-                    if _play_samples(samples, sr, out_stream, interrupt_event):
+                    # The session adapts 24 kHz Kokoro output to the endpoint's
+                    # native mix format and ramps the session's edges — no
+                    # per-sentence stream handling here any more.
+                    if out.play(samples, sr, interrupt_event):
                         spoken_parts.append(sentence)
                     else:
                         interrupted = True
@@ -690,54 +644,46 @@ def stream_text_to_speech(
                     interrupted = True
                     pending_playback.append(sentence)
 
-            # Held for the thread's whole life (not just while a stream is open) so
-            # a PortAudio reinit can never land mid-sentence.
-            with mic.pa_stream_guard():
-                try:
-                    while True:
-                        try:
-                            item = audio_q.get(timeout=0.05)
-                        except queue.Empty:
-                            # Keep an already-open stream primed with silence instead
-                            # of underrunning while the next sentence is still
-                            # synthesizing — this is the fix for the "stops every
-                            # couple words" stutter, not just a stall guard.
-                            if out_stream is not None and not interrupted and not interrupt_event.is_set():
-                                try:
-                                    silence = np.zeros(int(out_stream.samplerate * 0.05), dtype=np.float32)
-                                    out_stream.write(silence)
-                                except Exception:
-                                    pass
-                            continue
+            def _consume(out) -> None:
+                nonlocal prebuffering, prebuffered, prebuffered_ms
+                while True:
+                    item = audio_q.get()
 
-                        if item is None:
+                    if item is None:
+                        for pending_item in prebuffered:
+                            _emit(out, pending_item)
+                        prebuffered = []
+                        return
+
+                    if prebuffering:
+                        prebuffered.append(item)
+                        prebuffered_ms += (len(item[1]) / item[2]) * 1000.0
+                        if interrupted or interrupt_event.is_set() or prebuffered_ms >= prebuffer_ms:
+                            prebuffering = False
                             for pending_item in prebuffered:
-                                _emit(pending_item)
+                                _emit(out, pending_item)
                             prebuffered = []
-                            return
+                        continue
 
-                        if prebuffering:
-                            prebuffered.append(item)
-                            prebuffered_ms += (len(item[1]) / item[2]) * 1000.0
-                            if interrupted or interrupt_event.is_set() or prebuffered_ms >= prebuffer_ms:
-                                prebuffering = False
-                                for pending_item in prebuffered:
-                                    _emit(pending_item)
-                                prebuffered = []
-                            continue
+                    _emit(out, item)
 
-                        _emit(item)
-                finally:
-                    if out_stream is not None:
-                        if not interrupted:
-                            try:
-                                out_stream.stop()  # drain remaining buffered audio before closing
-                            except Exception:
-                                pass
-                        try:
-                            out_stream.close()
-                        except Exception:
-                            pass
+            # One session for the whole reply, so sentences play back-to-back
+            # with no gap and no device transition. An empty queue between
+            # sentences is harmless: the hub's callback emits silence rather
+            # than underrunning, which is what the old "write zeros to keep the
+            # stream primed" loop existed to do by hand.
+            try:
+                with mic.playback_session() as out:
+                    _consume(out)
+            except Exception as e:
+                # The producer blocks on a bounded audio_q, so this thread dying
+                # quietly would deadlock the whole reply. Report, ask for a
+                # PortAudio reinit, then keep draining to the end marker so the
+                # text is still returned as unspoken rather than lost.
+                helpers.diagnostics.add("error", "Audio", f"Playback unavailable: {e}")
+                mic.request_portaudio_reinit()
+                for sentence, _samples, _sr in iter(audio_q.get, None):
+                    pending_playback.append(sentence)
 
         def _synth_and_queue(sentence: str) -> None:
             global _tts_last_used

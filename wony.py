@@ -126,8 +126,14 @@ def cmd_tray(args: argparse.Namespace) -> None:
                 creationflags=subprocess.DETACHED_PROCESS
                 | subprocess.CREATE_NEW_PROCESS_GROUP,
             )
+            print(
+                "Wony is starting in the background (tray icon + web UI).\n"
+                "This console window has no further output — check the system "
+                "tray for the icon. Safe to close this window."
+            )
             return
 
+    print("Starting Wony tray app — look for the icon in the system tray...")
     from tray_app import run_tray
 
     run_tray()

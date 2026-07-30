@@ -13,10 +13,30 @@ yields near-silence; the browser and every other app capture the default and
 work. Matching that behaviour is both simpler and more portable than trying to
 out-guess the OS.
 
-Single-input-stream contract: only one input stream may be open at a time.
-WakeWordListener enforces this via pause()/resume() before STT records.
-Any external caller that needs the mic outside that flow (tray "Listen now",
-Ctrl+L) should hold `voice_session` for the duration.
+One shared stream per direction — this is the single audio system the whole app
+uses, and no code outside this module may open a PortAudio stream of its own:
+
+  input   FrameReader → _CaptureHub   (wake word, STT/VAD, barge-in)
+  output  playback_session() → _PlaybackHub   (cached clips, earcon, TTS)
+
+OPENING OR CLOSING a stream is audible on real hardware — a wireless headset
+re-negotiates its link, a virtual mixer re-arms its chain. On capture that used
+to happen up to four times per voice turn (wake word closes → STT opens/closes
+→ barge-in opens/closes → wake word reopens), plus a full cycle per false wake;
+on playback, once for the wake ack and again for the reply. Every one of those
+was a pop in whatever else the user was listening to. The hubs make a whole
+turn cost one open per direction, and linger after the last user lets go so
+back-to-back hand-offs reuse the stream instead of reopening it.
+
+Both hubs open at the device's native mix format (WASAPI shared mode accepts
+nothing else) and adapt audio to it — see output_format/adapt_for_output. The
+playback hub is callback-driven and emits silence when nothing is queued, so
+an underrun degrades to a gap rather than a glitch, and every session's edges
+are ramped (fade_edges) so playback never steps the DAC off zero.
+
+`voice_session` still serializes *logical* sessions (who owns the user's
+speech), and WakeWordListener still pause()s so the wake model doesn't listen
+to a command meant for STT — but neither is about device ownership any more.
 
 PortAudio stream lifetime must be tracked via pa_stream_guard() around every
 open stream, so try_reinitialize_portaudio() can safely re-enumerate devices
@@ -24,7 +44,9 @@ open stream, so try_reinitialize_portaudio() can safely re-enumerate devices
 process-wide — it must only run when nothing is open). This lets the never-die
 capture loop rediscover a changed OS default (Windows switches the default
 input when devices connect/disconnect, but PortAudio freezes its list at init).
-Lock-ordering rule: never take _resolved_input_lock while holding _pa_lock.
+Lock-ordering rules: never take _resolved_input_lock while holding _pa_lock,
+and never take _CaptureHub._lock while holding _pa_lock (the hub takes
+pa_stream_guard, which takes _pa_lock).
 """
 import contextlib
 import collections
@@ -142,6 +164,126 @@ def default_devices() -> typing.Tuple[int, int]:
     return sd.default.device[0], sd.default.device[1]
 
 
+# ── Host API selection ───────────────────────────────────────────────────────
+
+
+_PREFERRED_HOSTAPI = "wasapi"
+
+
+def _preferred_hostapi_index() -> typing.Optional[int]:
+    """Index of the preferred host API, or None if it isn't available (non-
+    Windows, or a stripped PortAudio build) — callers then fall back to
+    PortAudio's own default."""
+    try:
+        for i, ha in enumerate(sd.query_hostapis()):
+            if _PREFERRED_HOSTAPI in ha.get("name", "").lower():
+                return i
+    except Exception:
+        pass
+    return None
+
+
+def _hostapi_default_device(kind: str) -> typing.Optional[int]:
+    """Default input/output device index *within* the preferred host API.
+
+    PortAudio's process-wide default (sd.default.device) resolves to the MME
+    device on Windows. MME is a legacy emulation layer: it resamples everything
+    to its own fixed rate before Windows resamples again to the endpoint's mix
+    format, and it re-opens the endpoint per stream — which costs quality and
+    produces audible clicks on virtual endpoints (SteelSeries Sonar, VoiceMeeter).
+    Every host API also publishes its own default, and WASAPI's tracks the real
+    OS default endpoint — so this yields the same physical device over a
+    materially better transport.
+    """
+    api = _preferred_hostapi_index()
+    if api is None:
+        return None
+    try:
+        idx = sd.query_hostapis(api).get(f"default_{kind}_device", -1)
+    except Exception:
+        return None
+    if idx is None or int(idx) < 0:
+        return None
+    try:
+        info = sd.query_devices(int(idx))
+    except Exception:
+        return None
+    channels = info["max_input_channels"] if kind == "input" else info["max_output_channels"]
+    return int(idx) if channels > 0 else None
+
+
+def output_format(device: typing.Optional[int] = None) -> typing.Tuple[int, int]:
+    """Native (samplerate, channels) for the resolved output device.
+
+    WASAPI shared mode accepts *only* the endpoint's exact mix format — opening
+    at anything else fails outright (verified live: a 96 kHz/8ch endpoint
+    rejects both 48000/2 and 24000/1). So playback adapts our audio to the
+    device instead of asking the device to adapt to us, which also means no
+    Windows-side sample-rate conversion ever runs on the path.
+    """
+    if device is None:
+        device = resolve_output_device()
+    try:
+        info = sd.query_devices(device, "output") if device is not None else sd.query_devices(kind="output")
+        return int(info["default_samplerate"]), max(1, int(info["max_output_channels"]))
+    except Exception:
+        return 24000, 1
+
+
+def adapt_for_output(samples: np.ndarray, sr: int, target_sr: int, target_ch: int) -> np.ndarray:
+    """Resample `samples` to `target_sr` and lay it out across `target_ch` channels.
+
+    Resampling happens here, with soxr's very-high-quality polyphase filter,
+    rather than being left to MME/Windows — that is the point of opening the
+    device at its native rate. Mono content goes to the front L/R pair; any
+    surround/LFE channels stay silent.
+    """
+    if samples.ndim > 1:
+        samples = samples.mean(axis=1)
+    samples = samples.astype(np.float32, copy=False)
+
+    if sr != target_sr and len(samples):
+        try:
+            import soxr
+            samples = soxr.resample(samples, sr, target_sr, quality="VHQ").astype(np.float32)
+        except Exception:
+            n = int(round(len(samples) * target_sr / sr))
+            samples = np.interp(
+                np.linspace(0, len(samples), n, endpoint=False),
+                np.arange(len(samples)),
+                samples,
+            ).astype(np.float32)
+
+    if target_ch <= 1:
+        return samples.reshape(-1, 1)
+    out = np.zeros((len(samples), target_ch), dtype=np.float32)
+    out[:, 0] = samples
+    out[:, 1] = samples
+    return out
+
+
+_FADE_MS = 5.0
+
+
+def fade_edges(block: np.ndarray, sr: int, fade_in: bool = False, fade_out: bool = False) -> np.ndarray:
+    """Ramp the first/last few ms to silence.
+
+    A stream that starts or stops on a non-zero sample steps the DAC output
+    discontinuously, and that step is the audible click. Ramping the edges to
+    zero costs 5ms and removes it.
+    """
+    n = int(sr * _FADE_MS / 1000.0)
+    if n <= 0 or len(block) < 2 * n or not (fade_in or fade_out):
+        return block
+    block = block.copy()
+    ramp = np.linspace(0.0, 1.0, n, dtype=np.float32).reshape(-1, 1)
+    if fade_in:
+        block[:n] *= ramp
+    if fade_out:
+        block[-n:] *= ramp[::-1]
+    return block
+
+
 def _rank_candidate(item: typing.Tuple[int, dict]) -> typing.Tuple[int, int]:
     """WASAPI > WDM-KS > MME/DirectSound > other, tiebreak by device index.
 
@@ -168,10 +310,16 @@ def _rank_candidate(item: typing.Tuple[int, dict]) -> typing.Tuple[int, int]:
 
 
 def _invalidate_input_device() -> None:
-    """Clear cached resolve result (call after a device open/read failure)."""
+    """Clear cached resolve result (call after a device open/read failure).
+
+    Also marks the shared capture stream stale so it is rebuilt against the
+    re-resolved device instead of being reused — otherwise the hub's linger
+    would hand a dead stream to the next subscriber.
+    """
     global _resolved_input_device
     with _resolved_input_lock:
         _resolved_input_device = None
+    _capture_hub.mark_stale()
 
 
 def resolution_is_degraded() -> bool:
@@ -185,6 +333,7 @@ def _invalidate_output_device() -> None:
     global _resolved_output_device
     with _resolved_output_lock:
         _resolved_output_device = None
+    _playback_hub.mark_stale()
 
 
 def _get_default_render_endpoint_id() -> typing.Optional[str]:
@@ -258,6 +407,36 @@ def pa_stream_guard() -> typing.Generator[None, None, None]:
             _pa_stream_count -= 1
 
 
+_OPEN_ATTEMPTS = 3
+_OPEN_RETRY_DELAY = 0.15
+
+
+def _open_stream_with_retry(factory: typing.Callable[[], typing.Any]) -> typing.Tuple[typing.Any, typing.Any]:
+    """Open and start a stream, retrying a few times. Returns (stream, guard).
+
+    The first open of a virtual/wireless endpoint reproducibly fails with
+    paUnanticipatedHostError while the device spins up, then succeeds
+    immediately after — observed on both directions of a SteelSeries
+    Sonar/Arctis stack. Retrying here keeps that off callers' error/backoff
+    paths, where it used to cost an extra open/close cycle (audible) on
+    capture and a hard failure on playback.
+    """
+    last: typing.Optional[Exception] = None
+    for attempt in range(_OPEN_ATTEMPTS):
+        guard = pa_stream_guard()
+        guard.__enter__()
+        try:
+            stream = factory()
+            stream.start()
+            return stream, guard
+        except Exception as e:
+            guard.__exit__(None, None, None)
+            last = e
+            if attempt < _OPEN_ATTEMPTS - 1:
+                time.sleep(_OPEN_RETRY_DELAY)
+    raise last if last is not None else RuntimeError("stream open failed")
+
+
 def try_reinitialize_portaudio() -> bool:
     """Re-enumerate PortAudio's device list (frozen at process init).
 
@@ -265,6 +444,11 @@ def try_reinitialize_portaudio() -> bool:
     the caller can retry later instead of tearing down active audio.
     """
     global _pa_render_id
+    # The hubs hold the only long-lived streams, so pa_stream_guard's count can
+    # never reach zero until they let go. Done before taking _pa_lock — see the
+    # module's lock-ordering rules.
+    _capture_hub.close_if_idle()
+    _playback_hub.close_if_idle()
     with _pa_lock:
         if _pa_stream_count > 0:
             return False
@@ -348,8 +532,193 @@ def probe_input_device(
     return True, f"{tag} (rms={rms:.6f})"
 
 
+_HUB_BLOCK_MS = 10.0
+# Hold the stream open this long after the last subscriber leaves, so the
+# close-then-immediately-reopen hand-offs in a voice turn reuse it.
+_HUB_LINGER_SECONDS = 5.0
+# ~320ms of slack per subscriber. Dropping is preferable to ever blocking the
+# PortAudio callback thread.
+_HUB_QUEUE_BLOCKS = 32
+
+
+class _Subscription:
+    """One consumer's view of the shared capture stream.
+
+    The hub delivers fixed _HUB_BLOCK_MS chunks; this re-blocks them into
+    whatever frame count the consumer asked for.
+    """
+
+    def __init__(self, hub: "_CaptureHub", rate: int) -> None:
+        self.rate = rate
+        self.queue: "queue.Queue" = queue.Queue(maxsize=_HUB_QUEUE_BLOCKS)
+        self._hub = hub
+        self._pending: typing.List[np.ndarray] = []
+        self._pending_frames = 0
+        self._closed = False
+
+    def read(self, frames: int, timeout: float) -> np.ndarray:
+        """Return exactly `frames` samples. Raises queue.Empty if the device
+        stalls for longer than `timeout` before the block is complete."""
+        deadline = time.monotonic() + timeout
+        while self._pending_frames < frames:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise queue.Empty
+            block = self.queue.get(timeout=remaining)
+            self._pending.append(block)
+            self._pending_frames += len(block)
+
+        buf = self._pending[0] if len(self._pending) == 1 else np.concatenate(self._pending)
+        out, rest = buf[:frames], buf[frames:]
+        self._pending = [rest] if len(rest) else []
+        self._pending_frames = len(rest)
+        return out
+
+    def close(self) -> None:
+        if not self._closed:
+            self._closed = True
+            self._hub._unsubscribe(self)
+
+
+class _CaptureHub:
+    """The single process-wide capture stream, fanned out to N subscribers.
+
+    See the module docstring for why device open/close must be avoided rather
+    than merely tolerated. Blocks handed to subscribers are shared read-only —
+    no consumer may mutate a block in place.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._stream: typing.Any = None
+        self._guard: typing.Any = None
+        self._rate = 0
+        # Replaced (never mutated) under _lock so the PortAudio callback can
+        # read it without taking a lock.
+        self._subs: typing.Tuple[_Subscription, ...] = ()
+        self._linger_timer: typing.Optional[threading.Timer] = None
+        # Set when a caller reports the device as dead/changed; the stream is
+        # then rebuilt as soon as the last subscriber lets go.
+        self._stale = False
+
+    # ── Consumer API ────────────────────────────────────────────────────────
+
+    def subscribe(self) -> _Subscription:
+        with self._lock:
+            self._cancel_linger()
+            if self._stream is not None and self._stale and not self._subs:
+                self._close_locked()
+            if self._stream is None:
+                self._open_locked()
+                self._stale = False
+            sub = _Subscription(self, self._rate)
+            self._subs = self._subs + (sub,)
+            return sub
+
+    def _unsubscribe(self, sub: _Subscription) -> None:
+        with self._lock:
+            self._subs = tuple(s for s in self._subs if s is not sub)
+            if self._subs:
+                return
+            if self._stale:
+                self._close_locked()  # no point lingering a dead stream
+            else:
+                self._start_linger()
+
+    def mark_stale(self) -> None:
+        """Report the device as dead or changed. The stream is rebuilt on the
+        next subscribe once every current subscriber has let go."""
+        with self._lock:
+            if self._stream is None:
+                return
+            self._stale = True
+            if not self._subs:
+                self._close_locked()
+
+    def close_if_idle(self) -> bool:
+        """Close the stream if nothing is subscribed (including during a
+        linger). True if no stream is open afterwards.
+
+        Must NOT be called while holding _pa_lock — see the module's
+        lock-ordering rules.
+        """
+        with self._lock:
+            self._cancel_linger()
+            if self._subs:
+                return False
+            self._close_locked()
+            return True
+
+    @property
+    def rate(self) -> int:
+        return self._rate
+
+    # ── Internals (all called under _lock) ──────────────────────────────────
+
+    def _open_locked(self) -> None:
+        device = resolve_input_device()
+        info = sd.query_devices(device, "input")
+        rate = int(info["default_samplerate"]) or _SR_TARGET
+        blocksize = max(1, int(round(rate * _HUB_BLOCK_MS / 1000.0)))
+
+        self._stream, self._guard = _open_stream_with_retry(
+            lambda: sd.InputStream(
+                samplerate=rate, channels=1, dtype="float32",
+                blocksize=blocksize, device=device, callback=self._on_data,
+            )
+        )
+        self._rate = rate
+
+    def _close_locked(self) -> None:
+        stream, guard = self._stream, self._guard
+        self._stream, self._guard = None, None
+        if stream is not None:
+            try:
+                stream.abort()
+            except Exception:
+                pass
+            try:
+                stream.close()
+            except Exception:
+                pass
+        if guard is not None:
+            try:
+                guard.__exit__(None, None, None)
+            except Exception:
+                pass
+
+    def _on_data(self, indata, frames, time_info, status) -> None:
+        block = indata[:, 0].copy()
+        for sub in self._subs:  # atomic tuple read — no lock on the audio thread
+            try:
+                sub.queue.put_nowait(block)
+            except Exception:
+                pass  # full — drop rather than block the PortAudio callback
+
+    def _start_linger(self) -> None:
+        self._cancel_linger()
+        timer = threading.Timer(_HUB_LINGER_SECONDS, self._linger_expired)
+        timer.daemon = True
+        self._linger_timer = timer
+        timer.start()
+
+    def _cancel_linger(self) -> None:
+        if self._linger_timer is not None:
+            self._linger_timer.cancel()
+            self._linger_timer = None
+
+    def _linger_expired(self) -> None:
+        with self._lock:
+            self._linger_timer = None
+            if not self._subs:
+                self._close_locked()
+
+
+_capture_hub = _CaptureHub()
+
+
 class FrameReader:
-    """Bounded-timeout frame reader backed by a callback InputStream.
+    """Bounded-timeout frame reader over the shared capture stream.
 
     Manual `sd.InputStream(...).read(blocksize)` has been observed to hang
     indefinitely on some WASAPI endpoints (live case: SteelSeries Arctis Nova
@@ -360,46 +729,373 @@ class FrameReader:
     so a stalled device raises queue.Empty instead of blocking the calling
     thread (and anything coordinating with it — e.g. the wake-word pause()
     handshake) forever.
+
+    `samplerate` is the rate the caller *expected*; the shared stream may
+    already be open at the device's native rate, so the real rate is exposed as
+    `.rate` and callers must resample from that. `blocksize` is scaled
+    accordingly, keeping the request's duration intact.
     """
 
-    def __init__(self, samplerate: int, blocksize: int, device: int, timeout: float = 3.0) -> None:
-        self._queue: "queue.Queue" = queue.Queue(maxsize=8)
-        self._timeout = timeout
-        self._guard = pa_stream_guard()
-        self._guard.__enter__()
-        try:
-            self._stream = sd.InputStream(
-                samplerate=samplerate, channels=1, dtype="float32",
-                blocksize=blocksize, device=device, callback=self._on_data,
-            )
-            self._stream.start()
-        except Exception:
-            self._guard.__exit__(None, None, None)
-            raise
-
-    def _on_data(self, indata, frames, time_info, status) -> None:
-        try:
-            self._queue.put_nowait(indata[:, 0].copy())
-        except Exception:
-            pass  # queue full — drop the frame rather than block the PortAudio callback thread
+    def __init__(self, samplerate: int, blocksize: int, timeout: float = 3.0) -> None:
+        self.timeout = timeout
+        self._sub = _capture_hub.subscribe()
+        self.rate = self._sub.rate
+        self.blocksize = (
+            max(1, int(round(blocksize * self.rate / samplerate))) if samplerate else blocksize
+        )
 
     def read(self) -> np.ndarray:
         """Return the next block. Raises queue.Empty if the device stalls."""
-        return self._queue.get(timeout=self._timeout)
+        return self._sub.read(self.blocksize, self.timeout)
 
     def close(self) -> None:
+        self._sub.close()
+
+
+# ── Shared playback stream ───────────────────────────────────────────────────
+
+# Long enough to span an entire voice turn — wake ack, up to 12s of listening,
+# then the reply — so one turn costs one device open instead of three.
+_PLAYBACK_LINGER_SECONDS = 20.0
+# Audio queued ahead of the device. Bounds how long an interrupt takes to go
+# quiet, and how much slack there is for a slow synthesis step.
+_PLAYBACK_HIGH_WATER_MS = 250.0
+_PLAYBACK_CHUNK_MS = 50.0
+# How long the queue may fail to drain at all before the device is declared
+# dead. Generous — normal back-pressure drains continuously.
+_PLAYBACK_STALL_SECONDS = 5.0
+
+
+class _PlaybackWriter:
+    """Serialized handle for writing to the shared output stream.
+
+    Holds the hub's writer lock for its whole lifetime, so a streamed reply
+    stays gapless and nothing (an earcon, a notification) can interleave into
+    the middle of it.
+    """
+
+    def __init__(self, hub: "_PlaybackHub") -> None:
+        self._hub = hub
+        self._first_write = True
+
+    @property
+    def samplerate(self) -> int:
+        return self._hub.samplerate
+
+    @property
+    def channels(self) -> int:
+        return self._hub.channels
+
+    def play(
+        self,
+        samples: np.ndarray,
+        sr: int,
+        interrupt_event: typing.Optional[threading.Event] = None,
+    ) -> bool:
+        """Adapt `samples` to the device format and queue them.
+
+        Blocks while the queue is full (back-pressure), checking
+        `interrupt_event` throughout. Returns False if interrupted — the queue
+        is then cut short on a ramp so playback ends at zero rather than
+        stepping the DAC mid-waveform, which is the audible click.
+        """
+        arr = adapt_for_output(samples, sr, self.samplerate, self.channels)
+        if self._first_write:
+            # Coming off silence: ramp in so the DAC doesn't step off zero.
+            arr = fade_edges(arr, self.samplerate, fade_in=True)
+            self._first_write = False
+
+        chunk = max(1, int(self.samplerate * _PLAYBACK_CHUNK_MS / 1000.0))
+        for i in range(0, len(arr), chunk):
+            if not self._hub._submit(arr[i : i + chunk], interrupt_event):
+                self._hub._cut()
+                return False
+        return True
+
+    def drain(self, interrupt_event: typing.Optional[threading.Event] = None) -> None:
+        """Block until everything queued has actually been played."""
+        self._hub._drain(interrupt_event)
+
+
+class _PlaybackHub:
+    """The single process-wide output stream, mirroring _CaptureHub.
+
+    Callback-driven with a pending-audio queue: when nothing is queued the
+    callback emits silence, so the stream can stay open between clips instead
+    of being opened and closed per clip (see the module docstring — those
+    transitions are audible). That also means an underrun degrades to a gap
+    rather than a glitch.
+
+    Opened at the endpoint's native mix format, because WASAPI shared mode
+    accepts nothing else; callers hand over audio at any rate and it is
+    resampled here via adapt_for_output.
+    """
+
+    def __init__(self) -> None:
+        # Lock order is _writer_lock → _lock → _buf_lock. acquire() takes them
+        # in that order, so anything holding _lock (mark_stale, close_if_idle,
+        # the linger timer) may only ever try _writer_lock non-blocking.
+        self._lock = threading.RLock()
+        self._writer_lock = threading.RLock()
+        self._buf_lock = threading.Lock()
+        self._stream: typing.Any = None
+        self._guard: typing.Any = None
+        self._rate = 0
+        self._channels = 0
+        self._pending: typing.Deque[np.ndarray] = collections.deque()
+        self._pending_frames = 0
+        self._last_frame: typing.Optional[np.ndarray] = None
+        self._linger_timer: typing.Optional[threading.Timer] = None
+        self._stale = False
+        # Diagnostics: times the callback ran dry mid-buffer (i.e. a gap).
+        self.starved = 0
+
+    @property
+    def samplerate(self) -> int:
+        return self._rate
+
+    @property
+    def channels(self) -> int:
+        return self._channels
+
+    # ── Consumer API ────────────────────────────────────────────────────────
+
+    def acquire(self) -> _PlaybackWriter:
+        """Take the writer lock and make sure the stream is open."""
+        self._writer_lock.acquire()
         try:
-            self._stream.abort()
+            with self._lock:
+                self._cancel_linger()
+                if self._stream is not None and self._stale:
+                    self._close_locked()
+                if self._stream is None:
+                    self._open_locked()
+                    self._stale = False
+            return _PlaybackWriter(self)
+        except Exception:
+            self._writer_lock.release()
+            raise
+
+    def release(self) -> None:
+        with self._lock:
+            if self._stale:
+                self._close_locked()
+            else:
+                self._start_linger()
+        self._writer_lock.release()
+
+    def mark_stale(self) -> None:
+        """Report the endpoint as changed. Rebuilt on the next acquire."""
+        with self._lock:
+            if self._stream is None:
+                return
+            self._stale = True
+            if self._writer_lock.acquire(blocking=False):
+                try:
+                    self._close_locked()
+                finally:
+                    self._writer_lock.release()
+
+    def close_if_idle(self) -> bool:
+        """Close the stream if nobody is writing (including during a linger).
+
+        Must NOT be called while holding _pa_lock — see the module's
+        lock-ordering rules.
+        """
+        with self._lock:
+            self._cancel_linger()
+            if not self._writer_lock.acquire(blocking=False):
+                return False
+            try:
+                self._close_locked()
+            finally:
+                self._writer_lock.release()
+            return True
+
+    # ── Internals ───────────────────────────────────────────────────────────
+
+    def _open_locked(self) -> None:
+        import helpers.diagnostics
+
+        device = resolve_output_device()
+        self._rate, self._channels = output_format(device)
+        with self._buf_lock:
+            self._pending.clear()
+            self._pending_frames = 0
+            self._last_frame = None
+
+        self._stream, self._guard = _open_stream_with_retry(
+            lambda: sd.OutputStream(
+                samplerate=self._rate, channels=self._channels, dtype="float32",
+                device=device, callback=self._on_data,
+            )
+        )
+        helpers.diagnostics.add(
+            "info", "Audio",
+            f"Output stream open @ {self._rate} Hz / {self._channels}ch.",
+        )
+
+    def _close_locked(self) -> None:
+        stream, guard = self._stream, self._guard
+        self._stream, self._guard = None, None
+        if stream is not None:
+            try:
+                stream.stop()  # drain what's queued rather than cutting the DAC
+            except Exception:
+                pass
+            try:
+                stream.close()
+            except Exception:
+                pass
+        if guard is not None:
+            try:
+                guard.__exit__(None, None, None)
+            except Exception:
+                pass
+
+    def _on_data(self, outdata, frames, time_info, status) -> None:
+        filled = 0
+        with self._buf_lock:
+            while filled < frames and self._pending:
+                block = self._pending[0]
+                take = min(frames - filled, len(block))
+                outdata[filled : filled + take] = block[:take]
+                if take == len(block):
+                    self._pending.popleft()
+                else:
+                    self._pending[0] = block[take:]
+                self._pending_frames -= take
+                filled += take
+        if filled < frames:
+            outdata[filled:] = 0
+            if filled:
+                self.starved += 1
+
+    def _submit(
+        self, block: np.ndarray, interrupt_event: typing.Optional[threading.Event]
+    ) -> bool:
+        high_water = int(self._rate * _PLAYBACK_HIGH_WATER_MS / 1000.0)
+        stall_deadline = time.monotonic() + _PLAYBACK_STALL_SECONDS
+        lowest_seen: typing.Optional[int] = None
+        while True:
+            if interrupt_event is not None and interrupt_event.is_set():
+                return False
+            with self._buf_lock:
+                if self._pending_frames <= high_water:
+                    self._pending.append(block)
+                    self._pending_frames += len(block)
+                    if len(block):
+                        self._last_frame = block[-1].copy()
+                    return True
+                pending_now = self._pending_frames
+
+            # Back-pressure is normal; the callback draining nothing at all is
+            # not. Without this a dead output device would block the speaking
+            # thread forever instead of surfacing as a device failure.
+            if lowest_seen is None or pending_now < lowest_seen:
+                lowest_seen = pending_now
+                stall_deadline = time.monotonic() + _PLAYBACK_STALL_SECONDS
+            elif time.monotonic() > stall_deadline:
+                self._stale = True
+                raise RuntimeError("output stream stopped consuming audio")
+            time.sleep(0.005)
+
+    def _cut(self) -> None:
+        """Drop queued audio, keeping a short ramp so it ends at zero."""
+        n = max(1, int(self._rate * _FADE_MS / 1000.0))
+        with self._buf_lock:
+            head = self._pending[0] if self._pending else None
+            self._pending.clear()
+            self._pending_frames = 0
+            self._last_frame = None
+            if head is None or not len(head):
+                return
+            take = min(n, len(head))
+            ramp = np.linspace(1.0, 0.0, take, dtype=np.float32).reshape(-1, 1)
+            self._pending.append(head[:take] * ramp)
+            self._pending_frames = take
+
+    def _queue_tail_ramp(self) -> None:
+        """End on a ramp to zero if the last sample written wasn't silent."""
+        with self._buf_lock:
+            frame = self._last_frame
+            if frame is None or not np.any(frame):
+                return
+            n = max(1, int(self._rate * _FADE_MS / 1000.0))
+            ramp = np.linspace(1.0, 0.0, n, dtype=np.float32).reshape(-1, 1)
+            self._pending.append(frame.reshape(1, -1) * ramp)
+            self._pending_frames += n
+            self._last_frame = None
+
+    def _drain(self, interrupt_event: typing.Optional[threading.Event] = None) -> None:
+        with self._buf_lock:
+            queued_seconds = self._pending_frames / float(self._rate or _SR_TARGET)
+        # Bounded by what is actually queued, so a stalled device ends the wait
+        # instead of holding the caller forever.
+        deadline = time.monotonic() + queued_seconds + _PLAYBACK_STALL_SECONDS
+        while True:
+            if interrupt_event is not None and interrupt_event.is_set():
+                return
+            with self._buf_lock:
+                if self._pending_frames <= 0:
+                    break
+            if time.monotonic() > deadline:
+                self._stale = True
+                break
+            time.sleep(0.01)
+        # The device still holds whatever the callback already collected.
+        try:
+            latency = float(self._stream.latency) if self._stream is not None else 0.0
+        except Exception:
+            latency = 0.0
+        time.sleep(min(0.5, max(0.02, latency)))
+
+    def _start_linger(self) -> None:
+        self._cancel_linger()
+        timer = threading.Timer(_PLAYBACK_LINGER_SECONDS, self._linger_expired)
+        timer.daemon = True
+        self._linger_timer = timer
+        timer.start()
+
+    def _cancel_linger(self) -> None:
+        if self._linger_timer is not None:
+            self._linger_timer.cancel()
+            self._linger_timer = None
+
+    def _linger_expired(self) -> None:
+        with self._lock:
+            self._linger_timer = None
+            if self._writer_lock.acquire(blocking=False):
+                try:
+                    self._close_locked()
+                finally:
+                    self._writer_lock.release()
+
+
+_playback_hub = _PlaybackHub()
+
+
+@contextlib.contextmanager
+def playback_session() -> typing.Generator[_PlaybackWriter, None, None]:
+    """Exclusive handle on the shared output stream for one speech session.
+
+    Every playback path in the app goes through this — cached clips, the
+    earcon, and streamed TTS — so they all get the same device resolution,
+    native-format adaptation, click-free edges, and (crucially) all reuse one
+    open stream instead of opening their own.
+
+    Blocks until anything queued has played before releasing.
+    """
+    writer = _playback_hub.acquire()
+    try:
+        yield writer
+    finally:
+        try:
+            _playback_hub._queue_tail_ramp()
+            _playback_hub._drain()
         except Exception:
             pass
-        try:
-            self._stream.close()
-        except Exception:
-            pass
-        try:
-            self._guard.__exit__(None, None, None)
-        except Exception:
-            pass
+        _playback_hub.release()
 
 
 def resolve_output_device() -> typing.Optional[int]:
@@ -424,7 +1120,19 @@ def resolve_output_device() -> typing.Optional[int]:
             override = None
 
         if override is None:
-            return None  # OS default — sounddevice resolves this itself
+            # OS default, but reached through the preferred host API (WASAPI)
+            # rather than PortAudio's MME default — same endpoint, native format,
+            # no legacy resampling layer. None means "let sounddevice decide".
+            _resolved_output_device = _hostapi_default_device("output")
+            if _resolved_output_device is not None:
+                info = sd.query_devices(_resolved_output_device)
+                api = sd.query_hostapis(info["hostapi"])["name"]
+                diagnostics.add(
+                    "info", "Audio",
+                    f"Output [{_resolved_output_device}] {info['name']} via {api} "
+                    f"@ {int(info['default_samplerate'])} Hz / {info['max_output_channels']}ch",
+                )
+            return _resolved_output_device
 
         try:
             if isinstance(override, int):
@@ -433,7 +1141,12 @@ def resolve_output_device() -> typing.Optional[int]:
                 diagnostics.add("info", "Audio", f"Using configured output device [{override}] {info['name']}")
                 return _resolved_output_device
             needle = str(override).lower()
-            for i, dev in enumerate(sd.query_devices()):
+            # Preferred host API first, so a name match doesn't land on the MME
+            # copy of a device that also exists under WASAPI.
+            api = _preferred_hostapi_index()
+            devices = list(enumerate(sd.query_devices()))
+            ordered = [it for it in devices if it[1]["hostapi"] == api] + [it for it in devices if it[1]["hostapi"] != api]
+            for i, dev in ordered:
                 if dev["max_output_channels"] > 0 and needle in dev["name"].lower():
                     _resolved_output_device = i
                     diagnostics.add("info", "Audio", f"Using configured output device [{i}] {dev['name']}")
@@ -442,7 +1155,8 @@ def resolve_output_device() -> typing.Optional[int]:
         except Exception as e:
             diagnostics.add("warning", "Audio", f"voice.output_device override failed ({e}) — falling back to OS default")
 
-        return None
+        _resolved_output_device = _hostapi_default_device("output")
+        return _resolved_output_device
 
 
 def resolve_input_device() -> int:
@@ -484,7 +1198,12 @@ def resolve_input_device() -> int:
                     diagnostics.add("info", "MIC", f"Using configured input device [{override}] {info['name']}")
                     return _resolved_input_device
                 needle = str(override).lower()
-                for i, dev in enumerate(all_devs):
+                # Preferred host API first, so a name match doesn't land on the
+                # MME copy of a device that also exists under WASAPI.
+                api = _preferred_hostapi_index()
+                ordered = [it for it in enumerate(all_devs) if it[1]["hostapi"] == api]
+                ordered += [it for it in enumerate(all_devs) if it[1]["hostapi"] != api]
+                for i, dev in ordered:
                     if dev["max_input_channels"] > 0 and needle in dev["name"].lower():
                         _resolved_input_device = i
                         _resolution_degraded = False
@@ -495,7 +1214,13 @@ def resolve_input_device() -> int:
                 diagnostics.add("warning", "MIC", f"voice.input_device override failed ({e}) — falling back to OS default")
 
         # ── Trust the OS default unless it carries system-playback audio ──────
-        default_idx = sd.default.device[0]
+        # Preferred host API's default first: it names the same OS-default
+        # endpoint as sd.default.device[0], but as its WASAPI entry — native
+        # 48 kHz instead of MME's resampled 44.1 kHz (a clean 3:1 ratio down to
+        # the 16 kHz STT models, rather than 44100/16000).
+        default_idx = _hostapi_default_device("input")
+        if default_idx is None:
+            default_idx = sd.default.device[0]
         try:
             default_info = sd.query_devices(default_idx, "input")
             default_name = default_info["name"]
@@ -566,19 +1291,10 @@ def to_16k_mono_f32(samples: np.ndarray, in_rate: int) -> np.ndarray:
 
 
 def _play(data: np.ndarray, sr: int, blocking: bool) -> None:
-    channels = 1 if data.ndim == 1 else data.shape[1]
-    arr = data.reshape(-1, 1) if data.ndim == 1 else data.astype("float32")
-
     def _do_play() -> None:
         try:
-            with pa_stream_guard():
-                stream = sd.OutputStream(
-                    samplerate=sr, channels=channels, dtype="float32", device=resolve_output_device()
-                )
-                stream.start()
-                stream.write(arr)
-                stream.stop()
-                stream.close()
+            with playback_session() as out:
+                out.play(data, sr)
         except Exception as e:
             import helpers.diagnostics
             helpers.diagnostics.add("warning", "Audio", f"Playback failed: {e}")
@@ -622,12 +1338,12 @@ def record_native(seconds: float) -> typing.Tuple[np.ndarray, int]:
     sd.wait() — the latter carries the same read-hang risk on some WASAPI
     endpoints that FrameReader was built to avoid (see its docstring).
     """
-    device = resolve_input_device()
     native = default_input_rate()
-    target_frames = int(native * seconds)
     block = max(1, int(native * 0.05))  # 50ms blocks
 
-    reader = FrameReader(native, block, device)
+    reader = FrameReader(native, block)
+    native = reader.rate  # the shared stream is authoritative, not our guess
+    target_frames = int(native * seconds)
     collected: typing.List[np.ndarray] = []
     total = 0
     try:
@@ -669,13 +1385,13 @@ def vad_frame_stream(
         return
 
     vad = webrtcvad.Vad(int(vad_aggressiveness))
-    device = resolve_input_device()
     native = default_input_rate()
     frame_ms = 30
     out_frame = int(_SR_TARGET * frame_ms / 1000)  # 480 samples @16k
     native_block = int(round(native * out_frame / _SR_TARGET))
 
-    reader = FrameReader(native, native_block, device)
+    reader = FrameReader(native, native_block)
+    native = reader.rate  # the shared stream is authoritative, not our guess
     t0 = time.monotonic()
     delivered_ms = 0.0
     try:
