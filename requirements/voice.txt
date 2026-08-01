@@ -26,9 +26,10 @@ faster-whisper
 # webrtcvad-wheels ships prebuilt Windows/macOS/Linux wheels (import name: webrtcvad).
 webrtcvad-wheels
 
-# Audio ducking — lower other apps' volume while Wony is speaking/listening.
-# Windows-only; silently no-ops if missing. comtypes pulled in automatically.
-pycaw
-# psutil is a transitive dep via pycaw but pinned here: ducking.py uses it directly
-# to skip audiodg.exe / system processes when enumerating audio sessions.
-psutil
+# Media pause — pause other apps' media (Spotify, browser tabs, VLC, ...) while
+# Wony is speaking/listening, via Windows System Media Transport Controls.
+# Windows-only; silently no-ops if missing.
+winrt-Windows.Media.Control ; platform_system == "Windows"
+winrt-Windows.Foundation ; platform_system == "Windows"
+winrt-Windows.Foundation.Collections ; platform_system == "Windows"
+winrt-runtime ; platform_system == "Windows"

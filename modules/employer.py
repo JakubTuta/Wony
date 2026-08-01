@@ -16,6 +16,13 @@ from helpers.registry import ServiceRegistry, register_job
 from modules.ai import AI, build_agent_system_prompt
 
 
+
+# Wall-clock backstop for one voice turn (LLM + tool calls). Checked between
+# agent steps and before each tool call — not a hard preempt of a call already
+# in flight, which is what the AI client / helpers.net timeouts are for.
+_TURN_TIMEOUT_SECONDS = 90.0
+
+
 class Employer:
     available_jobs: typing.Dict[str, typing.Callable] = {}
     _services = {}
@@ -264,6 +271,25 @@ class Employer:
                 thinking_timer.daemon = True
                 thinking_timer.start()
 
+        # Wall-clock backstop for the whole turn — checked between agent steps
+        # and before each tool call (helpers/agent.py), not a hard preempt of
+        # an already-in-flight blocking call. That's what the LLM client and
+        # helpers/net.py timeouts are for; this catches the rest (e.g. a slow
+        # multi-page tool loop). A separate event from session_cancel because
+        # session_cancel silently suppresses speech (deliberate "stop"), while
+        # a timeout should still say something.
+        turn_timed_out = threading.Event()
+        turn_timer: typing.Optional[threading.Timer] = None
+        if _TURN_TIMEOUT_SECONDS > 0:
+            turn_timer = threading.Timer(_TURN_TIMEOUT_SECONDS, turn_timed_out.set)
+            turn_timer.daemon = True
+            turn_timer.start()
+
+        class _TurnCancel:
+            @staticmethod
+            def is_set() -> bool:
+                return session_cancel.is_set() or turn_timed_out.is_set()
+
         with agent_lock:
             set_agent_active(True)
             begin_tool_outcomes()
@@ -276,7 +302,7 @@ class Employer:
                     history=Conversation.get_messages(),
                     max_steps=max_steps,
                     on_text=on_text,
-                    cancel_event=session_cancel,
+                    cancel_event=_TurnCancel(),
                 )
             except Exception as _e:
                 _agent_err = _e
@@ -284,6 +310,8 @@ class Employer:
                 set_agent_active(False)
                 if thinking_timer is not None:
                     thinking_timer.cancel()
+                if turn_timer is not None:
+                    turn_timer.cancel()
                 if tts_queue is not None:
                     tts_queue.put(None)
 
@@ -304,6 +332,28 @@ class Employer:
             else:
                 print(err_msg)
             return err_msg
+
+        if turn_timed_out.is_set() and not agent_result.text:
+            if tts_thread is not None:
+                tts_thread.join()
+            import helpers.diagnostics
+            helpers.diagnostics.add(
+                "warning", "AI",
+                f"Turn exceeded {_TURN_TIMEOUT_SECONDS:.0f}s — aborted.",
+            )
+            fallback = ""
+            for call in reversed(agent_result.calls):
+                result = (call.get("result") or "").strip()
+                if result:
+                    fallback = result
+                    break
+            timeout_msg = fallback or "Sorry, that took too long — I'm stopping there."
+            if audio:
+                Audio.text_to_speech(timeout_msg)
+            else:
+                print(timeout_msg)
+            Conversation.record_turn(user_input, timeout_msg, calls=agent_result.calls)
+            return timeout_msg
 
         if tts_thread is not None:
             tts_thread.join()

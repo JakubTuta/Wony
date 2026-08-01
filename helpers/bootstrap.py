@@ -155,13 +155,6 @@ def bootstrap(
     except Exception:
         pass
 
-    try:
-        from helpers.ducking import recover_stale_snapshot
-
-        recover_stale_snapshot()
-    except Exception:
-        pass
-
     from helpers.cache import Cache
 
     Cache.load_values()
@@ -253,17 +246,12 @@ def _start_health_watcher(Config: typing.Any, quiet: bool) -> None:
 
 
 def _start_idle_sweeper(Config: typing.Any) -> None:
-    """Periodic background safety net, ticking every 60s:
-      - unload the STT/TTS models after idle_unload_minutes of disuse (see
-        helpers.recognizer.unload_if_idle / helpers.audio.unload_tts_if_idle) —
-        skipped when idle_unload_minutes is 0, but the thread still runs for...
-      - ducking safety net: if a crash/kill left a stale ducking snapshot on
-        disk (helpers.ducking) and nothing is actively ducking right now,
-        retry restoring those app volumes. This is independent of the model
-        idle-unload setting — it must always run whenever audio is enabled,
-        otherwise a user who disables idle-unload would unknowingly also lose
-        this safety net.
-    """
+    """Periodic background thread, ticking every 60s, that unloads the
+    STT/TTS models after idle_unload_minutes of disuse (see
+    helpers.recognizer.unload_if_idle / helpers.audio.unload_tts_if_idle).
+    No-op entirely when idle_unload_minutes is 0 — nothing else currently
+    needs a periodic sweep (media_pause needs no crash-recovery: it mutates
+    no persistent state, so there's nothing to sweep for)."""
     global _idle_sweeper_thread
     if _idle_sweeper_thread is not None and _idle_sweeper_thread.is_alive():
         return
@@ -273,24 +261,20 @@ def _start_idle_sweeper(Config: typing.Any) -> None:
     except Exception:
         idle_minutes = 15.0
     idle_seconds = idle_minutes * 60.0
+    if idle_seconds <= 0:
+        return
     _idle_sweeper_stop.clear()
 
     def _loop() -> None:
         while not _idle_sweeper_stop.wait(60):
-            if idle_seconds > 0:
-                try:
-                    from helpers.recognizer import unload_if_idle as _unload_stt
-                    _unload_stt(idle_seconds)
-                except Exception:
-                    pass
-                try:
-                    from helpers.audio import unload_tts_if_idle as _unload_tts
-                    _unload_tts(idle_seconds)
-                except Exception:
-                    pass
             try:
-                from helpers.ducking import recover_stale_snapshot
-                recover_stale_snapshot()
+                from helpers.recognizer import unload_if_idle as _unload_stt
+                _unload_stt(idle_seconds)
+            except Exception:
+                pass
+            try:
+                from helpers.audio import unload_tts_if_idle as _unload_tts
+                _unload_tts(idle_seconds)
             except Exception:
                 pass
 

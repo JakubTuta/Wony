@@ -71,8 +71,10 @@ def _get_coordinates_for_city_name(
 ) -> typing.Tuple[typing.Optional[float], typing.Optional[float]]:
     import requests
 
+    from helpers import net
+
     try:
-        response = requests.get(
+        response = net.get(
             f"http://api.openweathermap.org/geo/1.0/direct?q={city_name}&appid={api_key}&limit=1"
         )
         data = response.json()
@@ -90,8 +92,10 @@ def _get_weather_for_coordinates(
 ) -> typing.Optional[typing.Dict[str, typing.Any]]:
     import requests
 
+    from helpers import net
+
     try:
-        response = requests.get(
+        response = net.get(
             f"https://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={api_key}&units=metric&lang=en"
         )
         return response.json()

@@ -37,10 +37,12 @@ voice:
   barge_in:
     enabled: true
 
-  # Lower other apps' volume while Wony speaks or listens (Windows-only; no-ops elsewhere).
-  ducking:
+  # Pause other apps' media (Spotify, browser tabs, VLC, ...) while Wony speaks or
+  # listens, resuming after (Windows-only; no-ops elsewhere).
+  media_pause:
     enabled: true
-    level: 0.15   # other apps drop to this fraction (15%) while Wony is active; restored after
+    # resume_linger_seconds: 3.0  # uncomment to override how long a pause is held
+    #                             # between back-to-back turns before resuming
 
   # Hands-free trigger. Requires: pip install -r requirements/wakeword.txt
   wake_word:

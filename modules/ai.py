@@ -4,11 +4,21 @@ import anthropic
 import numpy as np
 import ollama
 from google import genai
+from google.genai import types as genai_types
 
 import helpers.model as helpers_model
 from helpers.conversation import Conversation
 from helpers.decorators import capture_response
 from helpers.registry import method_job, register_job, simple_service
+
+# SDK default (Anthropic: timeout=600s, max_retries=2) lets one stalled
+# request hang a voice turn for up to ~30 minutes — see
+# logs/ai_assistant_20260801_122648.log. Same ceiling applied to all three
+# providers so none of them can reproduce it. Only Anthropic's SDK exposes a
+# retry count as a separate constructor arg (genai/ollama retry via their own
+# transport defaults, already bounded once the timeout itself is bounded).
+_AI_CLIENT_TIMEOUT_SECONDS = 45.0
+_ANTHROPIC_MAX_RETRIES = 1
 
 
 def _extract_text(path: str) -> str:
@@ -151,11 +161,20 @@ class AI:
 
         model, api_key = response
         if model == "gemini":
-            self.client = genai.Client(api_key=api_key)
+            self.client = genai.Client(
+                api_key=api_key,
+                http_options=genai_types.HttpOptions(
+                    timeout=int(_AI_CLIENT_TIMEOUT_SECONDS * 1000)
+                ),
+            )
         elif model == "anthropic":
-            self.client = anthropic.Anthropic(api_key=api_key)
+            self.client = anthropic.Anthropic(
+                api_key=api_key,
+                timeout=_AI_CLIENT_TIMEOUT_SECONDS,
+                max_retries=_ANTHROPIC_MAX_RETRIES,
+            )
         elif model == "ollama":
-            self.client = ollama.Client()
+            self.client = ollama.Client(timeout=_AI_CLIENT_TIMEOUT_SECONDS)
 
     @capture_response
     @method_job

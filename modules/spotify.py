@@ -10,6 +10,7 @@ import webbrowser
 
 import requests
 
+from helpers import net
 from helpers.cache import Cache
 from helpers.decorators import capture_response, retry_on_unauthorized
 from helpers.logger import logger
@@ -828,7 +829,7 @@ class Spotify:
     ) -> requests.Response:
         """Make a Spotify API request with standard headers and error handling"""
         headers = kwargs.pop("headers", self._get_auth_headers())
-        response = getattr(requests, method.lower())(url, headers=headers, **kwargs)
+        response = getattr(net, method.lower())(url, headers=headers, **kwargs)
         try:
             response.raise_for_status()
         except requests.exceptions.HTTPError as e:
@@ -888,7 +889,7 @@ class Spotify:
 
         data = {"grant_type": "refresh_token", "refresh_token": refresh_token}
 
-        response = requests.post(
+        response = net.post(
             "https://accounts.spotify.com/api/token", headers=headers, data=data
         )
 
@@ -968,7 +969,7 @@ class Spotify:
             "redirect_uri": self.REDIRECT_URI,
         }
 
-        response = requests.post(
+        response = net.post(
             "https://accounts.spotify.com/api/token", headers=headers, data=data
         )
 

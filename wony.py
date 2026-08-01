@@ -216,8 +216,8 @@ def cmd_voice(args: argparse.Namespace) -> None:
     finally:
         stop_hotkey(hotkey_listener)
         ww.stop()
-        from helpers.ducking import restore_all
-        restore_all()
+        from helpers.media_pause import resume_all
+        resume_all()
 
 
 def cmd_web(args: argparse.Namespace) -> None:

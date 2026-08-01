@@ -31,9 +31,10 @@ class FeedbackSettings(BaseModel):
     ack_when_muted: bool = True
 
 
-class DuckingSettings(BaseModel):
+class MediaPauseSettings(BaseModel):
     enabled: bool = True
-    level: float = 0.15
+    # None = use the built-in default (see MediaPause._RESUME_LINGER).
+    resume_linger_seconds: typing.Optional[float] = None
 
 
 class ConversationSettings(BaseModel):
@@ -69,7 +70,7 @@ class VoiceSettings(BaseModel):
     stt: SttSettings = Field(default_factory=SttSettings)
     tts: TtsSettings = Field(default_factory=TtsSettings)
     feedback: FeedbackSettings = Field(default_factory=FeedbackSettings)
-    ducking: DuckingSettings = Field(default_factory=DuckingSettings)
+    media_pause: MediaPauseSettings = Field(default_factory=MediaPauseSettings)
     conversation: ConversationSettings = Field(default_factory=ConversationSettings)
     barge_in: BargeInSettings = Field(default_factory=BargeInSettings)
     wake_word: WakeWordSettings = Field(default_factory=WakeWordSettings)
@@ -224,6 +225,30 @@ class Config:
         AppSettings._yaml_file = _resolve_yaml_path(path)
         cls._settings = AppSettings()
         cls._loaded = True
+        cls._apply_legacy_ducking_shim()
+
+    @classmethod
+    def _apply_legacy_ducking_shim(cls) -> None:
+        """`voice.ducking.enabled` (pre-media-pause config key) is unknown to
+        AppSettings and silently dropped by pydantic's extra="ignore" during
+        parsing — so anyone who had explicitly disabled ducking would
+        otherwise come back with media_pause silently re-enabled. Read the
+        raw YAML once and carry an explicit `enabled: false` forward.
+        TODO: remove once configs have had time to migrate to voice.media_pause.
+        """
+        if not AppSettings._yaml_file:
+            return
+        try:
+            import yaml
+
+            with open(AppSettings._yaml_file, "r", encoding="utf-8") as f:
+                raw = yaml.safe_load(f) or {}
+            legacy_enabled = raw.get("voice", {}).get("ducking", {}).get("enabled")
+            if legacy_enabled is False:
+                assert cls._settings is not None
+                cls._settings.voice.media_pause.enabled = False
+        except Exception:
+            pass
 
     @classmethod
     def _ensure_loaded(cls) -> None:

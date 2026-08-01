@@ -1,8 +1,9 @@
 """
 Shared push-to-talk implementation for the Ctrl+L hotkey / tray "Listen now"
 item. wony.py's voice mode and tray_app.py both need the same
-voice_session/ducking/wake-word-pause handshake around a manual conversation
-turn — this module is the single copy instead of two near-identical ones.
+voice_session/media-pause/wake-word-pause handshake around a manual
+conversation turn — this module is the single copy instead of two
+near-identical ones.
 """
 import threading
 import typing
@@ -23,9 +24,9 @@ def do_speak(
     computer" command was spoken).
     """
     from helpers import mic
-    from helpers.ducking import duck_others
     from helpers.events import clear_cancel
     from helpers.logger import logger
+    from helpers.media_pause import pause_media
 
     if not mic.voice_session.acquire(blocking=False):
         import helpers.diagnostics
@@ -37,7 +38,7 @@ def do_speak(
         if wakeword_listener is not None:
             wakeword_listener.pause()
         try:
-            with duck_others():
+            with pause_media():
                 employer.speak()
         except SystemExit:
             on_exit()

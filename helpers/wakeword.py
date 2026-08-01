@@ -482,8 +482,8 @@ class WakeWordListener:
         from helpers.audio import Audio, play_earcon, warm_tts_async
         from helpers.cache import Cache
         from helpers.config import Config
-        from helpers.ducking import duck_others
         from helpers.events import clear_cancel, emit_state
+        from helpers.media_pause import pause_media
         from helpers.recognizer import Recognizer, warm_async
 
         clear_cancel()  # new session — a cancel from a prior turn must not leak in
@@ -492,7 +492,7 @@ class WakeWordListener:
         # the ack clip + the user speaking, instead of stalling silently.
         warm_async()
         warm_tts_async()
-        with duck_others():
+        with pause_media():
             if Cache.get_audio():
                 Audio.play_cached("Yes?")
             elif bool(Config.get("voice.feedback.ack_when_muted", True)):

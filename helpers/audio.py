@@ -404,8 +404,8 @@ class Audio:
             return
 
         with _playback_lane:
-            from helpers.ducking import duck_others
-            with duck_others():
+            from helpers.media_pause import pause_media
+            with pause_media():
                 wav = CACHED_CLIPS.get(text)
                 wav_path = _abs_path(wav) if wav else None
                 if wav_path and os.path.exists(wav_path):
@@ -713,8 +713,8 @@ def stream_text_to_speech(
 
             audio_q.put((sentence, samples, sr))
 
-        from helpers.ducking import duck_others
-        with duck_others():
+        from helpers.media_pause import pause_media
+        with pause_media():
             player = threading.Thread(target=_playback, daemon=True, name="tts-playback")
             player.start()
 

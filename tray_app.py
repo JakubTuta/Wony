@@ -11,6 +11,7 @@ Threading model:
   daemon thread — global Ctrl+L hotkey listener (pynput, optional)
   daemon threads — pollers / scheduler (BackgroundJobs / APScheduler)
 """
+
 import atexit
 import os
 import socket
@@ -58,16 +59,17 @@ def _try_acquire_instance_lock() -> bool:
 
 
 _STATE_COLORS = {
-    "idle":      (100, 149, 237),  # cornflower blue
-    "listening": ( 72, 199, 116),  # green
-    "thinking":  (255, 193,   7),  # amber
-    "speaking":  (167,  80, 214),  # purple
+    "idle": (100, 149, 237),  # cornflower blue
+    "listening": (72, 199, 116),  # green
+    "thinking": (255, 193, 7),  # amber
+    "speaking": (167, 80, 214),  # purple
 }
 
 
 def _make_icon_image(state: str = "idle"):
     """Generate a tray icon with a color matching the assistant state."""
     from PIL import Image, ImageDraw
+
     size = 64
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
@@ -83,6 +85,7 @@ def _load_icon_image():
     if os.path.isfile(assets_ico):
         try:
             from PIL import Image
+
             return Image.open(assets_ico)
         except Exception:
             pass
@@ -103,6 +106,7 @@ def run_tray() -> None:
     if not _try_acquire_instance_lock():
         try:
             import ctypes
+
             ctypes.windll.user32.MessageBoxW(  # type: ignore[attr-defined]
                 0,
                 "Wony is already running in the system tray.",
@@ -115,9 +119,12 @@ def run_tray() -> None:
 
     # Determine run flags from config (must call Config.load before import Employer)
     from helpers.config import Config
+
     Config.load()
 
-    audio_mode = True  # tray is always voice-response mode (same feedback loop as voice mode)
+    audio_mode = (
+        True  # tray is always voice-response mode (same feedback loop as voice mode)
+    )
 
     host = str(Config.get("server.host", "127.0.0.1"))
     port = int(Config.get("server.port", 8000))
@@ -126,6 +133,7 @@ def run_tray() -> None:
 
     # Bootstrap: starts Employer + registers atexit(shutdown)
     from helpers.bootstrap import BootstrapError, bootstrap
+
     try:
         employer = bootstrap(
             audio=audio_mode,
@@ -136,6 +144,7 @@ def run_tray() -> None:
     except BootstrapError as e:
         try:
             import ctypes
+
             ctypes.windll.user32.MessageBoxW(  # type: ignore[attr-defined]
                 0,
                 f"Wony failed to start:\n\n{e}\n\nCheck your .env and config.yaml.",
@@ -147,26 +156,30 @@ def run_tray() -> None:
         return
 
     # Hook the exit job so "exit" spoken via wake word properly tears down the tray
-    from modules.employer import Employer
-
     # Build web server (app is built now; employer + jobs are registered)
     from helpers.web_app import build_app
+    from modules.employer import Employer
+
     app = build_app()
     from helpers.web_runner import WebServerController
+
     web = WebServerController(app, host, port)
 
     # Build wake-word listener (no-op if disabled or deps missing)
     from helpers.wakeword import WakeWordListener
+
     wakeword = WakeWordListener(employer)
 
     if (audio_mode or wakeword._enabled) and Config.get("models.preload", False):
-        from helpers.recognizer import preload_model
         from helpers.audio import preload_tts
+        from helpers.recognizer import preload_model
+
         preload_model()
         preload_tts()
 
     # Build controller
     from helpers.assistant_controller import AssistantController
+
     controller = AssistantController(employer, web, wakeword)
 
     # Build tray icon
@@ -198,7 +211,9 @@ def run_tray() -> None:
 
     def _start_hotkey() -> None:
         def _fire() -> None:
-            threading.Thread(target=_do_listen_now, daemon=True, name="listen-now-hotkey").start()
+            threading.Thread(
+                target=_do_listen_now, daemon=True, name="listen-now-hotkey"
+            ).start()
 
         _hotkey_listener_ref[0] = start_hotkey(_fire)
 
@@ -208,6 +223,7 @@ def run_tray() -> None:
 
     def _on_open_web(icon, item) -> None:
         import webbrowser
+
         controller.ensure_web()
         webbrowser.open(f"http://{host}:{port}")
 
@@ -220,10 +236,12 @@ def run_tray() -> None:
 
     def _on_stop_speaking(icon, item) -> None:
         from helpers.events import request_cancel
+
         request_cancel()
 
     def _on_mute_toggle(icon, item) -> None:
         from helpers.cache import Cache
+
         Cache.set_audio(not Cache.get_audio())
         icon.update_menu()
 
@@ -232,14 +250,14 @@ def run_tray() -> None:
 
     def _mute_label(item) -> str:
         from helpers.cache import Cache
+
         return "Mute" if Cache.get_audio() else "Unmute"
 
     def _wakeword_visible(item) -> bool:
         return wakeword._enabled
 
     def _wakeword_label(item) -> str:
-        return "Wake word: On (click to disable)" if wakeword.is_running() \
-            else "Wake word: Off (manual only)"
+        return "Wake word: On" if wakeword.is_running() else "Wake word: Off"
 
     def _on_wakeword_toggle(icon, item) -> None:
         if wakeword.is_running():
@@ -257,7 +275,9 @@ def run_tray() -> None:
         pystray.MenuItem("Listen now", _on_listen_now),
         pystray.MenuItem("Stop speaking", _on_stop_speaking),
         pystray.MenuItem(_mute_label, _on_mute_toggle),
-        pystray.MenuItem(_wakeword_label, _on_wakeword_toggle, visible=_wakeword_visible),
+        pystray.MenuItem(
+            _wakeword_label, _on_wakeword_toggle, visible=_wakeword_visible
+        ),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem(_toggle_label, _on_toggle),
         pystray.Menu.SEPARATOR,
@@ -283,6 +303,7 @@ def run_tray() -> None:
             ic.icon = _make_icon_image(state)
 
     from helpers.events import subscribe, unsubscribe
+
     subscribe(_on_state_event)
 
     # Ensure icon.stop() fires on process exit (e.g., sys.exit from a thread)
@@ -301,6 +322,7 @@ def run_tray() -> None:
     if open_browser_on_start:
         try:
             import webbrowser
+
             webbrowser.open(f"http://{host}:{port}")
         except Exception:
             pass
@@ -321,10 +343,12 @@ def run_tray() -> None:
     unsubscribe(_on_state_event)
     _stop_hotkey()
     controller.shutdown()
-    # os._exit below bypasses atexit — restore ducked audio explicitly first.
-    from helpers.ducking import restore_all
-    restore_all()
+    # os._exit below bypasses atexit — resume paused media explicitly first.
+    from helpers.media_pause import resume_all
+
+    resume_all()
     import os as _os
+
     _os._exit(0)
 
 

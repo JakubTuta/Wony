@@ -235,8 +235,8 @@ def _audio_selftest() -> list:
         lines.append(f"    ✗ Device matrix failed: {e}")
 
     try:
-        from helpers.ducking import duck_others
-        with duck_others():
+        from helpers.media_pause import pause_media
+        with pause_media():
             mic.play_wav("voice/bot/ready.wav", blocking=True)
         lines.append("\n    ✓ Output test — did you hear the ready sound?")
     except Exception as e:
@@ -273,72 +273,48 @@ def _audio_selftest() -> list:
         lines.append(f"    ✗ Models report failed: {e}")
 
     try:
-        import json as _json
-        import time as _time
+        import asyncio
 
-        from helpers.ducking import (
-            _PENDING_RECOVERY_PATH,
-            _SNAPSHOT_PATH,
-            duck_others,
-            recover_stale_snapshot,
-        )
+        from helpers.media_pause import _IS_WINDOWS
 
-        with duck_others():
-            # Give the worker thread a moment to process "duck" and (if any
-            # foreign sessions exist) write the crash-recovery snapshot.
-            _time.sleep(0.5)
-            snapshot_seen = os.path.exists(_SNAPSHOT_PATH)
-        _time.sleep(1.2)  # let the restore fade + snapshot delete complete
-        snapshot_cleared = not os.path.exists(_SNAPSHOT_PATH)
-        lines.append(
-            f"    ✓ Ducking snapshot lifecycle — wrote: {snapshot_seen or '(no foreign sessions playing)'}, "
-            f"cleared after restore: {snapshot_cleared}"
-        )
+        if not _IS_WINDOWS:
+            lines.append("    ! Media-pause — Windows only, skipped (not running on Windows).")
+        else:
+            try:
+                from winrt.windows.media.control import (
+                    GlobalSystemMediaTransportControlsSessionManager as _SessionManager,
+                )
+                backend_available = True
+            except ImportError:
+                backend_available = False
 
-        # Synthetic crash-recovery test 1: a stale (>24h old) record for a
-        # nonexistent PID should be discarded outright, without raising.
-        with open(_SNAPSHOT_PATH, "w", encoding="utf-8") as f:
-            _json.dump(
-                {
-                    "version": 1,
-                    "pid": 999999,
-                    "duck_level": 0.15,
-                    "created_epoch": 0,  # 1970 — always older than the 24h cutoff
-                    "sessions": [{"pid": 999999, "name": "nonexistent.exe", "volume": 0.8}],
-                },
-                f,
-            )
-        recover_stale_snapshot()
-        _time.sleep(0.3)
-        stale_discarded = not os.path.exists(_SNAPSHOT_PATH) and not os.path.exists(_PENDING_RECOVERY_PATH)
-        lines.append(f"    ✓ Ducking crash-recovery test (stale >24h) — discarded: {stale_discarded}")
+            if not backend_available:
+                lines.append(
+                    "    ✗ Media-pause backend (winrt) not installed — media won't be paused automatically."
+                )
+                lines.append("      pip install -r requirements/voice.txt")
+            else:
+                async def _list_sessions():
+                    mgr = await _SessionManager.request_async()
+                    return mgr.get_sessions()
 
-        # Synthetic crash-recovery test 2: a RECENT record for a nonexistent
-        # PID should move to the pending-recovery file (retried later) rather
-        # than being lost — this is the safety-net path a user hits if their
-        # app wasn't running yet when recovery ran.
-        with open(_SNAPSHOT_PATH, "w", encoding="utf-8") as f:
-            _json.dump(
-                {
-                    "version": 1,
-                    "pid": 999998,
-                    "duck_level": 0.15,
-                    "created_epoch": _time.time(),
-                    "sessions": [{"pid": 999998, "name": "nonexistent2.exe", "volume": 0.8}],
-                },
-                f,
-            )
-        recover_stale_snapshot()
-        _time.sleep(0.3)
-        moved_to_pending = not os.path.exists(_SNAPSHOT_PATH) and os.path.exists(_PENDING_RECOVERY_PATH)
-        lines.append(f"    ✓ Ducking crash-recovery test (recent, app absent) — moved to pending-recovery: {moved_to_pending}")
-
-        # Clean up the synthetic pending-recovery entry so it doesn't linger
-        # and get retried by the real safety sweep.
-        if os.path.exists(_PENDING_RECOVERY_PATH):
-            os.remove(_PENDING_RECOVERY_PATH)
+                sessions = asyncio.run(_list_sessions())
+                if not sessions:
+                    lines.append("    ✓ Media-pause backend ready — no active media sessions right now.")
+                else:
+                    lines.append(f"    ✓ Media-pause backend ready — {len(sessions)} active session(s):")
+                    for s in sessions:
+                        try:
+                            info = s.get_playback_info()
+                            pausable = info.controls is not None and info.controls.is_pause_enabled
+                            lines.append(
+                                f"        {s.source_app_user_model_id} — status: {info.playback_status}, "
+                                f"pausable: {pausable}"
+                            )
+                        except Exception as e:
+                            lines.append(f"        (session report failed: {e})")
     except Exception as e:
-        lines.append(f"    ✗ Ducking self-test failed: {e}")
+        lines.append(f"    ✗ Media-pause self-test failed: {e}")
 
     try:
         lines.append("    Recording 2s from mic...")

@@ -404,19 +404,70 @@ def ensure_env():
 
 
 def ensure_config():
+    """Returns (ok, freshly_created). freshly_created is False when an
+    existing config.yaml was left untouched — callers use it to gate
+    one-time setup questions the same way ensure_env() only asks for an AI
+    key when .env doesn't exist yet, so re-running setup never clobbers
+    choices already made."""
     if os.path.exists(CONFIG):
-        return True
+        return True, False
     if not os.path.exists(CONFIG_EXAMPLE):
         print(c("  ! config.example.yaml missing — cannot create config.yaml.", "33"))
-        return False
+        return False, False
     with open(CONFIG_EXAMPLE, "r", encoding="utf-8") as src, open(CONFIG, "w", encoding="utf-8") as dst:
         dst.write(src.read())
     print(c("  ✓ created config.yaml from config.example.yaml", "32"))
-    return True
+    return True, True
+
+
+def set_media_pause_enabled(value):
+    """Flip voice.media_pause.enabled in config.yaml. Stdlib-only line edit
+    (matches apply_enabled_modules() below) rather than pulling in a YAML
+    library just for this."""
+    if not os.path.exists(CONFIG):
+        return
+    with open(CONFIG, "r", encoding="utf-8") as fh:
+        lines = fh.readlines()
+    base_indent = None
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if base_indent is None:
+            if stripped == "media_pause:":
+                base_indent = len(line) - len(line.lstrip())
+            continue
+        if stripped == "":
+            continue
+        indent = len(line) - len(line.lstrip())
+        if indent <= base_indent:
+            break  # left the media_pause: block without finding enabled:
+        if stripped.startswith("enabled:"):
+            pad = line[:indent]
+            lines[i] = f"{pad}enabled: {'true' if value else 'false'}\n"
+            with open(CONFIG, "w", encoding="utf-8") as fh:
+                fh.writelines(lines)
+            return
+
+
+def ask_media_pause(chosen):
+    """One-time prompt: should Wony pause other apps' media (Spotify, browser
+    tabs, ...) while it talks or listens? Windows-only capability (System
+    Media Transport Controls) — skip asking on other platforms, where it's
+    always a no-op regardless of the config value."""
+    if os.name != "nt":
+        return
+    if not any(f["key"] == "voice" for f in chosen):
+        return
+    print(c("\n  Pause other apps' media (Spotify, browser tabs, ...) while Wony talks or listens?", "1"))
+    print(c("  Resumes automatically after. Change later via voice.media_pause.enabled in config.yaml.", "90"))
+    ans = input("  Enable? [Y/n] ").strip().lower()
+    if ans in ("n", "no"):
+        set_media_pause_enabled(False)
+        print(c("  . media pause disabled.", "90"))
 
 
 def apply_enabled_modules(chosen):
-    if not ensure_config():
+    ok, _ = ensure_config()
+    if not ok:
         return
     wanted = list(ALWAYS_ON) + [f["module"] for f in chosen if f["module"]]
     with open(CONFIG, "r", encoding="utf-8") as fh:
@@ -638,7 +689,7 @@ def main():
 
     ensure_dirs()
     ensure_env()
-    ensure_config()
+    _, config_fresh = ensure_config()
 
     selected, detected = detect()
     chosen = select_features(selected, detected)
@@ -649,6 +700,8 @@ def main():
 
     install(chosen, detected)
     apply_enabled_modules(chosen)
+    if config_fresh:
+        ask_media_pause(chosen)
     verify_install(chosen)
     write_marker(use_venv)
     next_steps(chosen, use_venv)

@@ -1,5 +1,6 @@
 import requests
 
+from helpers import net
 from helpers.decorators import capture_response
 from helpers.logger import logger
 from helpers.registry import register_job
@@ -40,7 +41,7 @@ def turn_light_on() -> str:
         str: Success confirmation message or detailed error information about the light operation.
     """
     try:
-        response = requests.get(f"{_base_url()}/light/0/?turn=on")
+        response = net.get(f"{_base_url()}/light/0/?turn=on")
         if response.status_code == 200:
             return "Light turned on successfully."
         return f"Error: Failed to turn on light. Status code: {response.status_code}"
@@ -71,7 +72,7 @@ def turn_light_off() -> str:
         str: Success confirmation message or detailed error information about the light operation.
     """
     try:
-        response = requests.get(f"{_base_url()}/light/0/?turn=off")
+        response = net.get(f"{_base_url()}/light/0/?turn=off")
         if response.status_code == 200:
             return "Light turned off successfully."
         return f"Error: Failed to turn off light. Status code: {response.status_code}"
@@ -101,13 +102,13 @@ def toggle_light() -> str:
         str: Success confirmation message with the new state or detailed error information.
     """
     try:
-        status_response = requests.get(f"{_base_url()}/light/0")
+        status_response = net.get(f"{_base_url()}/light/0")
         if status_response.status_code != 200:
             return f"Error: Failed to get light status. Status code: {status_response.status_code}"
 
         current_state = status_response.json().get("ison", False)
         new_state = "off" if current_state else "on"
-        toggle_response = requests.get(f"{_base_url()}/light/0/?turn={new_state}")
+        toggle_response = net.get(f"{_base_url()}/light/0/?turn={new_state}")
 
         if toggle_response.status_code == 200:
             return f"Light toggled successfully. Light is now {'on' if new_state == 'on' else 'off'}."
