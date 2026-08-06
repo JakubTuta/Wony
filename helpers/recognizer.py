@@ -94,6 +94,48 @@ def unload_if_idle(idle_seconds: float) -> None:
     helpers.diagnostics.add("info", "STT", "Speech model unloaded (idle).")
 
 
+# Segments below this mean average token log-probability are the model guessing.
+# Matches faster-whisper's own `log_prob_threshold` default.
+_MIN_AVG_LOGPROB = -1.0
+# Segments above this no_speech_prob are rejected even if the words themselves
+# looked confident (see _drop_hallucinations). Developer knob, not user config —
+# nobody should have to know what a no_speech_prob is to get a working assistant.
+_MAX_NO_SPEECH_PROB = 0.6
+
+
+def _drop_hallucinations(segments: typing.Iterable[typing.Any], max_no_speech: float) -> str:
+    """Join the segments Whisper is actually confident about.
+
+    Whisper answers near-silence with fluent filler — "Thank you.", "I'm going
+    to be…" — not with an empty string, and it reports those with a high
+    no_speech_prob while still being *lexically* confident (a good avg_logprob).
+    faster-whisper's built-in no_speech_threshold only skips a segment when both
+    signals agree it's bad, so exactly this case survives it. Rejecting on
+    either signal alone is what stops a stray VAD trip from becoming a spoken
+    command and, with continuous conversation on, a conversation with itself.
+    """
+    kept: typing.List[str] = []
+    dropped: typing.List[str] = []
+    for seg in segments:
+        text = (seg.text or "").strip()
+        if not text:
+            continue
+        no_speech = float(getattr(seg, "no_speech_prob", 0.0) or 0.0)
+        avg_logprob = float(getattr(seg, "avg_logprob", 0.0) or 0.0)
+        if no_speech > max_no_speech or avg_logprob < _MIN_AVG_LOGPROB:
+            dropped.append(f"{text!r} (no_speech={no_speech:.2f}, logprob={avg_logprob:.2f})")
+            continue
+        kept.append(text)
+
+    if dropped:
+        helpers.diagnostics.add(
+            "info", "STT",
+            "Dropped as hallucination: " + "; ".join(dropped),
+            dedupe=False,
+        )
+    return " ".join(kept).strip()
+
+
 class Recognizer:
     # True after a call that failed (STT exception), False after a call that
     # simply captured no speech. Lets callers distinguish "didn't hear you"
@@ -134,8 +176,13 @@ class Recognizer:
                     condition_on_previous_text=False,
                     no_speech_threshold=0.6,
                 )
-                text = " ".join(seg.text for seg in segments).strip()
+                text = _drop_hallucinations(segments, _MAX_NO_SPEECH_PROB)
                 _last_used = time.monotonic()
+            if not text:
+                # Whisper produced only filler — the same outcome as capturing
+                # nothing, and callers must treat it that way (stay quiet, don't
+                # start a conversation turn) rather than as a failure.
+                Recognizer.last_capture_empty = True
             return text
         except Exception as e:
             helpers.diagnostics.add("error", "STT", f"Transcription failed: {e}", hint="Check GPU/CPU model load and audio input.")

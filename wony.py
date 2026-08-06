@@ -5,7 +5,7 @@ Usage:
   python wony.py              # default: tray (always-on background mode)
   python wony.py tray         # always-on tray with system tray icon
   python wony.py text         # console text REPL
-  python wony.py voice        # console voice mode (Ctrl+L hotkey + optional wake word)
+  python wony.py voice        # console voice mode (push-to-talk hotkey + optional wake word)
   python wony.py web          # web server only (FastAPI on configured host:port)
   python wony.py doctor       # validate setup and exit
   python wony.py autostart install    # add Windows logon task
@@ -187,8 +187,10 @@ def cmd_voice(args: argparse.Namespace) -> None:
 
     from helpers.audio import Audio
 
+    from helpers.push_to_talk import hotkey_label
+
     Audio.play_cached("I'm ready!")
-    print("\nListening for key combination (Ctrl + L)...")
+    print(f"\nListening for key combination ({hotkey_label()})...")
 
     import threading
 
@@ -203,8 +205,8 @@ def cmd_voice(args: argparse.Namespace) -> None:
     from helpers.push_to_talk import do_speak, start_hotkey, stop_hotkey
 
     def _do_speak() -> None:
-        print("[voice] Ctrl+L — listening")
-        do_speak(employer, ww, lambda: _stop.set(), "ctrl+l")
+        print(f"[voice] {hotkey_label()} — listening")
+        do_speak(employer, ww, lambda: _stop.set(), "hotkey")
 
     hotkey_listener = start_hotkey(_do_speak)
 
@@ -289,7 +291,7 @@ def main() -> None:
             "Examples:\n"
             "  python wony.py              # tray (default)\n"
             "  python wony.py text         # console text REPL\n"
-            "  python wony.py voice        # voice mode (Ctrl+L + wake word)\n"
+            "  python wony.py voice        # voice mode (push-to-talk + wake word)\n"
             "  python wony.py web          # web server only\n"
             "  python wony.py autostart install"
         ),

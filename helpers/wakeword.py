@@ -5,9 +5,10 @@ Detection flow: sounddevice captures audio from the resolved input device
 (see helpers.mic.resolve_input_device — trusts the OS default, no liveness
 probe at resolve time) at its native sample rate, resampled to 16 kHz mono
 int16 for openWakeWord. On trigger:
-  1. Acquire mic.voice_session (so tray "Listen now" / Ctrl+L can't collide)
+  1. Acquire mic.voice_session (so tray "Listen now" / hotkey can't collide)
   2. Release the mic (sounddevice stream stopped/closed)
-  3. Play the "Yes?" ack clip (Audio.play_cached)
+  3. Ack + warm the voice models (helpers.audio.acknowledge_wake — shared with
+     the push-to-talk path, so every way of opening a turn sounds the same)
   4. STT via faster-whisper (Recognizer.recognize_speech_from_mic)
   5. Pass transcript to employer.handle_utterance (acquires agent_lock internally)
   6. Reopen the mic stream and reset the model buffer, release voice_session
@@ -87,6 +88,10 @@ class WakeWordListener:
         self._reader: typing.Any = None
         self._native_rate: int = 16000
         self._native_block: int = _FRAME_SIZE
+        # Session tallies, reported on every detection so the false-trigger
+        # rate is readable straight off the log instead of needing a count.
+        self._detections = 0
+        self._false_triggers = 0
 
         try:
             self._enabled = self._init_engine()
@@ -444,13 +449,22 @@ class WakeWordListener:
                         if trigger_now - self._last_trigger < self._cooldown:
                             continue
                         self._last_trigger = trigger_now
+                        self._detections += 1
                         # Logged so threshold/patience can be tuned from real
                         # data: compare the scores of genuine wakes against the
-                        # ones that turn out to be false triggers.
-                        diagnostics.add("info", "WakeWord", f"Detected (score {score:.2f}).")
+                        # ones that turn out to be false triggers. dedupe=False
+                        # because the rate is the whole point — the default TTL
+                        # collapses a burst of identical scores into one line and
+                        # makes a runaway trigger look like a single event.
+                        diagnostics.add(
+                            "info", "WakeWord",
+                            f"Detected #{self._detections} (score {score:.2f}, "
+                            f"{self._false_triggers} false so far).",
+                            dedupe=False,
+                        )
 
                         if not mic.voice_session.acquire(blocking=False):
-                            continue  # mic busy elsewhere (tray Listen now / Ctrl+L)
+                            continue  # mic busy elsewhere (tray Listen now / hotkey)
 
                         self._close_stream()
                         try:
@@ -479,26 +493,15 @@ class WakeWordListener:
             self._close_stream()
 
     def _handle_detection(self) -> None:
-        from helpers.audio import Audio, play_earcon, warm_tts_async
-        from helpers.cache import Cache
-        from helpers.config import Config
+        from helpers.audio import Audio, acknowledge_wake
         from helpers.events import clear_cancel, emit_state
         from helpers.media_pause import pause_media
-        from helpers.recognizer import Recognizer, warm_async
+        from helpers.recognizer import Recognizer
 
         clear_cancel()  # new session — a cancel from a prior turn must not leak in
         emit_state("listening")
-        # Overlap any cold-start model load (when models.preload is off) with
-        # the ack clip + the user speaking, instead of stalling silently.
-        warm_async()
-        warm_tts_async()
         with pause_media():
-            if Cache.get_audio():
-                Audio.play_cached("Yes?")
-            elif bool(Config.get("voice.feedback.ack_when_muted", True)):
-                # Muted: no spoken ack, but a short tone still confirms the
-                # wake word landed instead of leaving the user guessing.
-                play_earcon()
+            acknowledge_wake()
 
             text = Recognizer.recognize_speech_from_mic()
             if not text:
@@ -506,10 +509,13 @@ class WakeWordListener:
                 if Recognizer.last_capture_empty and not Recognizer.last_call_failed:
                     # Woke up, then heard nothing at all — treat it as a false
                     # trigger and say nothing rather than announcing it.
+                    self._false_triggers += 1
                     diagnostics.add(
                         "info", "WakeWord",
-                        "Triggered but no speech followed — ignoring as a false trigger.",
+                        f"Triggered but no speech followed — false trigger "
+                        f"#{self._false_triggers} of {self._detections} detections.",
                         hint="Raise voice.wake_word.threshold or patience if this happens often.",
+                        dedupe=False,
                     )
                 elif not session_cancel.is_set():
                     msg = "Sorry, I couldn't process that." if Recognizer.last_call_failed else "I didn't catch that."

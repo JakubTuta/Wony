@@ -47,6 +47,17 @@ class BargeInSettings(BaseModel):
     sustain_frames: int = 15
 
 
+class HotkeySettings(BaseModel):
+    # pynput combination string; null/empty disables the hotkey entirely.
+    #
+    # Deliberately NOT "<ctrl>+l". pynput's HotKey matcher only tracks the keys
+    # named in the combination and ignores any others held at the same time, so
+    # a two-key binding also fires on ctrl+shift+l and ctrl+alt+l. Ctrl+L is the
+    # browser address bar, clear-terminal, and VS Code select-line — every one of
+    # those presses was silently opening a listening turn.
+    push_to_talk: typing.Optional[str] = "<ctrl>+<alt>+w"
+
+
 class WakeWordSettings(BaseModel):
     enabled: bool = False
     phrase: str = "hey jarvis"
@@ -74,6 +85,7 @@ class VoiceSettings(BaseModel):
     conversation: ConversationSettings = Field(default_factory=ConversationSettings)
     barge_in: BargeInSettings = Field(default_factory=BargeInSettings)
     wake_word: WakeWordSettings = Field(default_factory=WakeWordSettings)
+    hotkeys: HotkeySettings = Field(default_factory=HotkeySettings)
 
 
 class HistorySettings(BaseModel):

@@ -8,7 +8,7 @@ Threading model:
   MAIN thread  — pystray Icon.run() (required by pystray on Windows)
   daemon thread — uvicorn web server (WebServerController)
   daemon thread — openWakeWord wake-word listener (WakeWordListener)
-  daemon thread — global Ctrl+L hotkey listener (pynput, optional)
+  daemon thread — global push-to-talk hotkey listener (pynput, optional)
   daemon threads — pollers / scheduler (BackgroundJobs / APScheduler)
 """
 
@@ -198,8 +198,8 @@ def run_tray() -> None:
 
     Employer.set_exit_hook(_tray_exit_hook)
 
-    # ── Push-to-talk: tray "Listen now" menu item + global Ctrl+L hotkey ────
-    from helpers.push_to_talk import do_speak, start_hotkey, stop_hotkey
+    # ── Push-to-talk: tray "Listen now" menu item + global hotkey ───────────
+    from helpers.push_to_talk import do_speak, hotkey_label, start_hotkey, stop_hotkey
 
     def _do_listen_now() -> None:
         do_speak(employer, wakeword, _tray_exit_hook, "listen_now")
@@ -330,7 +330,7 @@ def run_tray() -> None:
     print(
         f"{assistant_name} is running in the system tray.\n"
         f"  Web UI:    http://{host}:{port}\n"
-        f"  Ctrl+L:    push-to-talk from anywhere\n"
+        f"  {hotkey_label()}:  push-to-talk from anywhere\n"
         f"  Tray icon: right-click for menu (listen now, mute, pause, exit)"
     )
 

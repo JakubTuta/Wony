@@ -68,6 +68,14 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _PROBE_SECONDS = 0.35
 _PROBE_DEADLINE = 1.5
 
+# Discard a capture with less than this much *voiced* audio (not capture
+# length — every capture also carries preroll + trailing silence). Guards
+# against a stray VAD blip reaching Whisper, which answers near-silence with
+# fluent filler rather than an empty string. A developer knob, not a user
+# setting: a normal user has no way to judge this number, they just want the
+# assistant to stop inventing sentences out of a door slam.
+_MIN_SPEECH_MS = 250
+
 # Substrings (lowercase) marking a device that carries system-PLAYBACK audio
 # (loopback / mix). These are the only genuine false-wake risk and the only
 # hard exclusion for capture. NOTE: virtual *microphone* endpoints (Sonar
@@ -113,7 +121,7 @@ _reinit_requested = threading.Event()
 
 # Process-wide arbiter for anything that wants exclusive mic access outside
 # the wake-word loop's own pause()/resume() handshake (tray "Listen now",
-# global Ctrl+L hotkey). Non-blocking acquire — skip cleanly if busy.
+# global push-to-talk hotkey). Non-blocking acquire — skip cleanly if busy.
 voice_session = threading.Lock()
 
 _pa_lock = threading.Lock()
@@ -1435,6 +1443,7 @@ def record_until_silence(
     vad_aggressiveness: int = 2,
     preroll_ms: int = 300,
     cancel_event: typing.Optional[threading.Event] = None,
+    min_speech_ms: int = _MIN_SPEECH_MS,
 ) -> np.ndarray:
     """Record until trailing silence (VAD endpointing). Returns 16k mono float32.
 
@@ -1450,6 +1459,12 @@ def record_until_silence(
         preroll_ms: audio kept before detected speech onset.
         cancel_event: if set while recording, capture aborts and returns empty
             immediately (deliberate cancel — never transcribe a half-capture).
+        min_speech_ms: discard the capture unless the VAD flagged at least this
+            much *voiced* audio. Note this is not the capture's length: every
+            capture also carries `preroll_ms` plus the `silence_ms` that ended
+            it, so a single VAD blip on a door slam still yields ~1s of array.
+            Handing that to Whisper is what produces confident nonsense
+            ("Thank you.", "I'm going to be…") in place of an empty string.
 
     Deadlines are wall-clock (time.monotonic), not frame counts — a stalled or
     slow-delivering mic (see vad_frame_stream) no longer stretches a nominal
@@ -1472,6 +1487,7 @@ def record_until_silence(
     ring: typing.Deque[np.ndarray] = collections.deque(maxlen=preroll_frames)
     voiced: typing.List[np.ndarray] = []
     started = False
+    speech_frames = 0
     last_voice_t = 0.0
 
     t0 = time.monotonic()
@@ -1493,12 +1509,14 @@ def record_until_silence(
                 ring.append(f16)
                 if is_speech:
                     started = True
+                    speech_frames = 1
                     voiced.extend(ring)
                     ring.clear()
                     last_voice_t = now
             else:
                 voiced.append(f16)
                 if is_speech:
+                    speech_frames += 1
                     last_voice_t = now
                 elif now - last_voice_t >= silence_needed_s:
                     break
@@ -1508,4 +1526,14 @@ def record_until_silence(
 
     if not voiced:
         return np.zeros(0, dtype=np.float32)
+
+    speech_ms = speech_frames * frame_ms
+    if speech_ms < min_speech_ms:
+        import helpers.diagnostics as diagnostics
+        diagnostics.add(
+            "info", "MIC",
+            f"Discarded capture — only {speech_ms}ms of speech (need {min_speech_ms}ms).",
+        )
+        return np.zeros(0, dtype=np.float32)
+
     return np.concatenate(voiced).astype(np.float32)

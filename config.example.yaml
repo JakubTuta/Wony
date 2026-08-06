@@ -27,6 +27,15 @@ voice:
     silence_ms: 700    # how long you have to stop talking before Wony answers
                        # raise if she cuts you off mid-sentence
 
+  # Global push-to-talk key, in pynput syntax. null disables it.
+  # Keep it to three keys and away from common shortcuts: this hook is
+  # system-wide and does not consume the keystroke, and pynput ignores extra
+  # modifiers — so "<ctrl>+l" also fires on ctrl+shift+l and ctrl+alt+l, and
+  # would trigger on the browser address bar, clear-terminal, and VS Code
+  # select-line.
+  hotkeys:
+    push_to_talk: "<ctrl>+<alt>+w"
+
   # Continuous conversation: mic reopens after each response for chained commands.
   # Session ends on silence or a stop phrase ("stop", "thanks", "done", …).
   conversation:

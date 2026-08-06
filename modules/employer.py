@@ -51,7 +51,7 @@ class Employer:
         self.converse(first_text=first_text)
 
     def handle_utterance(self, text: str) -> None:
-        """Process a transcribed speech utterance (called by wake word and ctrl+l paths)."""
+        """Process a transcribed speech utterance (called by wake word and push-to-talk paths)."""
         if not text:
             return
         self.converse(first_text=text)

@@ -767,6 +767,34 @@ def play_earcon() -> None:
         pass
 
 
+def acknowledge_wake() -> None:
+    """Confirm out loud that a listening turn just opened, and warm the models.
+
+    Every path that opens one goes through here — wake word, the push-to-talk
+    hotkey, tray "Listen now" — because a turn that pauses the user's media and
+    then says nothing is indistinguishable from the app misbehaving. That is
+    exactly how a stray hotkey press used to present: media ducked out, no
+    reason given.
+
+    Warming is part of the same moment: the ack clip and the user drawing breath
+    are the only free time there is to cover a cold Whisper/Kokoro load.
+
+    Caller is expected to already hold a `pause_media()` block.
+    """
+    from helpers.cache import Cache
+    from helpers.recognizer import warm_async
+
+    warm_async()
+    warm_tts_async()
+
+    if Cache.get_audio():
+        Audio.play_cached("Yes?")
+    elif bool(Config.get("voice.feedback.ack_when_muted", True)):
+        # Muted: no spoken ack, but a short tone still confirms the turn landed
+        # instead of leaving the user guessing.
+        play_earcon()
+
+
 def preload_tts() -> None:
     """Warm the TTS engine at startup so the first response has no cold-start lag."""
     try:
