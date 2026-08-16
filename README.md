@@ -213,46 +213,26 @@ Wony logs a diagnostic and falls back to `"hey jarvis"` automatically rather tha
 disabling wake word — check `python wony.py doctor` or the tray diagnostics if it ever
 sounds like the wrong word is being listened for.
 
-### Training a custom wake word ("Hey Wony")
+### Training a custom wake word
 
-Want a custom phrase instead of a built-in? Train your own model:
+Want your own phrase instead of a built-in? Start the guided setup:
 
-| | [train_hey_wony.sh](training/train_hey_wony.sh) | [train_hey_wony.ipynb](training/train_hey_wony.ipynb) |
-|---|---|---|
-| **Where to run** | WSL (Windows Subsystem for Linux) | Google Colab |
-| **GPU** | RTX 4060 (CUDA 12.1) | T4 free tier |
-| **Time** | ~1–2 h | ~2–4 h |
-
-**WSL:**
-```bash
-bash /mnt/d/Projekty/Wony/training/train_hey_wony.sh
+```powershell
+python setup.py wakeword
 ```
 
-**Colab:** Open `training/train_hey_wony.ipynb`, set Runtime to GPU (T4), run all cells, download `hey_wony.onnx`.
+It asks for your phrase, optionally records you saying it (via
+[training/record_wake_word.py](training/record_wake_word.py) — the single biggest accuracy
+win, since a model that's never heard a real human sometimes only fires on synthetic voices),
+and wires `config.yaml` for you. It then prints the one training command to run — either
+[train_hey_wony.sh](training/train_hey_wony.sh) (WSL, ~4–6h on your own GPU) or
+[train_hey_wony.ipynb](training/train_hey_wony.ipynb) (Colab, ~4–8h on a free T4) — both
+resumable if interrupted, and both fully commented for anyone who wants the details.
 
-> If you ever change the training config in one of these files (target phrase, sample counts,
-> augmentation settings, etc.), update **both** — they're kept in lockstep on purpose so either
-> environment reproduces the same model.
-
-**After training:**
-```bash
-cp hey_wony.onnx models/hey_wony.onnx
-```
-```yaml
-voice:
-  wake_word:
-    enabled: true
-    model_path: "models/hey_wony.onnx"
-    threshold: 0.5
-```
-
-**Verify and tune:** run `python wony.py doctor` — it synthesizes the trained phrase and scores
-it against your deployed model, independent of the mic, so you can tell a threshold problem
-from a mic problem. Start `threshold` at `0.5`. Only lower it (toward `0.35`) if the doctor
-self-test scores real speech well but the live listener still misses triggers in a real room —
-a low threshold masks a model that doesn't generalize past its training data and will produce
-more false wakes than it's worth. If misses persist even after lowering the threshold, retrain
-with more samples/augmentation rounds rather than continuing to lower it.
+Two things worth knowing going in: the script pauses partway through so you can listen to a
+few generated clips before committing to the multi-hour part (they should sound like *you*
+saying the phrase — if not, stop and adjust); and re-running after changing settings needs
+`--fresh` (script flag / notebook cell), or old clips stay mixed into the new run.
 
 ### Voice barge-in
 

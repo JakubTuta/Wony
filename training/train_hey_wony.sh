@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
-# Train "Hey Wony" custom wake word using openWakeWord.
+# Train a custom wake word for Wony using openWakeWord.
 # Run inside WSL: bash /mnt/d/Projekty/Wony/training/train_hey_wony.sh
 #
-# Output: /mnt/d/Projekty/Wony/models/hey_wony.onnx
-# Time:   ~1-2h on RTX 4060
+# Trains whatever phrase you set in "What to train" below — "hey wony" is only
+# the default. Output: /mnt/d/Projekty/Wony/models/<your_phrase>.onnx
+# Time: ~4-6h on an RTX 4060. Safe to interrupt — re-running resumes.
+#
+#   --fresh   delete previously generated clips/features and start over. Use it
+#             whenever you change the phrase or sample counts, so clips from the
+#             old settings don't get mixed into the new run.
 
 set -e
 trap 'echo "ERROR at line $LINENO: $BASH_COMMAND" >&2' ERR
@@ -12,9 +17,38 @@ WORKDIR="/mnt/d/Projekty/Wony/training"
 VENV="$HOME/hey_wony_venv"   # WSL home — avoids NTFS symlink issues
 WONY_MODELS="/mnt/d/Projekty/Wony/models"
 
+FRESH=0
+if [ "${1:-}" = "--fresh" ]; then FRESH=1; fi
+
+# ── What to train ─────────────────────────────────────────────────────────────
+# The phrase you say out loud. Two syllables or more works best — very short
+# words trigger on everything.
+export WAKE_PHRASE="hey wony"
+
+# Optional extra spellings of the SAME phrase, one per line (leave empty for
+# ordinary English words). The training clips are synthesized by a TTS engine
+# that pronounces text the way English spelling implies, so an invented or
+# non-English name can come out sounding nothing like how you actually say it —
+# and a model trained on that will never fire on your voice. Extra spellings
+# make the clips cover a range of pronunciations instead of one guess. Step 7
+# below lets you hear what was generated before the long training starts.
+export WAKE_PHRASE_VARIANTS="hey woney
+hey woni
+hey wany
+hay wony"
+
+# Positive samples to synthesize. openWakeWord's docs: 20k minimum, 100k+ is
+# usually best — and this is the setting that most affects whether the model
+# generalizes from synthetic voices to a real human one.
+export N_SAMPLES=100000
+
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 step() { echo -e "\n${GREEN}▶ $1${NC}"; }
 warn() { echo -e "${YELLOW}⚠ $1${NC}"; }
+
+# File-safe name derived from the phrase: "hey wony" → "hey_wony"
+MODEL_NAME=$(echo "$WAKE_PHRASE" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '_' | sed 's/^_//; s/_$//')
+export MODEL_NAME
 
 # ── 0. Preflight ──────────────────────────────────────────────────────────────
 step "Preflight checks"
@@ -30,6 +64,12 @@ sudo apt-get install -y -qq unzip ffmpeg
 mkdir -p "$WORKDIR" "$WONY_MODELS"
 cd "$WORKDIR"
 echo "Working directory: $WORKDIR"
+echo "Training phrase:   '$WAKE_PHRASE'  →  $MODEL_NAME.onnx"
+
+if [ "$FRESH" = "1" ]; then
+  step "Fresh start — deleting previously generated clips and features"
+  rm -rf "$WORKDIR/$MODEL_NAME"
+fi
 
 # ── Create venv (solves externally-managed-environment on Ubuntu 23.04+) ──────
 # piper-phonemize has no Python 3.12 wheel — use 3.11
@@ -229,26 +269,28 @@ config = yaml.load(
     yaml.Loader
 )
 
-config["target_phrase"]             = ["hey wony", "hey woney", "hey woni", "hey wany", "hay wony"]
-config["model_name"]                = "hey_wony"
-config["output_dir"]                = os.path.abspath("./hey_wony")
+phrase   = os.environ["WAKE_PHRASE"].strip()
+variants = [v.strip() for v in os.environ.get("WAKE_PHRASE_VARIANTS", "").splitlines() if v.strip()]
+
+config["target_phrase"]               = [phrase] + variants
+config["model_name"]                  = os.environ["MODEL_NAME"]
+config["output_dir"]                  = os.path.abspath("./" + os.environ["MODEL_NAME"])
 config["piper_sample_generator_path"] = os.path.abspath("./piper-sample-generator")
 
 # ── Robustness on REAL voice ──────────────────────────────────────────────
-# Prior model scored ~0.8 on synthetic TTS but ~0.01 on real speech: it was
-# trained too conservatively and only fired on near-perfect (synthetic)
-# matches. Fixes:
-#  - more positive samples + augmentation rounds → more acoustic variety so
-#    the model generalizes beyond the TTS voices to real microphones/rooms.
-#  - loosen the false-positive target and lower the negative weight so
-#    auto_train keeps a more SENSITIVE (higher-recall) checkpoint instead of
-#    an ultra-strict one that suppresses real voice to ~0.
-config["n_samples"]       = 50000    # was 30000 (docs: 20k min, 100k+ best)
-config["n_samples_val"]   = 4000     # was 2000
-config["augmentation_rounds"] = 2    # was 1 — 2x unique RIR+noise augmentations per clip
-config["steps"]           = 50000
-config["max_negative_weight"] = 1000              # was 1500 — less negative suppression
-config["target_false_positives_per_hour"] = 0.5   # was 0.2 — allow more sensitivity
+# A model trained only on synthetic speech can end up firing on TTS clips but
+# not on a human — the fix is more acoustic variety in the positives, plus a
+# checkpoint chosen for recall rather than minimum false positives.
+config["n_samples"]     = int(os.environ["N_SAMPLES"])
+config["n_samples_val"] = max(2000, int(os.environ["N_SAMPLES"]) // 20)
+config["steps"]         = 50000
+config["max_negative_weight"] = 1000              # less suppression of positives
+config["target_false_positives_per_hour"] = 0.5   # allow a more sensitive checkpoint
+# augmentation_rounds is deliberately 1: train.py multiplies the clip list by it
+# but still passes n_total=<unique clip count> to compute_features_from_generator,
+# which stops at n_total rows — so rounds > 1 costs extra augmentation time and
+# then throws the extra rounds away. Put the budget into n_samples instead.
+config["augmentation_rounds"] = 1
 # NOTE: target_accuracy / target_recall are NOT read by auto_train (it selects
 # the best checkpoint by recall under target_false_positives_per_hour), so they
 # are intentionally omitted.
@@ -259,7 +301,7 @@ config["feature_data_files"] = {
     "ACAV100M_sample": os.path.abspath("openwakeword_features_ACAV100M_2000_hrs_16bit.npy")
 }
 
-with open("hey_wony.yaml", "w") as f:
+with open(os.environ["MODEL_NAME"] + ".yaml", "w") as f:
     yaml.dump(config, f)
 
 print("Config written:")
@@ -267,45 +309,133 @@ for k in ["target_phrase", "model_name", "output_dir", "n_samples", "steps", "ba
     print(f"  {k}: {config[k]}")
 PYEOF
 
+CONFIG="$MODEL_NAME.yaml"
+
 # ── 6. Generate synthetic clips ───────────────────────────────────────────────
 step "Phase 1/3 — Generating synthetic clips (TTS)"
 $PY openwakeword/openwakeword/train.py \
-  --training_config hey_wony.yaml \
+  --training_config "$CONFIG" \
   --generate_clips
+
+POS_DIR="$WORKDIR/$MODEL_NAME/$MODEL_NAME/positive_train"
+
+# ── 6b. Optional: mix in your own recordings ─────────────────────────────────
+# train.py's augmentation step simply globs positive_train/*.wav, so dropping
+# real recordings in here is all it takes to include them in training.
+step "Checking for your own recordings (optional)"
+
+REC_DIR="$WORKDIR/my_recordings"
+mkdir -p "$REC_DIR"
+
+# Drop copies added by a previous run first, so re-running never stacks them up.
+rm -f "$POS_DIR"/mine_*.wav
+
+REC_COUNT=$(find "$REC_DIR" -type f \( -iname '*.wav' -o -iname '*.mp3' -o -iname '*.m4a' -o -iname '*.ogg' -o -iname '*.flac' \) | wc -l)
+if [ "$REC_COUNT" -eq 0 ]; then
+  echo "No recordings in $REC_DIR — training on synthetic voices only."
+  echo "That works. To make the model fit YOUR voice better, see README →"
+  echo "'Training a custom wake word' → 'Optional: add your own voice'."
+else
+  # Aim for roughly 5% of the positives so real speech carries weight without
+  # a handful of clips dominating the far larger synthetic set.
+  COPIES=$(( N_SAMPLES / 20 / REC_COUNT ))
+  if [ "$COPIES" -lt 1 ]; then COPIES=1; fi
+  echo "Found $REC_COUNT recording(s) — adding each one $COPIES times."
+
+  # Copy off /mnt/d before opening files one by one — DrvFs (the /mnt/* NTFS
+  # bridge) has been observed to reproducibly fail per-file opens on files
+  # `find` lists fine. Same reason the venv above lives under $HOME.
+  LOCAL_REC="$HOME/.wony_my_recordings"
+  rm -rf "$LOCAL_REC"; mkdir -p "$LOCAL_REC"
+  find "$REC_DIR" -type f \( -iname '*.wav' -o -iname '*.mp3' -o -iname '*.m4a' -o -iname '*.ogg' -o -iname '*.flac' \) \
+    -exec cp {} "$LOCAL_REC/" \;
+  copied=$(find "$LOCAL_REC" -type f | wc -l)
+  if [ "$copied" -lt "$REC_COUNT" ]; then
+    warn "Only copied $copied of $REC_COUNT recordings off /mnt/d — some may still fail below."
+  fi
+
+  TMP_REC="$WORKDIR/.my_recordings_16k"
+  rm -rf "$TMP_REC"; mkdir -p "$TMP_REC"
+
+  # Normalize to what openWakeWord expects (16 kHz mono 16-bit) and trim silence
+  # from both ends: augmentation right-aligns each clip, so leading/trailing
+  # silence would shift the phrase away from where the model expects it.
+  TRIM="silenceremove=start_periods=1:start_threshold=-45dB:start_silence=0.05:detection=peak"
+  n=0
+  while IFS= read -r -d '' f; do
+    n=$((n + 1))
+    # -nostdin: without it, ffmpeg reads stdin for interactive control — but
+    # this loop's process substitution puts the NUL-delimited file list on
+    # that same fd, so ffmpeg steals bytes meant for `read` and corrupts it.
+    ffmpeg -nostdin -y -i "$f" -ar 16000 -ac 1 -sample_fmt s16 \
+        -af "$TRIM,areverse,$TRIM,areverse" \
+        "$TMP_REC/rec_$n.wav" -loglevel error \
+      || warn "Could not convert $(basename "$f") — skipping it."
+  done < <(find "$LOCAL_REC" -type f -print0)
+
+  for f in "$TMP_REC"/*.wav; do
+    # Guard against the glob staying literal when every conversion failed.
+    if [ ! -e "$f" ]; then
+      warn "None of your recordings could be converted — continuing with synthetic clips only."
+      break
+    fi
+    base=$(basename "$f" .wav)
+    for c in $(seq 1 "$COPIES"); do
+      cp "$f" "$POS_DIR/mine_${base}_$c.wav"
+    done
+  done
+  echo "Mixed in: $(find "$POS_DIR" -name 'mine_*.wav' | wc -l) clips from your recordings."
+fi
+
+# ── 6c. Pronunciation check ──────────────────────────────────────────────────
+step "Pronunciation check — listen before the long part starts"
+
+SAMPLE_DIR="$WORKDIR/sample_clips"
+rm -rf "$SAMPLE_DIR"; mkdir -p "$SAMPLE_DIR"
+find "$POS_DIR" -name '*.wav' ! -name 'mine_*' | head -5 | while IFS= read -r f; do
+  cp "$f" "$SAMPLE_DIR/"
+done
+warn "Play the clips in training/sample_clips/ (they open fine in Windows)."
+echo "They should sound like how YOU say '$WAKE_PHRASE'. If they sound like a"
+echo "different word, press Ctrl+C now, add spellings to WAKE_PHRASE_VARIANTS"
+echo "at the top of this script, and re-run with --fresh. Training on clips that"
+echo "sound wrong produces a model that never fires on your voice."
+echo "Continuing in 60s..."
+sleep 60
 
 # ── 7. Augment clips ──────────────────────────────────────────────────────────
 step "Phase 2/3 — Augmenting clips with room acoustics + noise"
+# --overwrite is REQUIRED: without it train.py skips this whole step whenever
+# feature .npy files from an earlier run exist, and then trains on that stale
+# data — so changing any setting above appears to do nothing at all.
 $PY openwakeword/openwakeword/train.py \
-  --training_config hey_wony.yaml \
-  --augment_clips
+  --training_config "$CONFIG" \
+  --augment_clips \
+  --overwrite
 
 # ── 8. Train model ────────────────────────────────────────────────────────────
 step "Phase 3/3 — Training model (this takes a while)"
 # || true: train.py exits non-zero after saving .onnx if onnx_tf isn't installed (tflite step).
 # The .onnx is saved before that failure, so we catch it below.
 $PY openwakeword/openwakeword/train.py \
-  --training_config hey_wony.yaml \
+  --training_config "$CONFIG" \
   --train_model || true
 
-ONNX_OUT=$(find ./hey_wony -name "hey_wony.onnx" 2>/dev/null | head -1)
-if [ -z "$ONNX_OUT" ]; then
-  echo "ERROR: Training failed — hey_wony.onnx not produced. Check output above."
+ONNX=$(find "./$MODEL_NAME" -name "$MODEL_NAME.onnx" 2>/dev/null | head -1)
+if [ -z "$ONNX" ]; then
+  ONNX=$(find . -name "$MODEL_NAME.onnx" | head -1)
+fi
+if [ -z "$ONNX" ]; then
+  echo "ERROR: Training failed — $MODEL_NAME.onnx not produced. Check output above."
   exit 1
 fi
-echo "Model saved: $ONNX_OUT"
+echo "Model saved: $ONNX"
 
 # ── 9. Copy output to Wony repo ───────────────────────────────────────────────
 step "Copying model to Wony repo"
 
-ONNX=$(find ./hey_wony -name "hey_wony.onnx" 2>/dev/null | head -1)
-[ -z "$ONNX" ] && ONNX=$(find . -name "hey_wony.onnx" | head -1)
-if [ -z "$ONNX" ]; then
-  echo "ERROR: hey_wony.onnx not found — check training output above."
-  exit 1
-fi
-
-cp "$ONNX" "$WONY_MODELS/hey_wony.onnx"
-echo "Copied to $WONY_MODELS/hey_wony.onnx"
+cp "$ONNX" "$WONY_MODELS/$MODEL_NAME.onnx"
+echo "Copied to $WONY_MODELS/$MODEL_NAME.onnx"
 
 echo ""
 echo -e "${GREEN}✓ Done!${NC}"
@@ -314,5 +444,8 @@ echo "Next steps — in config.yaml set:"
 echo "  voice:"
 echo "    wake_word:"
 echo "      enabled: true"
-echo "      model_path: models/hey_wony.onnx"
+echo "      phrase: \"$WAKE_PHRASE\""
+echo "      model_path: models/$MODEL_NAME.onnx"
 echo "      threshold: 0.5"
+echo ""
+echo "Then check it with: python wony.py doctor"

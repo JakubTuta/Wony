@@ -15,9 +15,17 @@ modules that are already set up — only the newly checked ones get installed.
 Stdlib only. The feature menu is a scrollable arrow-key checklist (space to
 toggle, enter to confirm); on a non-interactive terminal it falls back to a
 numeric toggle prompt.
+
+    python setup.py wakeword
+
+Separate guided flow for training a custom wake word (see training/). Picks
+a phrase, optionally records real samples of you saying it, and wires
+config.yaml — the actual (multi-hour, WSL/Colab) training step still runs on
+its own.
 """
 
 import os
+import re
 import subprocess
 import sys
 
@@ -75,7 +83,8 @@ FEATURES = [
     {"key": "wakeword", "label": "Wake word — hands-free 'hey jarvis'",
      "reqs": ["wakeword.txt"], "module": None, "default": False,
      "desc": "Start a conversation by voice with no key press.",
-     "needs": "Requires Voice I/O. Set voice.wake_word.enabled: true in config.yaml."},
+     "needs": "Requires Voice I/O. Built-in phrase works immediately; for your own "
+              "phrase run: python setup.py wakeword"},
     {"key": "tray", "label": "System tray + web chat UI (recommended run mode)",
      "reqs": ["tray.txt", "server.txt"], "module": None, "default": True,
      "desc": "Run Wony in the background with a tray icon and a browser chat UI.",
@@ -465,6 +474,114 @@ def ask_media_pause(chosen):
         print(c("  . media pause disabled.", "90"))
 
 
+def _line_key(line):
+    """(indent, key) for a `key: value` / `key:` line, else None (blank/comment)."""
+    stripped = line.rstrip("\n").strip()
+    if not stripped or stripped.startswith("#") or ":" not in stripped:
+        return None
+    indent = len(line) - len(line.lstrip(" "))
+    return indent, stripped.split(":", 1)[0].strip()
+
+
+def _block_end(lines, header_idx, indent):
+    """First line index after header_idx whose indent is <= `indent` (children
+    end there), skipping blank/comment lines. len(lines) if the block runs to EOF."""
+    j = header_idx + 1
+    while j < len(lines):
+        info = _line_key(lines[j])
+        if info is not None and info[0] <= indent:
+            break
+        j += 1
+    return j
+
+
+def _find_key(lines, key, indent, start, end):
+    for i in range(start, end):
+        info = _line_key(lines[i])
+        if info == (indent, key):
+            return i
+    return None
+
+
+def set_wake_word_config(phrase, model_path, threshold=0.5):
+    """Write voice.wake_word.{enabled,phrase,model_path,threshold} into
+    config.yaml, inserting the block if missing — it ships absent from
+    config.example.yaml since wake word is opt-in (see Config philosophy in
+    CLAUDE.md: not a setting a first-time user needs to see)."""
+    if not os.path.exists(CONFIG):
+        return
+    with open(CONFIG, "r", encoding="utf-8") as fh:
+        lines = fh.readlines()
+
+    voice_i = _find_key(lines, "voice", 0, 0, len(lines))
+    if voice_i is None:
+        print(c("  ! No 'voice:' section in config.yaml — add wake word settings manually.", "33"))
+        return
+    voice_end = _block_end(lines, voice_i, 0)
+
+    wanted = {
+        "enabled": "true",
+        "phrase": f'"{phrase}"',
+        "model_path": f'"{model_path}"',
+        "threshold": str(threshold),
+    }
+
+    ww_i = _find_key(lines, "wake_word", 2, voice_i + 1, voice_end)
+    if ww_i is None:
+        block = ["  wake_word:\n"] + [f"    {k}: {v}\n" for k, v in wanted.items()]
+        lines[voice_end:voice_end] = block
+    else:
+        ww_end = _block_end(lines, ww_i, 2)
+        for key, value in wanted.items():
+            k_i = _find_key(lines, key, 4, ww_i + 1, ww_end)
+            line = f"    {key}: {value}\n"
+            if k_i is not None:
+                lines[k_i] = line
+            else:
+                lines.insert(ww_end, line)
+                ww_end += 1
+
+    with open(CONFIG, "w", encoding="utf-8") as fh:
+        fh.writelines(lines)
+    print(c(f'  ✓ voice.wake_word.phrase = "{phrase}" in config.yaml', "32"))
+
+
+def cmd_wakeword():
+    """Guided flow for a custom wake word: pick a phrase, optionally record
+    real samples of it, wire config.yaml, print the training command. The
+    multi-hour training itself always runs separately (WSL/Colab) — this
+    only handles the parts that are quick and local."""
+    import importlib.util
+
+    print(c("\n  Custom wake word", "1;36"))
+    print("  " + "-" * 50)
+    if importlib.util.find_spec("sounddevice") is None or importlib.util.find_spec("openwakeword") is None:
+        print(c("  Voice I/O + Wake word aren't installed yet.", "33"))
+        print("  Run 'python setup.py', select them, then come back to this command.")
+        return
+
+    phrase = input("  Phrase to train [hey wony]: ").strip() or "hey wony"
+    stem = re.sub(r"[^a-z0-9]+", "_", phrase.lower()).strip("_") or "wake_word"
+
+    print(c("\n  Recording yourself saying it (optional, but the single best thing", "1"))
+    print("  you can do for accuracy — training also works with none at all).")
+    count = input("  How many clips to record now? [15, 0 to skip]: ").strip()
+    count = int(count) if count.isdigit() else 15
+    if count > 0:
+        subprocess.call([sys.executable, os.path.join(ROOT, "training", "record_wake_word.py"),
+                          phrase, "--count", str(count)])
+
+    set_wake_word_config(phrase, model_path=f"models/{stem}.onnx", threshold=0.5)
+
+    print(c("\n  Next: train the model (see training/train_hey_wony.sh header comment,", "1"))
+    print(c("  or the notebook, for the full walkthrough):", "1"))
+    print(f'    1. Set WAKE_PHRASE = "{phrase}" at the top of the training script/notebook.')
+    print("    2. WSL:   bash /mnt/d/Projekty/Wony/training/train_hey_wony.sh")
+    print("       Colab: open training/train_hey_wony.ipynb, Runtime -> GPU, run all cells.")
+    print(f"  Recorded clips and config.yaml are already in place. Model lands at models/{stem}.onnx.")
+    print("  When it's done: python wony.py doctor")
+
+
 def apply_enabled_modules(chosen):
     ok, _ = ensure_config()
     if not ok:
@@ -669,6 +786,10 @@ def next_steps(chosen, use_venv):
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "wakeword":
+        cmd_wakeword()
+        return
+
     print(c("\n  Wony setup", "1;36"))
     print("  " + "-" * 50)
     print(f"  Python {sys.version.split()[0]}  ({sys.executable})")

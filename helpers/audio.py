@@ -768,7 +768,7 @@ def play_earcon() -> None:
 
 
 def acknowledge_wake() -> None:
-    """Confirm out loud that a listening turn just opened, and warm the models.
+    """Confirm out loud that a listening turn just opened, then warm the models.
 
     Every path that opens one goes through here — wake word, the push-to-talk
     hotkey, tray "Listen now" — because a turn that pauses the user's media and
@@ -776,16 +776,17 @@ def acknowledge_wake() -> None:
     exactly how a stray hotkey press used to present: media ducked out, no
     reason given.
 
-    Warming is part of the same moment: the ack clip and the user drawing breath
-    are the only free time there is to cover a cold Whisper/Kokoro load.
+    Ack plays FIRST, warm-up starts after: loading faster-whisper/Kokoro is a
+    single blocking call into a C extension that does not release the GIL for
+    its duration, so kicking it off before the ack clip stalled the ack itself
+    on a cold cache (measured ~10s on the first trigger of a session). Starting
+    it after costs nothing — the user's drawing breath + speaking is still free
+    time to cover the load, it just no longer blocks what they hear first.
 
     Caller is expected to already hold a `pause_media()` block.
     """
     from helpers.cache import Cache
     from helpers.recognizer import warm_async
-
-    warm_async()
-    warm_tts_async()
 
     if Cache.get_audio():
         Audio.play_cached("Yes?")
@@ -793,6 +794,9 @@ def acknowledge_wake() -> None:
         # Muted: no spoken ack, but a short tone still confirms the turn landed
         # instead of leaving the user guessing.
         play_earcon()
+
+    warm_async()
+    warm_tts_async()
 
 
 def preload_tts() -> None:
