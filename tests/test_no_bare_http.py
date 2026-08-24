@@ -1,14 +1,10 @@
 """Guards against reintroducing unbounded HTTP calls in modules/.
 
-A bare requests.get/post() has no timeout and can hang a whole voice turn (see
-logs/ai_assistant_20260801_122648.log — a Shelly call with no timeout blocked a
-turn for 1m45s). modules/ must call helpers.net instead, which bakes a
-(connect, read) timeout in.
-
 httpx is covered too: it is a second HTTP client that bypasses helpers.net
 entirely, so the original requests-only guard did not see modules/web.py.
 Run directly: python tests/test_no_bare_http.py
 """
+
 import glob
 import os
 import re

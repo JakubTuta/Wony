@@ -23,7 +23,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements/core.txt
           pip install -r requirements/web.txt
-          pip install -r requirements/scheduler.txt
 
       - name: Byte-compile
         run: python -m compileall -q helpers modules scripts tests wony.py tray_app.py setup.py

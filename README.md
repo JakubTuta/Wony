@@ -121,6 +121,7 @@ enabled_modules:
   - ai
   - status
   - basics
+  - scheduler
   - weather
   - spotify
   - screen
@@ -128,14 +129,13 @@ enabled_modules:
   - calendar
   - shazam
   # - league
-  # - shelly
-  # - scheduler
+  # - home_assistant
   # - web
   # - desktop
   # - mcp
 ```
 
-Secrets stay in `.env`. Non-secret per-module settings (e.g. Shelly IP, Gmail poll interval) go in `config.yaml` under `modules:`.
+Secrets stay in `.env`. Non-secret per-module settings (e.g. Home Assistant URL, Gmail poll interval) go in `config.yaml` under `modules:`.
 
 ## Module dependencies (manual / advanced)
 
@@ -150,7 +150,6 @@ pip install -r requirements/automation.txt # league / mouse control
 pip install -r requirements/weather.txt    # weather module
 pip install -r requirements/gmail.txt      # Gmail module
 pip install -r requirements/calendar.txt   # Google Calendar module
-pip install -r requirements/scheduler.txt  # persistent reminders
 pip install -r requirements/web.txt        # web search + URL fetch
 pip install -r requirements/desktop.txt    # desktop control
 pip install -r requirements/shazam.txt     # song recognition
@@ -277,9 +276,26 @@ pip install -r requirements/semantic.txt
 
 Activates automatically. Use `semantic recall` to search by meaning or `index document` to make a file searchable.
 
-### Shelly smart switch
+### Home Assistant
 
-Set `modules.shelly.base_url` in `config.yaml` to your device IP and enable `shelly`.
+Controls anything Home Assistant already controls — lights, switches, blinds,
+thermostats, media players, locks, scenes and scripts — by name or by room
+("dim the bedroom lamp to 30", "close the blinds", "is the garage open").
+
+1. In Home Assistant, open your profile → **Security** → **Long-lived access
+   tokens** → *Create token*.
+2. Add it to `.env`:
+
+   ```
+   HOME_ASSISTANT_TOKEN="..."
+   ```
+
+3. Point `modules.home_assistant.base_url` in `config.yaml` at your Home
+   Assistant (the same URL you open in a browser) and enable `home_assistant`.
+
+Locks, alarms and garage doors are refused until you set
+`modules.home_assistant.allow_locks: true` — everything else works right away.
+No extra packages needed.
 
 ## Adding a new module
 

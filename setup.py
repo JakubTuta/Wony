@@ -124,11 +124,12 @@ FEATURES = [
     },
     {
         "key": "scheduler",
-        "label": "Reminders & recurring notifications",
-        "reqs": ["scheduler.txt"],
+        "label": "Timers, alarms & reminders",
+        # Its deps ship in core.txt — every install needs a working timer.
+        "reqs": ["core.txt"],
         "module": "scheduler",
-        "default": False,
-        "desc": "Persistent reminders and scheduled tasks.",
+        "default": True,
+        "desc": "Timers and alarms that survive restarts, and can run another job when they fire.",
         "needs": "",
     },
     {
@@ -196,13 +197,15 @@ FEATURES = [
         "needs": "",
     },
     {
-        "key": "shelly",
-        "label": "Shelly smart-home control",
+        "key": "home_assistant",
+        "label": "Home Assistant (whole-house control)",
         "reqs": [],
-        "module": "shelly",
+        "module": "home_assistant",
         "default": False,
-        "desc": "Control Shelly devices on your network.",
-        "needs": "Set modules.shelly.base_url in config.yaml to your device IP.",
+        "desc": "Control lights, blinds, thermostats, locks, scenes and scripts.",
+        "needs": "HOME_ASSISTANT_TOKEN in .env (profile → Security → Long-lived access "
+        "tokens); set modules.home_assistant.base_url in config.yaml. Locks and the "
+        "garage stay off until modules.home_assistant.allow_locks: true.",
     },
     {
         "key": "mcp",
@@ -518,6 +521,7 @@ def ensure_env():
         '# SPOTIFY_CLIENT_ID="..."',
         '# SPOTIFY_CLIENT_SECRET="..."',
         '# TAVILY_API_KEY="..."           # better web search (optional)',
+        '# HOME_ASSISTANT_TOKEN="..."     # HA profile → Security → long-lived token',
     ]
     with open(ENV_FILE, "w", encoding="utf-8") as fh:
         fh.write("\n".join(lines) + "\n")

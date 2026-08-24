@@ -25,7 +25,7 @@ const MODULE_ICONS: Record<string, LucideIcon> = {
   basics: Clock,
   ai: Brain,
   scheduler: Bell,
-  shelly: Home,
+  home_assistant: Home,
   league: BarChart2,
   status: Zap,
 };

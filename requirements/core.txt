@@ -1,9 +1,13 @@
 # Core dependencies — required to run the assistant in text mode with any AI provider.
+# apscheduler/dateparser are core because the scheduler module is the only timer
+# Wony has; without them "set a timer for 5 minutes" does not work at all.
 python-dotenv
 PyYAML
 pydantic
 pydantic-settings
 requests
+apscheduler>=3.10
+dateparser>=1.2
 numpy
 Pillow
 anthropic

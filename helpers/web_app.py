@@ -23,7 +23,6 @@ _DESTRUCTIVE_JOBS: typing.Set[str] = {
     "exit",
     "close_computer",
     "stop_active_jobs",
-    "cancel_timers",
     "send_email",
     "reply_to_email",
     "mark_as_read",

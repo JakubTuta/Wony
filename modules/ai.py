@@ -11,12 +11,6 @@ from helpers.conversation import Conversation
 from helpers.decorators import capture_response
 from helpers.registry import method_job, register_job, simple_service
 
-# SDK default (Anthropic: timeout=600s, max_retries=2) lets one stalled
-# request hang a voice turn for up to ~30 minutes — see
-# logs/ai_assistant_20260801_122648.log. Same ceiling applied to all three
-# providers so none of them can reproduce it. Only Anthropic's SDK exposes a
-# retry count as a separate constructor arg (genai/ollama retry via their own
-# transport defaults, already bounded once the timeout itself is bounded).
 _AI_CLIENT_TIMEOUT_SECONDS = 45.0
 _ANTHROPIC_MAX_RETRIES = 1
 
@@ -24,16 +18,19 @@ _ANTHROPIC_MAX_RETRIES = 1
 def _extract_text(path: str) -> str:
     """Extract plain text from a file. Supports .txt/.md/plain and .pdf."""
     import os
+
     ext = os.path.splitext(path)[1].lower()
     try:
         if ext == ".pdf":
             try:
                 import pdfminer.high_level
+
                 return pdfminer.high_level.extract_text(path)
             except ImportError:
                 pass
             try:
                 from pypdf import PdfReader
+
                 reader = PdfReader(path)
                 return "\n".join(p.extract_text() or "" for p in reader.pages)
             except ImportError:
@@ -83,13 +80,11 @@ def build_agent_system_prompt() -> typing.List[str]:
         " email (Gmail), calendar (Google Calendar), web search, desktop control,"
         " persistent memory, reminders, and general knowledge."
         " Follow these rules for every user request:"
-
         "\n\n1. GREET AND ORIENT: If the user greets you (hello, hi, hey, good morning,"
         " good afternoon, good evening, greetings, what's up, morning briefing, daily briefing),"
         " call the `greeting` tool immediately — do NOT generate your own greeting."
         " The `greeting` tool returns real-time time, date, weather, unread emails, and today's meetings."
         " After the tool returns, relay its output verbatim."
-
         "\n\n2. CLARIFY MISSING REQUIRED INFO: Before calling any tool, check whether all"
         " required information is known. Required fields are marked '(required)' in the"
         " tool descriptions. If a required field is missing and cannot be inferred from"
@@ -97,31 +92,25 @@ def build_agent_system_prompt() -> typing.List[str]:
         " what you need — e.g. 'What song would you like to play?' or"
         " 'Who should I send the email to, and what should it say?'."
         " Ask no more than one question per turn. Then stop and wait for the answer."
-
         "\n\n3. DISAMBIGUATE VAGUE REQUESTS: If the user's request could match several"
         " different actions, briefly list the options and ask which one they mean."
         " Example: 'I can either send a new email, or add a new Google account."
         " Which did you mean?'"
-
         "\n\n4. EXPLAIN ON REQUEST: If the user asks 'how do I X', 'what do you need to X',"
         " or 'what information do you need', explain what fields that job requires"
         " (drawn from the tool description) rather than attempting the action."
-
         "\n\n5. USE TOOLS: Once all required info is known, call the appropriate tool(s)."
         " Chain tools when needed (e.g. read an email then create a calendar event from it,"
         " or web_search then fetch_url to read a specific article)."
         " Use conversation history and stored facts to fill in details before asking."
-
         "\n\n6. NARRATE RESULTS: When done, write a concise answer in plain prose"
         " summarising what you did and found. Do not dump raw tool output."
         " Do not write any narration text in the same step as a tool call —"
         " no 'Let me check that' or 'Playing that now' before calling a tool."
         " Call the tool silently, then narrate only in the final step once you"
         " have its result."
-
         "\n\n7. REMEMBER FACTS: If the user states a personal preference or fact,"
         " call `remember` to store it for future sessions."
-
         "\n\n8. ANSWER FROM HISTORY — BUT FETCH WHEN ASKED FOR MORE: For a follow-up"
         " whose answer is already fully present in the conversation ('what was it about',"
         " 'when is that'), answer directly from history. But if the user asks for detail"
@@ -131,7 +120,6 @@ def build_agent_system_prompt() -> typing.List[str]:
         " find_events, etc.). You DO have access to the user's Gmail and Calendar via"
         " these tools: never reply that you cannot access their email or calendar. A tool"
         " returning zero results is a valid answer ('no unread emails'), not an error."
-
         "\n\n9. RECALL FROM PERSISTENT HISTORY: If the user asks about past conversations"
         " across sessions ('what did we discuss last week', 'did I mention X before',"
         " 'what did we talk about on Monday'), first try `semantic_recall` for fuzzy/meaning-based"
@@ -139,17 +127,14 @@ def build_agent_system_prompt() -> typing.List[str]:
         " Do NOT claim you cannot remember past sessions — use these tools first."
         " `semantic_recall` is preferred for questions like 'what did we talk about regarding X',"
         " 'do you remember what I think about Y', or 'what did I say about Z' where meaning matters."
-
         "\n\n10. USE WEB FOR CURRENT INFO: If the user asks about recent events, current"
         " news, live data, or anything that may have changed since your training cutoff,"
         " call `web_search`. Do not fabricate current information — search for it."
         " Chain `fetch_url` after a search to read the full content of a specific result."
-
         "\n\n11. DESKTOP CONTROL: If the user asks to open an app, switch windows, read"
         " the clipboard, find a file, or type/click on screen, use the desktop tools."
         " Actions that modify state (type_text, click_at, set_clipboard, open_file) require"
         " allow_actions to be enabled in config — if disabled, explain this to the user."
-
         "\nReply in plain prose. No bullet points unless listing multiple items."
     )
     return [stable, volatile]
@@ -211,8 +196,7 @@ class AI:
             return "Error: No question provided."
 
         assistant_instructions = (
-            _persona()
-            + " You are a knowledgeable, factual assistant."
+            _persona() + " You are a knowledgeable, factual assistant."
             " Answer every question using your general knowledge: dates, names, facts, definitions, history, science, culture."
             " Always resolve pronouns and references (e.g. 'he', 'she', 'it', 'they', 'that one') using"
             " prior messages in the conversation history before answering."
@@ -296,7 +280,9 @@ class AI:
 
         # A model-supplied topic is what makes "I like tea" overwrite "I like
         # coffee" instead of accumulating a near-duplicate on every restatement.
-        key = re.sub(r"[^a-z0-9_]+", "_", (topic or fact).lower().strip())[:40].strip("_")
+        key = re.sub(r"[^a-z0-9_]+", "_", (topic or fact).lower().strip())[:40].strip(
+            "_"
+        )
         if not key:
             key = "note"
         Profile.set(key, fact)
@@ -528,7 +514,9 @@ class AI:
             return "Error: No query provided."
 
         if not _sem.is_available():
-            return "Semantic recall unavailable — install fastembed: pip install fastembed"
+            return (
+                "Semantic recall unavailable — install fastembed: pip install fastembed"
+            )
 
         results = _sem.retrieve(query, k=int(k))
         if not results:
@@ -568,6 +556,7 @@ class AI:
             str: Confirmation with character count, or error.
         """
         import os
+
         from helpers import semantic as _sem
 
         if not path:
@@ -615,7 +604,9 @@ class AI:
             return "Error: No query provided."
 
         if not _sem.is_available():
-            return "Document search unavailable — install fastembed: pip install fastembed"
+            return (
+                "Document search unavailable — install fastembed: pip install fastembed"
+            )
 
         results = _sem.retrieve(query, k=3, source_types=["doc"])
         if not results:
@@ -684,6 +675,7 @@ class AI:
 
         try:
             import ast
+
             clean = answer.strip()
             if clean.startswith("```"):
                 clean = clean.split("\n", 1)[-1] if "\n" in clean else clean[3:]

@@ -131,8 +131,10 @@ class ServerSettings(BaseModel):
     port: int = 8000
 
 
-class ShellySettings(BaseModel):
-    base_url: str = "http://192.168.18.53"
+class HomeAssistantSettings(BaseModel):
+    # homeassistant.local is the standard mDNS hostname a stock install answers on.
+    base_url: str = "http://homeassistant.local:8123"
+    allow_locks: bool = False
 
 
 class WeatherSettings(BaseModel):
@@ -171,7 +173,7 @@ class DesktopSettings(BaseModel):
 class ModulesSettings(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    shelly: ShellySettings = Field(default_factory=ShellySettings)
+    home_assistant: HomeAssistantSettings = Field(default_factory=HomeAssistantSettings)
     weather: WeatherSettings = Field(default_factory=WeatherSettings)
     gmail: GmailSettings = Field(default_factory=GmailSettings)
     calendar: CalendarSettings = Field(default_factory=CalendarSettings)

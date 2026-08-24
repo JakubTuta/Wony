@@ -18,7 +18,7 @@ const MODULE_COLORS: Record<string, string> = {
   basics: 'bg-orange-100 text-orange-600 dark:bg-orange-900/30 dark:text-orange-400',
   ai: 'bg-violet-100 text-violet-600 dark:bg-violet-900/30 dark:text-violet-400',
   scheduler: 'bg-yellow-100 text-yellow-600 dark:bg-yellow-900/30 dark:text-yellow-400',
-  shelly: 'bg-teal-100 text-teal-600 dark:bg-teal-900/30 dark:text-teal-400',
+  home_assistant: 'bg-teal-100 text-teal-600 dark:bg-teal-900/30 dark:text-teal-400',
   league: 'bg-rose-100 text-rose-600 dark:bg-rose-900/30 dark:text-rose-400',
   status: 'bg-cyan-100 text-cyan-600 dark:bg-cyan-900/30 dark:text-cyan-400',
 };
