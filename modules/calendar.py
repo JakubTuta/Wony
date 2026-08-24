@@ -1,11 +1,6 @@
 import os
 import typing
-from datetime import datetime, timedelta, timezone
-
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
+from datetime import datetime, timedelta
 
 from helpers.accounts import GoogleAccounts
 from helpers.audio import Audio
@@ -13,16 +8,14 @@ from helpers.cache import Cache
 from helpers.config import Config
 from helpers.decorators import capture_response
 from helpers.jobs import BackgroundJobs
-from helpers.timeutil import local_tz, local_tz_name, now_local
 from helpers.logger import logger
+from helpers.paths import repo_path
 from helpers.registry import method_job, register_service
 from helpers.requirements import Requirement
+from helpers.timeutil import local_tz, local_tz_name, now_local
 
-# Full calendar scope required for create/edit/delete. If you previously
-# authenticated with calendar.readonly, delete your calendar token file(s)
-# in credentials/ and re-run to trigger a new OAuth consent.
 _SCOPES = ["https://www.googleapis.com/auth/calendar"]
-_CREDENTIALS_FILE = "credentials/google_credentials.json"
+_CREDENTIALS_FILE = repo_path("credentials", "google_credentials.json")
 
 
 def _calendar_job_name(account_name: str) -> str:
@@ -52,6 +45,8 @@ class Calendar:
     # ------------------------------------------------------------------
 
     def _service_for(self, account: str) -> object:
+        from googleapiclient.discovery import build
+
         name = GoogleAccounts.resolve(account or None)
         if name not in self._services:
             rec = GoogleAccounts.record(name)
@@ -71,8 +66,12 @@ class Calendar:
         start = event.get("start", {})
         return start.get("dateTime") or start.get("date") or ""
 
-    def _load_credentials(self, token_file: str) -> Credentials:
-        creds: typing.Optional[Credentials] = None
+    def _load_credentials(self, token_file: str) -> typing.Any:
+        from google.auth.transport.requests import Request
+        from google.oauth2.credentials import Credentials
+        from google_auth_oauthlib.flow import InstalledAppFlow
+
+        creds: typing.Any = None
         if os.path.exists(token_file):
             creds = Credentials.from_authorized_user_file(token_file, _SCOPES)
 
@@ -80,7 +79,9 @@ class Calendar:
             if creds and creds.expired and creds.refresh_token:
                 creds.refresh(Request())
             else:
-                flow = InstalledAppFlow.from_client_secrets_file(_CREDENTIALS_FILE, _SCOPES)
+                flow = InstalledAppFlow.from_client_secrets_file(
+                    _CREDENTIALS_FILE, _SCOPES
+                )
                 creds = flow.run_local_server(port=0)
             os.makedirs(os.path.dirname(token_file), exist_ok=True)
             with open(token_file, "w", encoding="utf-8") as f:
@@ -141,7 +142,9 @@ class Calendar:
         items.sort(key=self._event_start_key)
         return items
 
-    def _fetch_events_for_day(self, day: datetime, account: str = "", calendar_id: str = "primary") -> typing.List[dict]:
+    def _fetch_events_for_day(
+        self, day: datetime, account: str = "", calendar_id: str = "primary"
+    ) -> typing.List[dict]:
         tz = local_tz()
         start = day.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=tz)
         end = start + timedelta(days=1)
@@ -288,7 +291,9 @@ class Calendar:
             dt = dt.replace(tzinfo=local_tz())
         return dt
 
-    def _resolve_calendar_id(self, calendar_name: str, account: str) -> typing.Optional[str]:
+    def _resolve_calendar_id(
+        self, calendar_name: str, account: str
+    ) -> typing.Optional[str]:
         service = self._service_for(account)
         cal_list = service.calendarList().list().execute()
         for cal in cal_list.get("items", []):
@@ -316,103 +321,148 @@ class Calendar:
     # Jobs
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _as_int(value: typing.Any, fallback: int = 0) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return fallback
+
     @capture_response
     @method_job
-    def check_upcoming_events(self, hours_ahead: int = 0, account: str = "") -> str:
+    def find_events(
+        self,
+        query: str = "",
+        date: str = "",
+        start_date: str = "",
+        end_date: str = "",
+        days_back: int = 0,
+        hours_ahead: int = 0,
+        calendar_name: str = "",
+        limit: int = 0,
+        account: str = "",
+    ) -> str:
         """
-        [CALENDAR JOB] Retrieves and announces upcoming Google Calendar events.
+        [CALENDAR JOB] Finds calendar events. This is the single tool for every kind of
+        event lookup — what's coming up, what's next, a specific day, a date range, the
+        past, a keyword search, or a named calendar. With no arguments it returns the
+        upcoming events in the configured look-ahead window.
 
         Use this job when the user wants to:
-        - Check the calendar or agenda
-        - See what is coming up today or soon
-        - Review upcoming meetings or appointments
-
-        Keywords: calendar, agenda, schedule, upcoming events, meetings, appointments,
-                 what's next, my day, what do I have, check calendar, events today
+        - Check their calendar, agenda, or schedule
+        - Know what is next, or what is on today/tomorrow/a given date
+        - Review past meetings, or events between two dates
+        - Search for an event by name, or browse a secondary calendar
 
         Args:
+            query (str): Free-text search over event names and descriptions.
+            date (str): A single day: YYYY-MM-DD, or 'today', 'tomorrow', 'yesterday'.
+            start_date (str): Start of a date range. Pairs with end_date.
+            end_date (str): End of a date range (defaults to a week after start_date).
+            days_back (int): Look this many days into the past instead of ahead.
             hours_ahead (int): Look-ahead window in hours (default from config).
+            calendar_name (str): Restrict to a named calendar, e.g. 'work', 'family'.
+            limit (int): Max events to return. Use 1 for "what's my next event".
             account (str): Google account to use (default: primary).
 
         Returns:
-            str: Count and details of upcoming events.
+            str: Matching events with time, title and details.
         """
         audio = Cache.get_audio()
-        events = self._fetch_events_range(account=account, hours_ahead=hours_ahead or None)
+        cfg = self._cfg()
+        max_results = self._as_int(limit) or None
+
+        calendar_id = "primary"
+        if calendar_name:
+            # Named calendars are account-specific; pin to one account.
+            account = GoogleAccounts.resolve(account or None)
+            resolved = self._resolve_calendar_id(calendar_name, account)
+            if not resolved:
+                return f"Calendar '{calendar_name}' not found."
+            calendar_id = resolved
+
+        # A single named day is the one case that needs day-boundary fetching.
+        if date:
+            target = self._parse_date(date)
+            label = target.strftime("%Y-%m-%d")
+            events = self._fetch_events_for_day(
+                target, account=account, calendar_id=calendar_id
+            )
+            if max_results:
+                events = events[:max_results]
+            return self._render_events(
+                events,
+                header=f"Events on {label}:",
+                audio=audio,
+                count_template=f"You have {{count}} event(s) on {label}.",
+            )
+
+        window = int(cfg.get("max_results", 10)) * 3
+        back = self._as_int(days_back)
+
+        if start_date or end_date:
+            start = self._parse_date(start_date) if start_date else now_local()
+            end = self._parse_date(end_date) if end_date else start + timedelta(days=7)
+            t_min = start.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+            t_max = end.replace(hour=23, minute=59, second=59, microsecond=0).isoformat()
+            header = f"Events from {start.strftime('%Y-%m-%d')} to {end.strftime('%Y-%m-%d')}:"
+            events = self._fetch_events_range(
+                account=account,
+                time_min=t_min,
+                time_max=t_max,
+                q=query or None,
+                calendar_id=calendar_id,
+                max_results=max_results or window,
+            )
+        elif query:
+            now = now_local()
+            t_min = (now - timedelta(days=back or int(cfg.get("search_days_back", 30)))).isoformat()
+            t_max = (now + timedelta(days=int(cfg.get("search_days_ahead", 90)))).isoformat()
+            header = f"Events matching '{query}':"
+            events = self._fetch_events_range(
+                account=account,
+                q=query,
+                time_min=t_min,
+                time_max=t_max,
+                calendar_id=calendar_id,
+                max_results=max_results or window,
+            )
+        elif back > 0:
+            header = f"Events from the past {back} day(s):"
+            events = self._fetch_events_range(
+                account=account,
+                days_back=back,
+                calendar_id=calendar_id,
+                max_results=max_results,
+            )
+        else:
+            hours = self._as_int(hours_ahead) or None
+            # "What's next" asks for one event but shouldn't miss one next week.
+            if max_results == 1 and hours is None:
+                hours = int(cfg.get("lookahead_hours", 24)) * 7
+            header = "Upcoming events:"
+            events = self._fetch_events_range(
+                account=account,
+                hours_ahead=hours,
+                calendar_id=calendar_id,
+                max_results=max_results,
+            )
+
+        where = f" in '{calendar_name}'" if calendar_name else ""
         return self._render_events(
             events,
-            header="Checking upcoming events...",
+            header=header,
             audio=audio,
-            count_template="You have {count} upcoming event(s).",
+            count_template=f"Found {{count}} event(s){where}.",
         )
+
+
 
     @capture_response
     @method_job
-    def get_events_on_date(self, date_str: str = "", account: str = "") -> str:
-        """
-        [CALENDAR JOB] Retrieves all calendar events on a specific date (past or future).
-
-        Use this job when the user wants to:
-        - See what happened or is happening on a specific day
-        - Review past meetings on a given date
-        - Check a future date's schedule
-
-        Keywords: events on date, what happened on, calendar for date, meetings on,
-                 schedule for day, agenda for date, past events, future events on date,
-                 show me events on, what's on
-
-        Args:
-            date_str (str): Date in YYYY-MM-DD format, or 'today', 'tomorrow', 'yesterday'.
-            account (str): Google account to use (default: primary).
-
-        Returns:
-            str: All events on that date with full details.
-        """
-        audio = Cache.get_audio()
-        target = self._parse_date(date_str)
-        label = target.strftime("%Y-%m-%d")
-        events = self._fetch_events_for_day(target, account=account)
-        return self._render_events(
-            events,
-            header=f"Events on {label}:",
-            audio=audio,
-            count_template=f"You have {{count}} event(s) on {label}.",
-        )
-
-    @capture_response
-    @method_job
-    def get_past_events(self, days_back: int = 7, account: str = "") -> str:
-        """
-        [CALENDAR JOB] Retrieves calendar events from the past N days.
-
-        Use this job when the user wants to:
-        - Review past meetings or appointments
-        - See what events occurred recently
-        - Look back at the calendar history
-
-        Keywords: past events, recent events, previous meetings, last week calendar,
-                 what meetings did I have, calendar history, past appointments,
-                 events last N days, what did I attend
-
-        Args:
-            days_back (int): How many days back to search (default 7).
-            account (str): Google account to use (default: primary).
-
-        Returns:
-            str: Past events with full details.
-        """
-        audio = Cache.get_audio()
-        events = self._fetch_events_range(account=account, days_back=days_back)
-        return self._render_events(
-            events,
-            header=f"Events from the past {days_back} day(s):",
-            audio=audio,
-            count_template=f"Found {{count}} event(s) in the past {days_back} days.",
-        )
-
-    @capture_response
-    @method_job
-    def start_checking_events(self, interval_minutes: int = 0, account: str = "") -> str:
+    def start_checking_events(
+        self, interval_minutes: int = 0, account: str = ""
+    ) -> str:
         """
         [CALENDAR JOB] Starts a background job that checks for new calendar events
         periodically. Announces events as they appear. Stop with 'stop checking calendar'.
@@ -476,135 +526,22 @@ class Calendar:
         if account:
             name = GoogleAccounts.resolve(account)
             stopped = BackgroundJobs.stop(_calendar_job_name(name))
-            return (f"Calendar polling for '{name}' stopped."
-                    if stopped else f"Calendar polling for '{name}' was not running.")
+            return (
+                f"Calendar polling for '{name}' stopped."
+                if stopped
+                else f"Calendar polling for '{name}' was not running."
+            )
         all_jobs = BackgroundJobs.list_jobs()
         cal_jobs = [j for j in all_jobs if j.startswith("calendar_polling_")]
         stopped_any = any(BackgroundJobs.stop(j) for j in cal_jobs)
-        return "Calendar polling stopped." if stopped_any else "Calendar polling was not running."
-
-    @capture_response
-    @method_job
-    def get_next_event(self, account: str = "") -> str:
-        """
-        [CALENDAR JOB] Retrieves the single next upcoming calendar event.
-
-        Use this job when the user wants to:
-        - Know what their next meeting or appointment is
-        - See the soonest upcoming event
-        - Find out what's coming up next
-
-        Keywords: next meeting, what is next, next appointment, next event, what's next,
-                 upcoming meeting, next calendar event, next on schedule
-
-        Args:
-            account (str): Google account to use (default: primary).
-
-        Returns:
-            str: The next upcoming event with full details.
-        """
-        audio = Cache.get_audio()
-        cfg = self._cfg()
-        hours_ahead = int(cfg.get("lookahead_hours", 24)) * 7
-        events = self._fetch_events_range(account=account, hours_ahead=hours_ahead, max_results=1)
-
-        if not events:
-            return "No upcoming events found."
-
-        prefix = "Your next event: " if audio else "Next event:\n"
-        return prefix + self._format_event(events[0], verbose=not audio)
-
-    @capture_response
-    @method_job
-    def get_events_in_range(self, start_date: str = "", end_date: str = "", account: str = "") -> str:
-        """
-        [CALENDAR JOB] Retrieves calendar events between two dates.
-
-        Use this job when the user wants to:
-        - See events within a specific date range
-        - Review this week or next week's schedule
-        - Check events between two dates
-
-        Keywords: events between, events this week, events next week, schedule from to,
-                 calendar range, events from date to date, week events, events in range
-
-        Args:
-            start_date (str): Start date (YYYY-MM-DD, 'today', 'tomorrow', etc.).
-            end_date (str): End date (YYYY-MM-DD, 'tomorrow', etc.).
-            account (str): Google account to use (default: primary).
-
-        Returns:
-            str: All events in the date range.
-        """
-        audio = Cache.get_audio()
-        start = self._parse_date(start_date)
-        end = self._parse_date(end_date) if end_date else start + timedelta(days=7)
-
-        t_min = start.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-        t_max = end.replace(hour=23, minute=59, second=59, microsecond=0).isoformat()
-        label = f"{start.strftime('%Y-%m-%d')} to {end.strftime('%Y-%m-%d')}"
-
-        events = self._fetch_events_range(
-            account=account,
-            time_min=t_min,
-            time_max=t_max,
-            max_results=int(self._cfg().get("max_results", 10)) * 3,
-        )
-        return self._render_events(
-            events,
-            header=f"Events from {label}:",
-            audio=audio,
-            count_template=f"Found {{count}} event(s) from {label}.",
+        return (
+            "Calendar polling stopped."
+            if stopped_any
+            else "Calendar polling was not running."
         )
 
-    @capture_response
-    @method_job
-    def search_events(self, query: str, days_back: int = 30, days_ahead: int = 90, account: str = "") -> str:
-        """
-        [CALENDAR JOB] Searches calendar events by free-text keywords.
 
-        Use this job when the user wants to:
-        - Find events by name or description
-        - Search for a specific meeting or appointment
-        - Look up past or future events by keyword
 
-        Keywords: search calendar, find event, when is meeting, meeting about,
-                 calendar search, find appointment, search events, look up event,
-                 find event by name
-
-        Args:
-            query (str): Free-text search term (event name, description, etc.). (required)
-            days_back (int): How many days back to search (default from config).
-            days_ahead (int): How many days ahead to search (default from config).
-            account (str): Google account to use (default: primary).
-
-        Returns:
-            str: Matching events with details.
-        """
-        if not query:
-            return "Please provide a search term."
-        audio = Cache.get_audio()
-        cfg = self._cfg()
-        days_back = days_back or int(cfg.get("search_days_back", 30))
-        days_ahead = days_ahead or int(cfg.get("search_days_ahead", 90))
-
-        now = now_local()
-        t_min = (now - timedelta(days=days_back)).isoformat()
-        t_max = (now + timedelta(days=days_ahead)).isoformat()
-
-        events = self._fetch_events_range(
-            account=account,
-            q=query,
-            time_min=t_min,
-            time_max=t_max,
-            max_results=int(cfg.get("max_results", 10)) * 3,
-        )
-        return self._render_events(
-            events,
-            header=f"Searching calendar for: {query}",
-            audio=audio,
-            count_template=f"Found {{count}} event(s) matching '{query}'.",
-        )
 
     @capture_response
     @method_job
@@ -635,9 +572,8 @@ class Calendar:
             return "No calendars found."
 
         if audio:
-            return (
-                f"You have {len(calendars)} calendar(s): "
-                + ", ".join(c.get("summary", "Unnamed") for c in calendars)
+            return f"You have {len(calendars)} calendar(s): " + ", ".join(
+                c.get("summary", "Unnamed") for c in calendars
             )
         lines = [f"Calendars ({len(calendars)}):"]
         for cal in calendars:
@@ -648,56 +584,12 @@ class Calendar:
             lines.append(f"  {name}{primary}  ({access})  id: {cal_id}")
         return "\n".join(lines)
 
-    @capture_response
-    @method_job
-    def get_events_from_calendar(self, calendar_name: str, hours_ahead: int = 0, account: str = "") -> str:
-        """
-        [CALENDAR JOB] Retrieves upcoming events from a specific named calendar.
-
-        Use this job when the user wants to:
-        - Check events in a specific calendar (e.g. work, family, holidays)
-        - Browse a non-primary calendar
-        - See events from a shared or secondary calendar
-
-        Keywords: events from calendar, work calendar events, family calendar,
-                 shared calendar events, secondary calendar, events in calendar,
-                 check specific calendar
-
-        Args:
-            calendar_name (str): Name (or partial name) of the calendar to search. (required)
-            hours_ahead (int): Look-ahead window in hours (default from config).
-            account (str): Google account to use (default: primary).
-
-        Returns:
-            str: Upcoming events from that calendar.
-        """
-        if not calendar_name:
-            return "Please specify which calendar to check."
-        audio = Cache.get_audio()
-        # Named calendars are account-specific; pin to one account.
-        account = GoogleAccounts.resolve(account or None)
-        cal_id = self._resolve_calendar_id(calendar_name, account)
-        if not cal_id:
-            return f"Calendar '{calendar_name}' not found."
-
-        cfg = self._cfg()
-        h = hours_ahead or int(cfg.get("lookahead_hours", 24))
-        events = self._fetch_events_range(
-            account=account,
-            hours_ahead=h,
-            calendar_id=cal_id,
-            max_results=int(cfg.get("max_results", 10)),
-        )
-        return self._render_events(
-            events,
-            header=f"Events from calendar '{calendar_name}':",
-            audio=audio,
-            count_template=f"Found {{count}} upcoming event(s) in '{calendar_name}'.",
-        )
 
     @capture_response
     @method_job
-    def check_availability(self, date_str: str = "", start_time: str = "", end_time: str = "") -> str:
+    def check_availability(
+        self, date_str: str = "", start_time: str = "", end_time: str = ""
+    ) -> str:
         """
         [CALENDAR JOB] Checks free/busy availability across all Google accounts
         for a given time window.
@@ -733,7 +625,9 @@ class Calendar:
 
         t_min = t_start.isoformat()
         t_max = t_end.isoformat()
-        window_label = f"{t_start.strftime('%Y-%m-%d %H:%M')} – {t_end.strftime('%H:%M')}"
+        window_label = (
+            f"{t_start.strftime('%Y-%m-%d %H:%M')} – {t_end.strftime('%H:%M')}"
+        )
 
         accounts = GoogleAccounts.list_accounts()
         if not accounts:
@@ -745,16 +639,26 @@ class Calendar:
         for acct in accounts:
             try:
                 service = self._service_for(acct)
-                body = {"timeMin": t_min, "timeMax": t_max, "items": [{"id": "primary"}]}
+                body = {
+                    "timeMin": t_min,
+                    "timeMax": t_max,
+                    "items": [{"id": "primary"}],
+                }
                 result = service.freebusy().query(body=body).execute()
                 busy = result.get("calendars", {}).get("primary", {}).get("busy", [])
                 all_busy.extend(busy)
                 status = "busy" if busy else "free"
-                account_results.append(f"  {acct}: {status}" + (
-                    " — " + ", ".join(
-                        f"{b['start'][11:16]}–{b['end'][11:16]}" for b in busy
-                    ) if busy else ""
-                ))
+                account_results.append(
+                    f"  {acct}: {status}"
+                    + (
+                        " — "
+                        + ", ".join(
+                            f"{b['start'][11:16]}–{b['end'][11:16]}" for b in busy
+                        )
+                        if busy
+                        else ""
+                    )
+                )
             except Exception as e:
                 account_results.append(f"  {acct}: error ({e})")
 
@@ -798,8 +702,12 @@ class Calendar:
             try:
                 events = self._fetch_events_for_day(target, account=acct)
                 for e in events:
-                    start_raw = e.get("start", {}).get("dateTime") or e.get("start", {}).get("date")
-                    end_raw = e.get("end", {}).get("dateTime") or e.get("end", {}).get("date")
+                    start_raw = e.get("start", {}).get("dateTime") or e.get(
+                        "start", {}
+                    ).get("date")
+                    end_raw = e.get("end", {}).get("dateTime") or e.get("end", {}).get(
+                        "date"
+                    )
                     if start_raw and end_raw:
                         try:
                             s = datetime.fromisoformat(start_raw.replace("Z", "+00:00"))
@@ -815,8 +723,12 @@ class Calendar:
                 pass
 
         tz = local_tz()
-        day_start = target.replace(hour=work_start, minute=0, second=0, microsecond=0, tzinfo=tz)
-        day_end = target.replace(hour=work_end, minute=0, second=0, microsecond=0, tzinfo=tz)
+        day_start = target.replace(
+            hour=work_start, minute=0, second=0, microsecond=0, tzinfo=tz
+        )
+        day_end = target.replace(
+            hour=work_end, minute=0, second=0, microsecond=0, tzinfo=tz
+        )
 
         busy_blocks.sort(key=lambda x: x[0])
         merged: typing.List[typing.Tuple[datetime, datetime]] = []
@@ -848,40 +760,13 @@ class Calendar:
         if not free_slots:
             return f"No free slots of {min_minutes}+ minutes found on {label}."
 
-        lines = [f"Free slots on {label} (working hours {work_start}:00–{work_end}:00):"]
+        lines = [
+            f"Free slots on {label} (working hours {work_start}:00–{work_end}:00):"
+        ]
         for slot in free_slots:
             lines.append(f"  {slot}")
         return "\n".join(lines)
 
-    @capture_response
-    @method_job
-    def get_today_agenda(self, account: str = "") -> str:
-        """
-        [CALENDAR JOB] Retrieves today's full calendar agenda.
-
-        Use this job when the user wants to:
-        - See all events for today
-        - Get today's schedule or agenda
-        - Review what's planned for the day
-
-        Keywords: today's agenda, today's schedule, today's events, what do I have today,
-                 my day today, today calendar, daily agenda, today's meetings
-
-        Args:
-            account (str): Google account to use (default: primary).
-
-        Returns:
-            str: All events scheduled for today.
-        """
-        audio = Cache.get_audio()
-        today = now_local().replace(hour=0, minute=0, second=0, microsecond=0)
-        events = self._fetch_events_for_day(today, account=account)
-        return self._render_events(
-            events,
-            header=f"Today's agenda ({today.strftime('%Y-%m-%d')}):",
-            audio=audio,
-            count_template="Today you have {count} event(s).",
-        )
 
     @capture_response
     @method_job
@@ -906,7 +791,9 @@ class Calendar:
         audio = Cache.get_audio()
         cfg = self._cfg()
         max_results = int(cfg.get("max_results", 10)) * 3
-        events = self._fetch_events_range(account=account, hours_ahead=168, max_results=max_results)
+        events = self._fetch_events_range(
+            account=account, hours_ahead=168, max_results=max_results
+        )
         return self._render_events(
             events,
             header="This week's agenda (next 7 days):",
@@ -970,8 +857,10 @@ class Calendar:
         if not date and not start_time:
             return "Error: At least a date or start time is required."
 
-        base = self._parse_date(date) if date else now_local().replace(
-            hour=0, minute=0, second=0, microsecond=0
+        base = (
+            self._parse_date(date)
+            if date
+            else now_local().replace(hour=0, minute=0, second=0, microsecond=0)
         )
         if start_time:
             start_dt = self._parse_time(start_time, base)
@@ -1028,14 +917,20 @@ class Calendar:
 
         service = self._service_for(account)
         try:
-            created = service.events().insert(
-                calendarId=calendar_id,
-                body=event_body,
-            ).execute()
+            created = (
+                service.events()
+                .insert(
+                    calendarId=calendar_id,
+                    body=event_body,
+                )
+                .execute()
+            )
         except Exception as e:
             return f"Failed to create event: {e}"
 
-        start_str = self._format_time(created["start"].get("dateTime", created["start"].get("date", "")))
+        start_str = self._format_time(
+            created["start"].get("dateTime", created["start"].get("date", ""))
+        )
         return f"Event created: '{title}' on {start_str}."
 
     @capture_response
@@ -1086,10 +981,14 @@ class Calendar:
         if search_date:
             events = self._fetch_events_for_day(search_date, account=account)
         else:
-            events = self._fetch_events_range(account=account, hours_ahead=720, max_results=50, q=query)
+            events = self._fetch_events_range(
+                account=account, hours_ahead=720, max_results=50, q=query
+            )
 
         if query:
-            events = [e for e in events if query.lower() in e.get("summary", "").lower()]
+            events = [
+                e for e in events if query.lower() in e.get("summary", "").lower()
+            ]
 
         if not events:
             return "No matching event found."
@@ -1107,7 +1006,9 @@ class Calendar:
             patch["location"] = new_location
 
         if new_date or new_start_time or new_end_time:
-            old_start_str = event.get("start", {}).get("dateTime") or event.get("start", {}).get("date", "")
+            old_start_str = event.get("start", {}).get("dateTime") or event.get(
+                "start", {}
+            ).get("date", "")
             try:
                 old_start = datetime.fromisoformat(old_start_str.replace("Z", "+00:00"))
                 if old_start.tzinfo is None:
@@ -1115,14 +1016,20 @@ class Calendar:
             except Exception:
                 old_start = now_local()
 
-            base = self._parse_date(new_date) if new_date else old_start.replace(
-                hour=0, minute=0, second=0, microsecond=0
+            base = (
+                self._parse_date(new_date)
+                if new_date
+                else old_start.replace(hour=0, minute=0, second=0, microsecond=0)
             )
-            start_dt = self._parse_time(new_start_time, base) if new_start_time else old_start
+            start_dt = (
+                self._parse_time(new_start_time, base) if new_start_time else old_start
+            )
             if new_end_time:
                 end_dt = self._parse_time(new_end_time, base)
             else:
-                old_end_str = event.get("end", {}).get("dateTime") or event.get("end", {}).get("date", "")
+                old_end_str = event.get("end", {}).get("dateTime") or event.get(
+                    "end", {}
+                ).get("date", "")
                 try:
                     old_end = datetime.fromisoformat(old_end_str.replace("Z", "+00:00"))
                     end_dt = start_dt + (old_end - old_start)
@@ -1160,11 +1067,15 @@ class Calendar:
 
         service = self._service_for(account)
         try:
-            updated = service.events().patch(
-                calendarId="primary",
-                eventId=event_id,
-                body=patch,
-            ).execute()
+            updated = (
+                service.events()
+                .patch(
+                    calendarId="primary",
+                    eventId=event_id,
+                    body=patch,
+                )
+                .execute()
+            )
         except Exception as e:
             return f"Failed to update event: {e}"
 
@@ -1205,10 +1116,14 @@ class Calendar:
         if search_date:
             events = self._fetch_events_for_day(search_date, account=account)
         else:
-            events = self._fetch_events_range(account=account, hours_ahead=720, max_results=50, q=query)
+            events = self._fetch_events_range(
+                account=account, hours_ahead=720, max_results=50, q=query
+            )
 
         if query:
-            events = [e for e in events if query.lower() in e.get("summary", "").lower()]
+            events = [
+                e for e in events if query.lower() in e.get("summary", "").lower()
+            ]
 
         if not events:
             return "No matching event found."
@@ -1224,7 +1139,8 @@ class Calendar:
         event_id = event["id"]
         title = event.get("summary", "(untitled)")
         start_str = self._format_time(
-            event.get("start", {}).get("dateTime") or event.get("start", {}).get("date", "")
+            event.get("start", {}).get("dateTime")
+            or event.get("start", {}).get("date", "")
         )
 
         if not self._write_allowed():

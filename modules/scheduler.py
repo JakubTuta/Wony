@@ -5,7 +5,6 @@ import uuid
 from datetime import datetime
 
 from helpers.audio import Audio
-from helpers.cache import Cache
 from helpers.decorators import capture_response
 from helpers.logger import logger
 from helpers.registry import ServiceRegistry, method_job, register_service

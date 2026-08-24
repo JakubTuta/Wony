@@ -50,6 +50,9 @@ _shutdown_lock = threading.Lock()
 _idle_sweeper_thread: typing.Optional[threading.Thread] = None
 _idle_sweeper_stop = threading.Event()
 
+# How often failed modules are retried (helpers/health_watcher.py).
+_HEALTH_CHECK_INTERVAL_MINUTES = 5.0
+
 
 class BootstrapError(Exception):
     pass
@@ -205,7 +208,7 @@ def bootstrap(
             pass
 
     _reconnect_mcp_servers(Config, quiet)
-    _start_health_watcher(Config, quiet)
+    _start_health_watcher(quiet)
     if audio:
         _start_idle_sweeper(Config)
 
@@ -230,17 +233,16 @@ def _reconnect_mcp_servers(Config: typing.Any, quiet: bool) -> None:
             print(f"[mcp] Startup reconnect failed (non-fatal): {exc}")
 
 
-def _start_health_watcher(Config: typing.Any, quiet: bool) -> None:
+def _start_health_watcher(quiet: bool) -> None:
     try:
-        interval = float(Config.get("modules.health_check_interval_minutes", 5))
-        if interval > 0:
-            from helpers.health_watcher import start as _watcher_start
+        from helpers.health_watcher import start as _watcher_start
 
-            _watcher_start(interval)
-            if not quiet:
-                print(
-                    f"[health] Module recovery watcher started (every {interval:.0f} min)."
-                )
+        _watcher_start(_HEALTH_CHECK_INTERVAL_MINUTES)
+        if not quiet:
+            print(
+                f"[health] Module recovery watcher started "
+                f"(every {_HEALTH_CHECK_INTERVAL_MINUTES:.0f} min)."
+            )
     except Exception:
         pass
 

@@ -8,7 +8,8 @@ A local personal assistant powered by AI that accepts text and voice commands. M
 | ------------- | ------------------------------------------------------------------------------- |
 | `.env`        | **Secrets only** — API keys, client secrets. Never committed.                   |
 | `config.yaml` | **Your choices** — assistant name, enabled modules, settings. Copy from `config.example.yaml`. |
-| `cache.json`  | Machine-written runtime state (OAuth tokens, timestamps).                       |
+| `cache.json`  | Machine-written runtime state (Spotify tokens, poll timestamps). Google OAuth tokens live in `credentials/`. |
+| `wony.db`     | Conversation history, remembered facts, reminders, embeddings.                  |
 
 Modules auto-register via decorators. If a module's env vars, credential files, or pip packages are missing it registers as `disabled` / `misconfigured` / `unavailable` — nothing crashes. The startup summary and `check setup` command tell you exactly what to fix.
 
@@ -61,7 +62,7 @@ python wony.py autostart status     # show task info
 
 ## Web UI
 
-Wony includes a browser-based chat interface. Start the app then open `http://127.0.0.1:8111` (or whatever port you set in `config.yaml`).
+Wony includes a browser-based chat interface. Start the app then open `http://127.0.0.1:8000` (or whatever port you set under `server.port` in `config.yaml`).
 
 The web UI has two panels:
 - **Chat** — send messages and see AI responses with tool call details
@@ -73,7 +74,11 @@ A diagnostics banner shows warnings and errors (e.g. CUDA fallback, missing deps
 
 `python wony.py` starts Wony in the background with a system tray icon. Right-click to:
 - **Open in web** — opens the chat UI in your browser
-- **Start / Stop** — pause or resume the assistant
+- **Listen now** — start a voice turn without the hotkey or wake word
+- **Stop speaking** — cancel the current reply
+- **Mute / Unmute** — silence spoken replies (an earcon still confirms a turn opened)
+- **Wake word: On / Off** — shown only when a wake word is configured
+- **Pause / Resume assistant** — stop the wake word, web server and background jobs
 - **Exit** — shut down cleanly
 
 To start automatically at Windows login:
@@ -281,6 +286,18 @@ Set `modules.shelly.base_url` in `config.yaml` to your device IP and enable `she
 1. Create `modules/mymodule.py`
 2. Use `@register_job(module_name="mymodule", requires=Requirement(...))` or `@register_service(...)`
 3. Add `mymodule` to `enabled_modules` in `config.yaml`
+
+## Tests
+
+```powershell
+python -m unittest discover -s tests -t .
+```
+
+Core dependencies only — the optional modules gate themselves off when their
+packages are missing, which is the path CI runs. The suite covers the pieces
+that fail silently rather than loudly: tool-schema generation, config keys that
+must resolve against the settings schema, repo-anchored data paths, and the
+SQLite store.
 
 ## Logging
 

@@ -13,6 +13,16 @@ import helpers.tools as helpers_tools
 
 available_models = ["gemini", "anthropic", "ollama"]
 
+# Callers may pass system instructions as a plain string, or as a list of blocks
+# ordered stable-first (see modules.ai.build_agent_system_prompt). Only Anthropic
+# can act on the split, via a cache breakpoint after the stable blocks.
+SystemInstructions = typing.Union[str, typing.List[str], None]
+
+_CACHE_CONTROL = {"type": "ephemeral"}
+# Anthropic's minimum cacheable prefix. Below it a breakpoint is silently ignored,
+# so don't pay the write cost on a prompt that can never be read back.
+_MIN_CACHEABLE_CHARS = 4096
+
 _FALLBACK_GEMINI_MODEL = "gemini-2.0-flash"
 _FALLBACK_ANTHROPIC_MODEL = "claude-sonnet-4-6"
 
@@ -68,6 +78,63 @@ def _get_anthropic_model(client: "anthropic.Anthropic") -> str:
     return _FALLBACK_ANTHROPIC_MODEL
 
 
+def _system_blocks(system: SystemInstructions) -> typing.List[str]:
+    if not system:
+        return []
+    if isinstance(system, str):
+        return [system]
+    return [block for block in system if block]
+
+
+def _system_text(system: SystemInstructions) -> typing.Optional[str]:
+    """Flatten to a single string — for providers with no block/caching concept."""
+    blocks = _system_blocks(system)
+    return "\n\n".join(blocks) if blocks else None
+
+
+def _anthropic_system(system: SystemInstructions) -> typing.Any:
+    """Anthropic `system` param, with a cache breakpoint after the stable blocks.
+
+    Everything except the final block is treated as stable; the last block holds
+    the per-request volatile text (the clock) and stays outside the cache.
+    """
+    blocks = _system_blocks(system)
+    if not blocks:
+        return anthropic.NOT_GIVEN
+    if len(blocks) == 1:
+        return blocks[0]
+
+    stable, volatile = blocks[:-1], blocks[-1]
+    out: typing.List[typing.Dict[str, typing.Any]] = [
+        {"type": "text", "text": text} for text in stable
+    ]
+    if sum(len(t) for t in stable) >= _MIN_CACHEABLE_CHARS:
+        out[-1]["cache_control"] = _CACHE_CONTROL
+    out.append({"type": "text", "text": volatile})
+    return out
+
+
+def _cached_tools(parsed_tools: typing.Optional[typing.List[dict]]) -> typing.Any:
+    """Tool list with a cache breakpoint on the last entry.
+
+    Tools render before system and messages, are identical across every step of
+    every turn, and are by far the largest static block we send — caching them is
+    the single biggest saving available here.
+    """
+    if not parsed_tools:
+        return anthropic.NOT_GIVEN
+    if sum(len(str(t)) for t in parsed_tools) < _MIN_CACHEABLE_CHARS:
+        return parsed_tools
+    tools = [dict(t) for t in parsed_tools]
+    tools[-1]["cache_control"] = _CACHE_CONTROL
+    return tools
+
+
+# Model families that reject thinking={"type": "adaptive"} — sending it costs a
+# failed round-trip before the retry below drops it.
+_NO_ADAPTIVE_THINKING = ("claude-3", "haiku-4-5", "sonnet-4-5", "opus-4-5", "opus-4-1")
+
+
 def _should_think(has_tools: bool) -> bool:
     """Whether the model should think (reason) for this call.
 
@@ -101,13 +168,14 @@ def _gemini_can_disable_thinking(model: str) -> bool:
 
 
 def _gemini_config(
-    system_instructions: typing.Optional[str],
+    system_instructions: SystemInstructions,
     parsed_tools: typing.Optional[typing.List[dict]],
     model: str,
 ) -> typing.Optional["genai_types.GenerateContentConfig"]:
     kwargs: typing.Dict[str, typing.Any] = {}
-    if system_instructions:
-        kwargs["system_instruction"] = system_instructions
+    system_text = _system_text(system_instructions)
+    if system_text:
+        kwargs["system_instruction"] = system_text
     if parsed_tools:
         kwargs["tools"] = [
             genai_types.Tool(
@@ -126,13 +194,14 @@ def _gemini_config(
 def _anthropic_thinking(has_tools: bool, model: str) -> typing.Any:
     """Return the Anthropic `thinking` arg, or NOT_GIVEN.
 
-    Adaptive thinking (4.6+) only; older claude-3 families reject it. Off for
-    tool calls (see _should_think) — also avoids the thinking-block echo
-    requirement that our neutral message list can't satisfy.
+    Adaptive thinking (4.6+) only. Off for tool calls (see _should_think) — also
+    avoids the thinking-block echo requirement that our neutral message list
+    can't satisfy.
     """
     if not _should_think(has_tools):
         return anthropic.NOT_GIVEN
-    if "claude-3" in model.lower():
+    lowered = model.lower()
+    if any(family in lowered for family in _NO_ADAPTIVE_THINKING):
         return anthropic.NOT_GIVEN
     return {"type": "adaptive"}
 
@@ -211,7 +280,7 @@ def send_message(
         typing.Union[genai.Client, anthropic.Anthropic, ollama.Client]
     ],
     message: str,
-    system_instructions: typing.Optional[str] = None,
+    system_instructions: SystemInstructions = None,
     available_tools: typing.Optional[typing.List[typing.Callable]] = None,
     image: typing.Optional[np.ndarray] = None,
     history: typing.Optional[typing.List[typing.Dict[str, str]]] = None,
@@ -293,10 +362,8 @@ def send_message(
                 model=model,
                 max_tokens=max_tokens,
                 messages=anthropic_messages,
-                system=(
-                    system_instructions if system_instructions else anthropic.NOT_GIVEN
-                ),
-                tools=parsed_tools if parsed_tools else anthropic.NOT_GIVEN,  # type: ignore
+                system=_anthropic_system(system_instructions),
+                tools=_cached_tools(parsed_tools),  # type: ignore
                 thinking=think,
             )
 
@@ -310,8 +377,9 @@ def send_message(
     elif isinstance(client, ollama.Client):
         ollama_messages: typing.List[typing.Dict[str, str]] = []
 
-        if system_instructions:
-            ollama_messages.append({"role": "system", "content": system_instructions})
+        system_text = _system_text(system_instructions)
+        if system_text:
+            ollama_messages.append({"role": "system", "content": system_text})
 
         if history:
             ollama_messages.extend(history)
@@ -433,12 +501,13 @@ def _to_anthropic_messages(
 
 def _to_ollama_messages(
     messages: typing.List[typing.Dict[str, typing.Any]],
-    system_instructions: typing.Optional[str],
+    system_instructions: SystemInstructions,
 ) -> typing.List[typing.Dict[str, typing.Any]]:
     """Convert the provider-neutral agent message list to Ollama messages."""
     ollama_messages: typing.List[typing.Dict[str, typing.Any]] = []
-    if system_instructions:
-        ollama_messages.append({"role": "system", "content": system_instructions})
+    system_text = _system_text(system_instructions)
+    if system_text:
+        ollama_messages.append({"role": "system", "content": system_text})
     for msg in messages:
         role = msg["role"]
         if role in ("user", "assistant"):
@@ -472,7 +541,7 @@ def send_agent_messages(
         typing.Union[genai.Client, anthropic.Anthropic, ollama.Client]
     ],
     messages: typing.List[typing.Dict[str, typing.Any]],
-    system_instructions: typing.Optional[str] = None,
+    system_instructions: SystemInstructions = None,
     available_tools: typing.Optional[typing.List[typing.Callable]] = None,
 ) -> typing.Union[
     genai_types.GenerateContentResponse, anthropic.types.Message, ollama.ChatResponse
@@ -504,12 +573,14 @@ def send_agent_messages(
         from helpers.config import Config
         max_tokens = int(Config.get("ai.max_tokens", 8192))
 
+        model = _get_anthropic_model(client)
         return client.messages.create(
-            model=_get_anthropic_model(client),
+            model=model,
             max_tokens=max_tokens,
             messages=_to_anthropic_messages(messages),
-            system=system_instructions if system_instructions else anthropic.NOT_GIVEN,
-            tools=parsed_tools if parsed_tools else anthropic.NOT_GIVEN,  # type: ignore
+            system=_anthropic_system(system_instructions),
+            tools=_cached_tools(parsed_tools),  # type: ignore
+            thinking=_anthropic_thinking(bool(parsed_tools), model),
         )
 
     elif isinstance(client, ollama.Client):
@@ -528,7 +599,7 @@ def stream_agent_step(
         typing.Union[genai.Client, anthropic.Anthropic, ollama.Client]
     ],
     messages: typing.List[typing.Dict[str, typing.Any]],
-    system_instructions: typing.Optional[str] = None,
+    system_instructions: SystemInstructions = None,
     available_tools: typing.Optional[typing.List[typing.Callable]] = None,
     on_text: typing.Optional[typing.Callable[[str], None]] = None,
 ) -> typing.Tuple[str, typing.List[typing.Dict[str, typing.Any]]]:
@@ -555,13 +626,18 @@ def stream_agent_step(
         from helpers.config import Config
         max_tokens = int(Config.get("ai.max_tokens", 8192))
 
+        # ai.thinking used to be honoured on the Gemini path only, so the main
+        # (streaming) Anthropic path silently ignored it. _should_think still
+        # keeps tool-dispatch steps thinking-free.
+        model = _get_anthropic_model(client)
         text_parts: typing.List[str] = []
         with client.messages.stream(
-            model=_get_anthropic_model(client),
+            model=model,
             max_tokens=max_tokens,
             messages=_to_anthropic_messages(messages),
-            system=system_instructions if system_instructions else anthropic.NOT_GIVEN,
-            tools=parsed_tools if parsed_tools else anthropic.NOT_GIVEN,  # type: ignore
+            system=_anthropic_system(system_instructions),
+            tools=_cached_tools(parsed_tools),  # type: ignore
+            thinking=_anthropic_thinking(bool(parsed_tools), model),
         ) as stream:
             for chunk in stream.text_stream:
                 if chunk:

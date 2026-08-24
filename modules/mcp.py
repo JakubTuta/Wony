@@ -10,6 +10,12 @@ import typing
 
 from helpers.decorators import capture_response
 from helpers.registry import register_job
+from helpers.requirements import Requirement
+
+_MCP_REQUIREMENT = Requirement(
+    pip_modules=["mcp"],
+    setup_hint="pip install -r requirements/mcp.txt",
+)
 
 
 def _client():
@@ -17,7 +23,11 @@ def _client():
     return mcp_client
 
 
-@register_job(module_name="mcp", summary="List all MCP server connections and their status")
+@register_job(
+    module_name="mcp",
+    requires=_MCP_REQUIREMENT,
+    summary="List all MCP server connections and their status",
+)
 @capture_response
 def list_mcp_servers() -> str:
     """

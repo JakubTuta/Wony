@@ -1,7 +1,7 @@
 import os
 import threading
 import typing
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from helpers.audio import Audio
 from helpers.cache import Cache
@@ -10,6 +10,7 @@ from helpers.decorators import capture_response
 from helpers.jobs import BackgroundJobs
 from helpers.logger import logger
 from helpers.registry import ServiceRegistry, register_job
+from helpers.timeutil import now_local
 
 
 # --- clock ---
@@ -371,7 +372,7 @@ def _email_line() -> typing.Optional[str]:
         if not gmail:
             return None
 
-        work_end = int(Config.get("calendar.work_end_hour", 18))
+        work_end = int(Config.get("modules.calendar.work_end_hour", 18))
         cutoff = (datetime.now() - timedelta(days=1)).replace(
             hour=work_end, minute=0, second=0, microsecond=0
         )
@@ -397,8 +398,8 @@ def _calendar_line() -> typing.Optional[str]:
         if not cal:
             return None
 
-        today = datetime.now(timezone.utc)
-        events = cal._fetch_events_for_day(today)
+        # Local, not UTC — _fetch_events_for_day stamps local tz on the date parts.
+        events = cal._fetch_events_for_day(now_local())
 
         if not events:
             return "You have no meetings today."

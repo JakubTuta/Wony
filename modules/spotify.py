@@ -127,7 +127,8 @@ class Spotify:
         """
 
         if not title and not artist:
-            return self.start_playback()
+            self._transport("put", "https://api.spotify.com/v1/me/player/play")
+            return "Playback resumed."
 
         search_response = self._search(query=title, artist=artist, content_type=content_type)
 
@@ -189,276 +190,175 @@ class Spotify:
 
         return f"Added {search_response['name']} by {search_response['artist']} to the queue."
 
-    @capture_response(mute=True, one_message=True)
-    @method_job
-    def toggle_playback(self) -> str:
-        """
-        [SPOTIFY SERVICE METHOD] Switches between play and pause states for current Spotify playback.
-        This service method checks the current playback state and toggles it - pausing if playing,
-        or resuming if paused. Provides smart playback control based on current state.
 
-        Use this method when the user wants to:
-        - Switch between play and pause
-        - Toggle current music playback
-        - Smart play/pause control
-        - Resume or stop current track
 
-        Keywords: play/pause, toggle, switch, playback, music, spotify, resume/stop,
-                 pause/play, toggle music, switch playback, music control
 
-        Args:
-            None
 
-        Returns:
-            None: Playback state will be toggled automatically.
-        """
 
-        is_playing = self._is_playback_playing()
-        if is_playing:
-            return self.stop_playback()
-        return self.start_playback()
 
-    @capture_response(mute=True, one_message=True)
+    # ------------------------------------------------------------------
+    # Transport / volume / like primitives
+    # ------------------------------------------------------------------
+
     @retry_on_unauthorized("_refresh_access_token")
-    @method_job
-    def start_playback(self) -> str:
-        """
-        [SPOTIFY SERVICE METHOD] Resumes or starts Spotify music playback from current position.
-        This service method sends play command to Spotify API to begin or continue playback
-        of the current track or playlist from where it was last stopped.
+    def _transport(self, verb: str, path: str, sep: str = "?") -> None:
+        self._make_spotify_request(verb, self._build_url_with_device(path, sep))
 
-        Use this method when the user wants to:
-        - Start playing music on Spotify
-        - Resume paused playback
-        - Continue current track or playlist
-        - Begin music streaming
-
-        Keywords: play, start, resume, begin, music, spotify, playback, continue,
-                 start music, resume music, play spotify, continue playback
-
-        Args:
-            None
-
-        Returns:
-            None: Spotify playback will start/resume.
-        """
-
-        url = self._build_url_with_device("https://api.spotify.com/v1/me/player/play")
-        self._make_spotify_request("put", url)
-        return "Playback resumed."
-
-    @capture_response(mute=True, one_message=True)
     @retry_on_unauthorized("_refresh_access_token")
-    @method_job
-    def stop_playback(self) -> str:
-        """
-        [SPOTIFY SERVICE METHOD] Pauses current Spotify music playback at current position.
-        This service method sends pause command to Spotify API to temporarily stop playback
-        while maintaining the current position for later resumption.
-
-        Use this method when the user wants to:
-        - Pause current music playback
-        - Stop Spotify temporarily
-        - Silence the music momentarily
-        - Halt current track playback
-
-        Keywords: pause, stop, halt, silence, quiet, mute, spotify, music,
-                 pause music, stop spotify, halt playback, pause song
-
-        Args:
-            None
-
-        Returns:
-            None: Spotify playback will be paused.
-        """
-
-        url = self._build_url_with_device("https://api.spotify.com/v1/me/player/pause")
-        self._make_spotify_request("put", url)
-        return "Playback paused."
-
-    @capture_response(mute=True, one_message=True)
-    @retry_on_unauthorized("_refresh_access_token")
-    @method_job
-    def skip_song(self) -> str:
-        """
-        [SPOTIFY SERVICE METHOD] Advances to the next track in the current Spotify playlist or queue.
-        This service method skips the currently playing song and moves forward to the next
-        available track in the playback sequence.
-
-        Use this method when the user wants to:
-        - Skip the current song
-        - Move to the next track
-        - Advance through playlist
-        - Change to a different song
-
-        Keywords: next, skip, forward, another, song, track, spotify, advance,
-                 next song, skip song, next track, forward song, skip this
-
-        Args:
-            None
-
-        Returns:
-            None: Playback will advance to the next track.
-        """
-
-        url = self._build_url_with_device("https://api.spotify.com/v1/me/player/next")
-        self._make_spotify_request("post", url)
-        return "Skipped to next song."
-
-    @capture_response(mute=True, one_message=True)
-    @retry_on_unauthorized("_refresh_access_token")
-    @method_job
-    def previous_song(self) -> str:
-        """
-        Skips to the previous song in Spotify music playback.
-
-        Keywords: previous, back, last, prior, before, rewind, spotify, song, track
-
-        Args:
-            None
-
-        Returns:
-            None
-        """
-
-        url = self._build_url_with_device(
-            "https://api.spotify.com/v1/me/player/previous"
+    def _apply_volume(self, volume: int) -> str:
+        if not 0 <= volume <= 100:
+            raise Exception("Volume must be between 0 and 100.")
+        self._make_spotify_request(
+            "put",
+            self._build_url_with_device(
+                f"https://api.spotify.com/v1/me/player/volume?volume_percent={volume}",
+                "&",
+            ),
         )
-        self._make_spotify_request("post", url)
-        return "Playing previous song."
+        return f"Volume set to {volume}%."
 
-    @capture_response(mute=True, one_message=True)
-    @retry_on_unauthorized("_refresh_access_token")
-    @method_job
-    def restart_song(self) -> str:
-        """
-        [SPOTIFY SERVICE METHOD] Restarts the currently playing track from the beginning.
-
-        Use this method when the user wants to:
-        - Restart the current song
-        - Play the song from the beginning
-        - Go back to the start of the track
-
-        Keywords: restart, replay, from beginning, start over, beginning, rewind song,
-                 restart song, play again, from start, back to beginning
-
-        Args:
-            None
-
-        Returns:
-            str: Confirmation message.
-        """
-        base_url = "https://api.spotify.com/v1/me/player/seek?position_ms=0"
-        url = self._build_url_with_device(base_url, "&")
-        self._make_spotify_request("put", url)
-        return "Restarted song from the beginning."
-
-    @capture_response(mute=True, one_message=True)
-    @retry_on_unauthorized("_refresh_access_token")
-    @method_job
-    def volume_up(self) -> str:
-        """
-        [SPOTIFY SERVICE METHOD] Increases Spotify playback volume by 10% increments.
-        This service method adjusts the volume control through Spotify API, making the music
-        louder while ensuring it doesn't exceed maximum volume limits.
-
-        Use this method when the user wants to:
-        - Make Spotify music louder
-        - Increase audio volume
-        - Turn up the sound
-        - Boost music volume
-
-        Keywords: louder, increase, volume up, turn up, higher, spotify, sound,
-                 increase volume, make louder, turn up volume, boost sound
-
-        Args:
-            None
-
-        Returns:
-            None: Spotify volume will be increased by 10%.
-        """
-        playback_state = self._get_playback_state()
-        if not playback_state:
-            raise Exception("No active Spotify device.")
-
-        current_volume = playback_state.get("device", {}).get("volume_percent", 50)
-        new_volume = min(current_volume + 10, 100)
-        return self.set_volume(volume=new_volume)
-
-    @capture_response(mute=True, one_message=True)
-    @retry_on_unauthorized("_refresh_access_token")
-    @method_job
-    def volume_down(self) -> str:
-        """
-        Decreases Spotify playback volume by 10%.
-
-        Keywords: quieter, decrease, volume down, turn down, lower, spotify, sound
-
-        Args:
-            None
-
-        Returns:
-            None
-        """
-        playback_state = self._get_playback_state()
-        if not playback_state:
+    def _current_volume(self) -> int:
+        state = self._get_playback_state()
+        if not state:
             # mute=True job — raise so the always-spoken error path fires
             # instead of a soft-fail string being swallowed like a success.
             raise Exception("No active Spotify device.")
+        return int(state.get("device", {}).get("volume_percent", 50))
 
-        current_volume = playback_state.get("device", {}).get("volume_percent", 50)
-        new_volume = max(current_volume - 10, 0)
-        return self.set_volume(volume=new_volume)
+    @retry_on_unauthorized("_refresh_access_token")
+    def _set_liked(self, liked: bool) -> str:
+        track_id = self._get_current_track_id()
+        if not track_id:
+            return "Nothing is currently playing."
+        self._make_spotify_request(
+            "put" if liked else "delete",
+            f"https://api.spotify.com/v1/me/tracks?ids={track_id}",
+        )
+        state = self._get_playback_state()
+        name = state["item"]["name"] if state and state.get("item") else "Track"
+        return f"Liked {name}." if liked else f"Removed {name} from liked songs."
 
     @capture_response(mute=True, one_message=True)
-    @retry_on_unauthorized("_refresh_access_token")
     @method_job
-    def max_volume(self) -> str:
+    def control_playback(self, action: str = "toggle") -> str:
         """
-        Sets Spotify playback volume to maximum (100%).
+        [SPOTIFY JOB] Controls Spotify transport: play, pause, skip, go back, restart the
+        current track, or toggle shuffle. This is the single tool for all of those.
 
-        Keywords: maximum, max volume, full volume, loudest, spotify, sound
+        Use this job when the user wants to:
+        - Play, pause, resume or stop the music
+        - Skip to the next song or go back to the previous one
+        - Restart the current song from the beginning
+        - Turn shuffle on or off
 
         Args:
-            None
+            action (str): One of: toggle (play/pause depending on current state,
+                the default), play, pause, next, previous, restart, shuffle.
 
         Returns:
-            None
+            str: Confirmation of what changed.
         """
+        act = (action or "toggle").strip().lower()
 
-        return self.set_volume(volume=100)
+        if act == "toggle":
+            act = "pause" if self._is_playback_playing() else "play"
+
+        if act in ("play", "resume", "start"):
+            self._transport("put", "https://api.spotify.com/v1/me/player/play")
+            return "Playback resumed."
+        if act in ("pause", "stop"):
+            self._transport("put", "https://api.spotify.com/v1/me/player/pause")
+            return "Playback paused."
+        if act in ("next", "skip"):
+            self._transport("post", "https://api.spotify.com/v1/me/player/next")
+            return "Skipped to next song."
+        if act in ("previous", "prev", "back"):
+            self._transport("post", "https://api.spotify.com/v1/me/player/previous")
+            return "Playing previous song."
+        if act in ("restart", "replay"):
+            self._transport(
+                "put", "https://api.spotify.com/v1/me/player/seek?position_ms=0", "&"
+            )
+            return "Restarted song from the beginning."
+        if act == "shuffle":
+            state = self._get_playback_state()
+            if not state:
+                raise Exception("No active Spotify device.")
+            return self._set_shuffle(not state.get("shuffle_state", False))
+
+        raise Exception(
+            f"Unknown action '{action}'. Use toggle, play, pause, next, "
+            "previous, restart or shuffle."
+        )
 
     @capture_response(mute=True, one_message=True)
-    @retry_on_unauthorized("_refresh_access_token")
     @method_job
-    def set_volume(self, volume: int) -> str:
+    def set_volume(self, level: int = -1, direction: str = "") -> str:
         """
-        Sets Spotify playback volume to a specific level.
+        [SPOTIFY JOB] Sets or adjusts the Spotify playback volume.
 
-        Keywords: set volume, adjust volume, change volume, spotify, sound
+        Use this job when the user wants to:
+        - Set the volume to a specific percentage
+        - Make the music louder or quieter
+        - Turn the volume all the way up, or all the way down
 
         Args:
-            volume (int): Volume level between 0 and 100. (required)
+            level (int): Target volume 0-100. Use this for "set volume to 40".
+            direction (str): Relative change instead of a level: up or down (10%
+                steps), max (100), min (0).
 
         Returns:
-            None
+            str: The new volume.
         """
+        move = (direction or "").strip().lower()
+        if move in ("up", "louder", "increase"):
+            return self._apply_volume(min(self._current_volume() + 10, 100))
+        if move in ("down", "quieter", "decrease", "lower"):
+            return self._apply_volume(max(self._current_volume() - 10, 0))
+        if move in ("max", "maximum", "full"):
+            return self._apply_volume(100)
+        if move in ("min", "minimum", "mute"):
+            return self._apply_volume(0)
 
         try:
-            volume = int(volume)
-        except ValueError:
+            target = int(level)
+        except (TypeError, ValueError):
             raise Exception("Invalid volume value.")
+        if target < 0:
+            raise Exception("Provide a volume level 0-100, or a direction.")
+        return self._apply_volume(target)
 
-        if not 0 <= volume <= 100:
-            raise Exception("Volume must be between 0 and 100.")
+    @capture_response
+    @method_job
+    def set_like(self, action: str = "toggle") -> str:
+        """
+        [SPOTIFY JOB] Likes, unlikes, or toggles the like state of the currently
+        playing track in the user's Liked Songs.
 
-        base_url = (
-            f"https://api.spotify.com/v1/me/player/volume?volume_percent={volume}"
+        Use this job when the user wants to:
+        - Like / save / favourite the current song
+        - Unlike or remove the current song from liked songs
+
+        Args:
+            action (str): One of: toggle (the default), like, unlike.
+
+        Returns:
+            str: Confirmation of the new like state.
+        """
+        act = (action or "toggle").strip().lower()
+
+        if act in ("like", "save", "favorite", "favourite"):
+            return self._set_liked(True)
+        if act in ("unlike", "remove", "unsave", "dislike"):
+            return self._set_liked(False)
+
+        track_id = self._get_current_track_id()
+        if not track_id:
+            return "Nothing is currently playing."
+        response = self._make_spotify_request(
+            "get", f"https://api.spotify.com/v1/me/tracks/contains?ids={track_id}"
         )
-        url = self._build_url_with_device(base_url, "&")
-
-        self._make_spotify_request("put", url)
-        return f"Volume set to {volume}%."
+        return self._set_liked(not response.json()[0])
 
     @capture_response
     @retry_on_unauthorized("_refresh_access_token")
@@ -492,103 +392,8 @@ class Spotify:
 
         return result
 
-    @capture_response
-    @retry_on_unauthorized("_refresh_access_token")
-    @method_job
-    def like_current_track(self) -> typing.Optional[str]:
-        """
-        [SPOTIFY SERVICE METHOD] Saves the currently playing track to the user's Liked Songs.
 
-        Use this method when the user wants to:
-        - Like the current song
-        - Save the current track
-        - Add the current song to liked songs
 
-        Keywords: like, love, save, heart, favorite, current song, this song, liked songs
-
-        Args:
-            None
-
-        Returns:
-            str: Confirmation message or error if nothing is playing.
-        """
-        track_id = self._get_current_track_id()
-        if not track_id:
-            return "Nothing is currently playing."
-
-        self._make_spotify_request(
-            "put",
-            f"https://api.spotify.com/v1/me/tracks?ids={track_id}",
-        )
-        state = self._get_playback_state()
-        name = state["item"]["name"] if state and state.get("item") else "Track"
-        return f"Liked {name}."
-
-    @capture_response
-    @retry_on_unauthorized("_refresh_access_token")
-    @method_job
-    def unlike_current_track(self) -> typing.Optional[str]:
-        """
-        [SPOTIFY SERVICE METHOD] Removes the currently playing track from the user's Liked Songs.
-
-        Use this method when the user wants to:
-        - Unlike the current song
-        - Remove the current track from liked songs
-        - Dislike this song
-
-        Keywords: unlike, dislike, remove, unsave, unheart, current song, this song, liked songs
-
-        Args:
-            None
-
-        Returns:
-            str: Confirmation message or error if nothing is playing.
-        """
-        track_id = self._get_current_track_id()
-        if not track_id:
-            return "Nothing is currently playing."
-
-        self._make_spotify_request(
-            "delete",
-            f"https://api.spotify.com/v1/me/tracks?ids={track_id}",
-        )
-        state = self._get_playback_state()
-        name = state["item"]["name"] if state and state.get("item") else "Track"
-        return f"Removed {name} from liked songs."
-
-    @capture_response
-    @retry_on_unauthorized("_refresh_access_token")
-    @method_job
-    def toggle_like_current_track(self) -> typing.Optional[str]:
-        """
-        [SPOTIFY SERVICE METHOD] Toggles like/unlike on the currently playing track.
-
-        Use this method when the user wants to:
-        - Toggle like on the current song
-        - Switch like state of the current track
-
-        Keywords: toggle like, toggle heart, like toggle, current song
-
-        Args:
-            None
-
-        Returns:
-            str: Confirmation of new like state.
-        """
-        track_id = self._get_current_track_id()
-        if not track_id:
-            return "Nothing is currently playing."
-
-        response = self._make_spotify_request(
-            "get",
-            f"https://api.spotify.com/v1/me/tracks/contains?ids={track_id}",
-        )
-        is_liked = response.json()[0]
-
-        if is_liked:
-            return self.unlike_current_track()
-        else:
-            return self.like_current_track()
 
     @capture_response
     @retry_on_unauthorized("_refresh_access_token")
@@ -758,30 +563,6 @@ class Spotify:
         )
         return f"Removed {track_label} from {playlist['name']}."
 
-    @capture_response
-    @retry_on_unauthorized("_refresh_access_token")
-    @method_job
-    def toggle_shuffle(self) -> str:
-        """
-        [SPOTIFY JOB] Toggles shuffle mode on or off for Spotify playback.
-
-        Use this job when the user wants to:
-        - Toggle shuffle mode on or off
-        - Enable/disable random playback
-
-        Keywords: shuffle, random, mix, spotify, playback
-
-        Args:
-            None
-
-        Returns:
-            str: Confirmation of new shuffle state.
-        """
-        playback_state = self._get_playback_state()
-        if not playback_state:
-            return "No active Spotify device."
-        state = not playback_state.get("shuffle_state", False)
-        return self._set_shuffle(state)
 
     def _set_shuffle(self, state: bool) -> str:
         base_url = (

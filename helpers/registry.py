@@ -1,4 +1,3 @@
-import os
 import threading
 import typing
 
@@ -28,6 +27,9 @@ class ServiceRegistry:
     _module_hints: typing.Dict[str, str] = {}
     _job_modules: typing.Dict[str, str] = {}
     _job_summaries: typing.Dict[str, str] = {}
+    # Declared requirement per module, recorded whatever the outcome — this is
+    # what `doctor` reports against, so it must not be a second hand-kept list.
+    _module_requirements: typing.Dict[str, typing.Any] = {}
     # Stores enough info to retry failed modules at runtime.
     # service: {"kind": "service", "cls": type, "requires": Requirement|None}
     # jobs:    {"kind": "jobs", "items": [(job_name, func, requires, summary), ...]}
@@ -56,6 +58,17 @@ class ServiceRegistry:
     @classmethod
     def get_job_summaries(cls) -> typing.Dict[str, str]:
         return cls._job_summaries.copy()
+
+    @classmethod
+    def get_module_requirements(cls) -> typing.Dict[str, typing.Any]:
+        return cls._module_requirements.copy()
+
+    @classmethod
+    def declare_requirement(cls, module_name: typing.Optional[str], requires: typing.Any) -> None:
+        """Record a module's declared requirement. Called at decoration time,
+        before any gating, so a disabled or broken module is still reportable."""
+        if module_name and requires is not None:
+            cls._module_requirements.setdefault(module_name, requires)
 
     @classmethod
     def get_retryable_modules(cls) -> typing.List[str]:
@@ -227,6 +240,8 @@ class ServiceRegistry:
             if not func.__doc__:
                 raise ValueError(f"Job '{job_name}' must have documentation")
 
+            cls.declare_requirement(module_name, requires)
+
             enabled, reason = cls._check_module_enabled(module_name)
             if not enabled:
                 if module_name:
@@ -284,6 +299,8 @@ class ServiceRegistry:
 
         def do_register(svc_class: type) -> type:
             svc_module_name = module_name or svc_class.__name__.lower()
+
+            cls.declare_requirement(svc_module_name, requires)
 
             enabled, reason = cls._check_module_enabled(svc_module_name)
             if not enabled:

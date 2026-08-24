@@ -2,7 +2,6 @@ import os
 import time
 
 from helpers.audio import Audio
-from helpers.cache import Cache
 from helpers.controllers import MouseController
 from helpers.decorators import capture_response
 from helpers.jobs import BackgroundJobs

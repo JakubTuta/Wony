@@ -54,7 +54,7 @@ def run_agent(
     client: typing.Any,
     user_input: str,
     available_jobs: typing.Dict[str, typing.Callable],
-    system_instructions: str,
+    system_instructions: helpers_model.SystemInstructions,
     history: typing.Optional[typing.List[typing.Dict[str, str]]] = None,
     max_steps: int = 5,
     on_text: typing.Optional[typing.Callable[[str], None]] = None,

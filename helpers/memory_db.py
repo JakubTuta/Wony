@@ -6,7 +6,9 @@ import typing
 import uuid
 from datetime import datetime, timedelta
 
-_DB_FILE = "wony.db"
+from helpers.paths import repo_path
+
+_DB_FILE = repo_path("wony.db")
 _lock = threading.Lock()
 _conn: typing.Optional[sqlite3.Connection] = None
 _fts_available: bool = False

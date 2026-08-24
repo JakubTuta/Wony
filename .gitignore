@@ -6,7 +6,6 @@ venv/
 config.yaml
 config.yaml.bak
 .wony_setup
-*test*
 screenshots/
 logs/
 .vscode/
@@ -18,10 +17,6 @@ frontend/package-lock.json
 *.onnx
 *.tflite
 
-# Wake word training artifacts (large data, generated files).
-# `training/*` (not `training/`) so the negations below actually take effect —
-# git prunes traversal into a directory excluded with a trailing slash and
-# never re-evaluates negation patterns for anything inside it.
 training/*
 !training/train_hey_wony.ipynb
 !training/train_hey_wony.sh
@@ -44,6 +39,10 @@ node_modules
 dist
 dist-ssr
 *.local
+
+.pytest_cache/
+.coverage
+htmlcov/
 
 # Editor directories and files
 .vscode/*

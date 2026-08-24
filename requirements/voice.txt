@@ -1,13 +1,13 @@
 # Voice input/output dependencies.
 # Required for --audio mode (speech recognition + text-to-speech).
 
-# onnxruntime-gpu ships both CPU and GPU providers.
-# The CUDA provider DLL links the full CUDA 12 runtime stack, so cuDNN/cuBLAS
-# alone are NOT enough — it also needs cudart, cuFFT and cuRAND. These wheels
-# supply every DLL so no system CUDA toolkit is required.
-# On machines without a CUDA-capable GPU the wheels install but are never loaded;
-# the app auto-selects CPUExecutionProvider at runtime.
-onnxruntime-gpu ; platform_system != "Darwin"
+# onnxruntime-gpu's CUDA provider links the full CUDA 12 runtime, so cuDNN/cuBLAS
+# alone are NOT enough — cudart, cuFFT and cuRAND are also required. These wheels
+# supply every DLL, so no system CUDA toolkit is needed. Machines without a CUDA
+# GPU install them but never load them (auto-falls back to CPUExecutionProvider).
+# <1.27 pin: 1.27 fails to load the CUDA provider against this cu12 wheel set.
+# Keep in sync with _ORT_GPU_SPEC in setup.py.
+onnxruntime-gpu<1.27 ; platform_system != "Darwin"
 onnxruntime ; platform_system == "Darwin"
 nvidia-cuda-runtime-cu12>=12.0,<13 ; platform_system == "Windows"
 nvidia-cudnn-cu12>=9.0,<10 ; platform_system == "Windows"
@@ -22,13 +22,14 @@ soundfile
 soxr
 pynput
 faster-whisper
-# VAD endpointing — record from speech start to silence (no fixed window).
-# webrtcvad-wheels ships prebuilt Windows/macOS/Linux wheels (import name: webrtcvad).
+# VAD endpointing. Prebuilt wheels; import name is webrtcvad.
 webrtcvad-wheels
 
-# Media pause — pause other apps' media (Spotify, browser tabs, VLC, ...) while
-# Wony is speaking/listening, via Windows System Media Transport Controls.
-# Windows-only; silently no-ops if missing.
+# Default render endpoint ID (helpers/mic.py) — detects an output device change
+# without re-enumerating PortAudio.
+pycaw ; platform_system == "Windows"
+
+# Media pause via Windows System Media Transport Controls. No-ops if missing.
 winrt-Windows.Media.Control ; platform_system == "Windows"
 winrt-Windows.Foundation ; platform_system == "Windows"
 winrt-Windows.Foundation.Collections ; platform_system == "Windows"

@@ -49,6 +49,22 @@ def _python_type_to_json(hint: typing.Any) -> str:
     return "string"
 
 
+# A param line is `name: desc` or `name (type): desc`, continuing until the next
+# such line. The old pattern's lookahead was `\w+\s*:`, which cannot match across
+# the ` (str)` in `date (str):` — so no boundary was ever found and the entire
+# Args block was swallowed into the first parameter's description while every
+# later parameter fell through to "No description available".
+_PARAM_PATTERN = re.compile(
+    r"^[ \t]*(\w+)[ \t]*(?:\([^)]*\))?[ \t]*:[ \t]*"
+    r"(.*?)(?=^[ \t]*\w+[ \t]*(?:\([^)]*\))?[ \t]*:|\Z)",
+    re.DOTALL | re.MULTILINE,
+)
+
+# Leading "[SOMETHING JOB]" / "[X SERVICE METHOD]" tag — routing noise for a
+# human reader, pure tokens on the wire.
+_DOC_TAG = re.compile(r"^\s*\[[A-Z][A-Z /]*\]\s*")
+
+
 def _parse_signature(
     func: typing.Callable,
 ) -> typing.Tuple[str, typing.Dict[str, typing.Any], typing.List[str]]:
@@ -63,6 +79,7 @@ def _parse_signature(
         r"\s*(.*?)(?:\n\n|\n\s*Args:|\n\s*Parameters:|\Z)", docstring, re.DOTALL
     )
     description = desc_match.group(1).strip() if desc_match else ""
+    description = _DOC_TAG.sub("", description)
 
     params_match = re.search(
         r"(?:Args|Parameters):(.*?)(?:\n\s*Returns:|\n\s*Raises:|\Z)",
@@ -81,12 +98,9 @@ def _parse_signature(
     properties: typing.Dict[str, typing.Any] = {}
     required: typing.List[str] = []
 
-    param_pattern = re.compile(
-        r"\s*(\w+)(?:\s*\(\w+\))?\s*:\s*(.*?)(?=\n\s*\w+\s*:|$)", re.DOTALL
-    )
-    for match in param_pattern.finditer(params_text):
+    for match in _PARAM_PATTERN.finditer(params_text):
         param_name = match.group(1).strip()
-        param_desc = match.group(2).strip()
+        param_desc = " ".join(match.group(2).split())
 
         if param_name not in sig.parameters:
             continue

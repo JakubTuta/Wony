@@ -63,16 +63,22 @@ def _persona() -> str:
     return base
 
 
-def build_agent_system_prompt() -> str:
-    """System prompt for the multi-step agent loop. Rebuilt per request so the
-    injected date/time is always current."""
+def build_agent_system_prompt() -> typing.List[str]:
+    """System prompt for the multi-step agent loop, as [stable, volatile] blocks.
+
+    Split so the stable half can sit inside the provider's cached prefix: the
+    clock ticks every minute and would otherwise invalidate the whole prompt —
+    and everything after it — on every single request.
+    """
     import datetime
 
     now = datetime.datetime.now().astimezone()
-    return (
-        _persona()
-        + f"\n\nCurrent local date and time: {now.strftime('%A, %B %d, %Y, %H:%M')} ({now.tzname()})."
+    volatile = (
+        f"Current local date and time: {now.strftime('%A, %B %d, %Y, %H:%M')} ({now.tzname()})."
         " Use this for any time, date, or scheduling reasoning — never guess the date."
+    )
+    stable = (
+        _persona()
         + "\n\nYou are an intelligent agent with access to tools for music (Spotify),"
         " email (Gmail), calendar (Google Calendar), web search, desktop control,"
         " persistent memory, reminders, and general knowledge."
@@ -121,8 +127,8 @@ def build_agent_system_prompt() -> str:
         " 'when is that'), answer directly from history. But if the user asks for detail"
         " you do NOT already have — e.g. the briefing listed unread senders and they now"
         " ask to read those emails, see the bodies, or get details of today's meetings —"
-        " call the matching email/calendar tool to fetch it (check_new_emails, read_email,"
-        " get_today_agenda, etc.). You DO have access to the user's Gmail and Calendar via"
+        " call the matching email/calendar tool to fetch it (find_emails, read_email,"
+        " find_events, etc.). You DO have access to the user's Gmail and Calendar via"
         " these tools: never reply that you cannot access their email or calendar. A tool"
         " returning zero results is a valid answer ('no unread emails'), not an error."
 
@@ -146,6 +152,7 @@ def build_agent_system_prompt() -> str:
 
         "\nReply in plain prose. No bullet points unless listing multiple items."
     )
+    return [stable, volatile]
 
 
 @simple_service
@@ -259,7 +266,7 @@ class AI:
     @register_job
     @capture_response
     @staticmethod
-    def remember(fact: str = "") -> str:
+    def remember(fact: str = "", topic: str = "") -> str:
         """
         [AI SERVICE JOB] Saves a personal fact or preference to persistent memory.
         Use this when the user tells you to remember something about themselves,
@@ -270,27 +277,30 @@ class AI:
         - Save a fact ("remember my boss is Anna")
         - Set a default ("remember my default account is work")
 
-        Keywords: remember, save fact, store preference, keep in mind, note that,
-                 don't forget, memorize
-
         Args:
-            fact (str): The fact or preference to remember, as stated by the user.
+            fact (str): The fact or preference to remember, as stated by the user. (required)
+            topic (str): Short snake_case subject this fact is about, e.g.
+                "preferred_units", "boss", "default_account". Reuse the same topic
+                when the user updates an existing fact so it overwrites rather than
+                duplicates. Derived from the fact text if omitted.
 
         Returns:
             str: Confirmation that the fact was saved.
         """
+        import re
+
         from helpers.profile import Profile
 
         if not fact:
             return "Error: No fact provided to remember."
 
-        # Derive a short key from the fact text
-        import re
-        key = re.sub(r"[^a-z0-9_]", "_", fact.lower().strip())[:40].strip("_")
+        # A model-supplied topic is what makes "I like tea" overwrite "I like
+        # coffee" instead of accumulating a near-duplicate on every restatement.
+        key = re.sub(r"[^a-z0-9_]+", "_", (topic or fact).lower().strip())[:40].strip("_")
         if not key:
             key = "note"
         Profile.set(key, fact)
-        return f"Remembered: {fact}"
+        return f"Remembered ({key}): {fact}"
 
     @register_job
     @capture_response

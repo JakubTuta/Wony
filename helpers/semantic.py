@@ -48,11 +48,6 @@ def _unpack(blob: bytes) -> np.ndarray:
     return np.array(struct.unpack(f"{n}f", blob), dtype=np.float32)
 
 
-def _cosine(a: np.ndarray, b: np.ndarray) -> float:
-    denom = float(np.linalg.norm(a)) * float(np.linalg.norm(b))
-    return float(np.dot(a, b) / denom) if denom > 0 else 0.0
-
-
 def retrieve(
     query: str,
     k: int = 5,
@@ -70,25 +65,47 @@ def retrieve(
     if not rows:
         return []
 
-    query_vec = np.array(embed(query), dtype=np.float32)
-    scored: typing.List[typing.Tuple[float, typing.Dict]] = []
-
+    # One matmul over a stacked matrix rather than a per-row Python loop —
+    # the loop was the whole cost of recall once the table grew.
+    usable: typing.List[typing.Dict] = []
+    vectors: typing.List[np.ndarray] = []
+    dim: typing.Optional[int] = None
     for row in rows:
         try:
             vec = _unpack(row["vector"])
-            score = _cosine(query_vec, vec)
-            scored.append((score, {
-                "source_type": row["source_type"],
-                "ref_id": row["ref_id"],
-                "ref_key": row["ref_key"],
-                "text": row["text"],
-                "score": round(score, 4),
-            }))
         except Exception:
-            pass
+            continue
+        if dim is None:
+            dim = vec.size
+        elif vec.size != dim:
+            continue  # stale row from a different embedding model
+        usable.append(row)
+        vectors.append(vec)
 
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return [item for _, item in scored[:k]]
+    if not usable:
+        return []
+
+    matrix = np.stack(vectors)
+    query_vec = np.asarray(embed(query), dtype=np.float32)
+    if query_vec.size != matrix.shape[1]:
+        return []
+
+    norms = np.linalg.norm(matrix, axis=1) * float(np.linalg.norm(query_vec))
+    scores = np.divide(
+        matrix @ query_vec, norms, out=np.zeros(len(usable), dtype=np.float32), where=norms > 0
+    )
+
+    top = np.argsort(scores)[::-1][:k]
+    return [
+        {
+            "source_type": usable[i]["source_type"],
+            "ref_id": usable[i]["ref_id"],
+            "ref_key": usable[i]["ref_key"],
+            "text": usable[i]["text"],
+            "score": round(float(scores[i]), 4),
+        }
+        for i in top
+    ]
 
 
 # ------------------------------------------------------------------ store helpers

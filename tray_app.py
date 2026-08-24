@@ -19,8 +19,6 @@ import sys
 import threading
 import typing
 
-import helpers.diagnostics as diagnostics
-
 # pythonw.exe has no console; redirect stdout/stderr to a UTF-8 null sink so
 # print() calls don't raise AttributeError or UnicodeEncodeError.
 if sys.stdout is None:

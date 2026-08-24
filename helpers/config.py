@@ -64,12 +64,10 @@ class WakeWordSettings(BaseModel):
     model_path: typing.Optional[str] = None
     threshold: float = 0.5
     cooldown_seconds: float = 2.0
-    vad_threshold: float = 0.5
     noise_suppression: bool = False
 
 
 class VoiceSettings(BaseModel):
-    enabled: bool = False
     tts_voice: str = "af_heart"
     speed: float = 1.0
     volume: float = 0.6

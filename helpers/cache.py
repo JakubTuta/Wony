@@ -3,10 +3,19 @@ import os
 import threading
 import typing
 
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Whether this process speaks. Process state, not persisted state — writing it
+# to cache.json meant `wony.py doctor` could flip the running tray to silent.
+_audio_enabled: bool = False
+
 
 class Cache:
-    _filename = "cache.json"
+    # Repo-root anchored, not CWD — launching from another directory used to
+    # fork a second cache file.
+    _filename = os.path.join(_REPO_ROOT, "cache.json")
     _values = {}
+    _loaded = False
     _lock = threading.Lock()
 
     @staticmethod
@@ -14,18 +23,15 @@ class Cache:
         try:
             with open(Cache._filename, "r") as file:
                 Cache._values = json.load(file)
-        except FileNotFoundError:
+        except (FileNotFoundError, json.JSONDecodeError):
             with open(Cache._filename, "w") as file:
                 json.dump({}, file, indent=4)
                 Cache._values = {}
-        except json.JSONDecodeError:
-            with open(Cache._filename, "w") as file:
-                json.dump({}, file, indent=4)
-                Cache._values = {}
+        Cache._loaded = True
 
     @staticmethod
     def get_values() -> dict:
-        if not len(Cache._values):
+        if not Cache._loaded:
             Cache.load_values()
 
         return Cache._values
@@ -41,16 +47,16 @@ class Cache:
 
     @staticmethod
     def get_value(key: str, default=None) -> typing.Any:
-        if not len(Cache._values):
+        if not Cache._loaded:
             Cache.load_values()
 
         return Cache._values.get(key, default)
 
     @staticmethod
     def set_audio(value: bool) -> None:
-        Cache.set_value("audio", value)
+        global _audio_enabled
+        _audio_enabled = bool(value)
 
     @staticmethod
     def get_audio() -> bool:
-        return Cache.get_value("audio", default=False)
-
+        return _audio_enabled

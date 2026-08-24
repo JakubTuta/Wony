@@ -5,8 +5,7 @@ When a module fails at startup (e.g. Spotify with no active device, a service
 not yet running), the watcher re-attempts initialization every N minutes.
 On success the module's jobs become available without an app restart.
 
-Interval is read from modules.health_check_interval_minutes in config.yaml
-(default 5, set to 0 to disable).
+Interval comes from _HEALTH_CHECK_INTERVAL_MINUTES in helpers/bootstrap.py.
 """
 import threading
 import typing
@@ -16,7 +15,7 @@ _thread: typing.Optional[threading.Thread] = None
 
 
 def start(interval_minutes: float = 5.0) -> None:
-    global _thread, _stop_event
+    global _thread
     if _thread and _thread.is_alive():
         return
     _stop_event.clear()

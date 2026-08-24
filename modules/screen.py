@@ -4,7 +4,6 @@ import os
 from PIL import Image
 
 from helpers.decorators import capture_response
-from helpers.logger import logger
 from helpers.registry import ServiceRegistry, register_job
 from helpers.requirements import Requirement
 from helpers.screenReader import ScreenReader

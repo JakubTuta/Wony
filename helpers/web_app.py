@@ -17,7 +17,9 @@ from pydantic import BaseModel
 from helpers.config import Config
 from helpers.registry import ServiceRegistry
 
-_DEFAULT_DESTRUCTIVE: typing.Set[str] = {
+# Jobs the web UI flags before invoking. Not a config key — a user editing this
+# list is a code change, not a setting.
+_DESTRUCTIVE_JOBS: typing.Set[str] = {
     "exit",
     "close_computer",
     "stop_active_jobs",
@@ -39,13 +41,6 @@ _DEFAULT_DESTRUCTIVE: typing.Set[str] = {
     "remove_google_account",
     "edit_google_account",
 }
-
-
-def _get_destructive_set() -> typing.Set[str]:
-    from_config = Config.get("server.destructive_jobs", None)
-    if from_config and isinstance(from_config, list):
-        return set(from_config)
-    return _DEFAULT_DESTRUCTIVE
 
 
 def _coerce_args(
@@ -248,7 +243,7 @@ def build_app() -> FastAPI:
         all_jobs = ServiceRegistry.get_all_jobs()
         job_modules = ServiceRegistry.get_job_modules()
         job_summaries = ServiceRegistry.get_job_summaries()
-        destructive = _get_destructive_set()
+        destructive = _DESTRUCTIVE_JOBS
 
         jobs_out = []
         for name, func in all_jobs.items():
@@ -384,7 +379,6 @@ def build_app() -> FastAPI:
         if not data:
             raise HTTPException(status_code=400, detail="No audio data received.")
         try:
-            import io
             import tempfile
 
             import numpy as np

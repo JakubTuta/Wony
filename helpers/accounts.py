@@ -2,7 +2,17 @@ import json
 import os
 import typing
 
-_ACCOUNTS_FILE = "credentials/accounts.json"
+from helpers.paths import repo_path
+
+_ACCOUNTS_FILE = repo_path("credentials", "accounts.json")
+
+_TOKEN_KEYS = ("gmail_token", "calendar_token")
+
+
+def _abs(path: str) -> str:
+    """Token paths are stored repo-relative so accounts.json stays portable;
+    resolve them before any filesystem access."""
+    return repo_path(path) if path and not os.path.isabs(path) else path
 
 
 class GoogleAccounts:
@@ -30,8 +40,8 @@ class GoogleAccounts:
     @classmethod
     def _migrate_legacy(cls) -> None:
         """Seed accounts.json from legacy single-token files on first run."""
-        has_gmail = os.path.exists("credentials/gmail_token.json")
-        has_calendar = os.path.exists("credentials/calendar_token.json")
+        has_gmail = os.path.exists(_abs("credentials/gmail_token.json"))
+        has_calendar = os.path.exists(_abs("credentials/calendar_token.json"))
         if has_gmail or has_calendar:
             cls._data["accounts"]["primary"] = {
                 "gmail_token": "credentials/gmail_token.json",
@@ -72,10 +82,15 @@ class GoogleAccounts:
 
     @classmethod
     def record(cls, name: str) -> dict:
+        """Account record with token paths resolved to absolute."""
         data = cls._load()
         if name not in data["accounts"]:
             raise ValueError(f"Account '{name}' not found.")
-        return data["accounts"][name]
+        rec = dict(data["accounts"][name])
+        for key in _TOKEN_KEYS:
+            if rec.get(key):
+                rec[key] = _abs(rec[key])
+        return rec
 
     @classmethod
     def add_account(cls, name: str) -> str:
@@ -100,8 +115,8 @@ class GoogleAccounts:
         if name not in data["accounts"]:
             raise ValueError(f"Account '{name}' not found.")
         rec = data["accounts"].pop(name)
-        for key in ("gmail_token", "calendar_token"):
-            path = rec.get(key, "")
+        for key in _TOKEN_KEYS:
+            path = _abs(rec.get(key, ""))
             if path and os.path.exists(path):
                 try:
                     os.remove(path)
@@ -132,14 +147,14 @@ class GoogleAccounts:
 
         rec = data["accounts"].pop(old_name)
 
-        # Rename token files on disk
-        for key in ("gmail_token", "calendar_token"):
-            old_path = rec.get(key, "")
-            if old_path and os.path.exists(old_path):
-                new_path = old_path.replace(f"_{old_name}.", f"_{safe}.")
+        # Rename token files on disk (rec keeps the repo-relative form).
+        for key in _TOKEN_KEYS:
+            old_rel = rec.get(key, "")
+            if old_rel and os.path.exists(_abs(old_rel)):
+                new_rel = old_rel.replace(f"_{old_name}.", f"_{safe}.")
                 try:
-                    os.rename(old_path, new_path)
-                    rec[key] = new_path
+                    os.rename(_abs(old_rel), _abs(new_rel))
+                    rec[key] = new_rel
                 except OSError:
                     pass
 

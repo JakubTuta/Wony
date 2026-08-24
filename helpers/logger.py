@@ -1,6 +1,6 @@
 import csv
+import io
 import logging
-import os
 import typing
 from datetime import datetime
 from pathlib import Path
@@ -24,8 +24,14 @@ class CSVFormatter(logging.Formatter):
         function_called = getattr(record, "function_called", "")
         function_response = getattr(record, "function_response", "")
 
-        # Return as comma-separated values
-        return f'"{timestamp}","{log_name}","{user_input}","{function_called}","{function_response}"'
+        # csv.writer, not an f-string: replies are routinely multi-line, and an
+        # embedded newline splits one record across rows.
+        buffer = io.StringIO()
+        writer = csv.writer(buffer, quoting=csv.QUOTE_ALL, lineterminator="")
+        writer.writerow(
+            [timestamp, log_name, user_input, function_called, function_response]
+        )
+        return buffer.getvalue()
 
 
 class Logger:
@@ -248,15 +254,11 @@ class Logger:
             exc_info=None,
         )
 
-        # Add custom attributes
+        # Raw values — CSVFormatter quotes and escapes them via csv.writer.
         record.log_name = log_name
-        record.user_input = (
-            user_input.replace('"', '""') if user_input else ""
-        )  # Escape quotes for CSV
+        record.user_input = user_input or ""
         record.function_called = function_called
-        record.function_response = (
-            function_response.replace('"', '""') if function_response else ""
-        )  # Escape quotes for CSV
+        record.function_response = function_response or ""
 
         self.csv_logger.handle(record)
 

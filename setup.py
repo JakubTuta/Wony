@@ -76,80 +76,178 @@ ALWAYS_ON = ["ai", "status", "basics"]
 # key, label, requirement files, config module (None = run-mode/enhancement),
 # default, description, external setup still needed.
 FEATURES = [
-    {"key": "voice", "label": "Voice I/O (speech recognition + text-to-speech)",
-     "reqs": ["voice.txt"], "module": None, "default": False,
-     "desc": "Talk to Wony and hear replies. Whisper STT + Kokoro TTS.",
-     "needs": "Downloads ~hundreds of MB of models on first run. NVIDIA GPU auto-accelerated; CPU otherwise."},
-    {"key": "wakeword", "label": "Wake word — hands-free 'hey jarvis'",
-     "reqs": ["wakeword.txt"], "module": None, "default": False,
-     "desc": "Start a conversation by voice with no key press.",
-     "needs": "Requires Voice I/O. Built-in phrase works immediately; for your own "
-              "phrase run: python setup.py wakeword"},
-    {"key": "tray", "label": "System tray + web chat UI (recommended run mode)",
-     "reqs": ["tray.txt", "server.txt"], "module": None, "default": True,
-     "desc": "Run Wony in the background with a tray icon and a browser chat UI.",
-     "needs": "Start with: python wony.py   (then open the web UI URL it prints)."},
-    {"key": "weather", "label": "Weather", "reqs": ["weather.txt"],
-     "module": "weather", "default": True,
-     "desc": "Current weather and forecasts.",
-     "needs": "Add WEATHER_API_KEY to .env (free key: openweathermap.org/api)."},
-    {"key": "web", "label": "Web search + URL fetch", "reqs": ["web.txt"],
-     "module": "web", "default": True,
-     "desc": "Search the web and read pages.",
-     "needs": "Works out of the box (DuckDuckGo). Optional: TAVILY_API_KEY in .env."},
-    {"key": "scheduler", "label": "Reminders & recurring notifications",
-     "reqs": ["scheduler.txt"], "module": "scheduler", "default": False,
-     "desc": "Persistent reminders and scheduled tasks.", "needs": ""},
-    {"key": "spotify", "label": "Spotify playback control", "reqs": [],
-     "module": "spotify", "default": False,
-     "desc": "Play, pause, skip, search, set volume.",
-     "needs": "developer.spotify.com app; SPOTIFY_CLIENT_ID + SPOTIFY_CLIENT_SECRET in .env; "
-              "redirect URI http://127.0.0.1:8888/callback."},
-    {"key": "gmail", "label": "Gmail (read / search / monitor)", "reqs": ["gmail.txt"],
-     "module": "gmail", "default": False,
-     "desc": "Read, search and watch your inbox.",
-     "needs": "Google OAuth: credentials/google_credentials.json. Sending off until modules.gmail.allow_send: true."},
-    {"key": "calendar", "label": "Google Calendar", "reqs": ["calendar.txt"],
-     "module": "calendar", "default": False,
-     "desc": "Read events, check availability, find free slots.",
-     "needs": "Google OAuth: credentials/google_credentials.json. Writing off until modules.calendar.allow_write: true."},
-    {"key": "google_accounts", "label": "Multiple Google accounts", "reqs": [],
-     "module": "google_accounts", "default": False,
-     "desc": "Manage more than one Google account for Gmail/Calendar.",
-     "needs": "Builds on Gmail/Calendar — enable one of those too."},
-    {"key": "screen", "label": "Screen capture + OCR", "reqs": ["screen.txt"],
-     "module": "screen", "default": False,
-     "desc": "Screenshot the screen and extract text.",
-     "needs": "easyocr downloads OCR models (~tens of MB) on first use."},
-    {"key": "desktop", "label": "Desktop control (apps, windows, clipboard)",
-     "reqs": ["desktop.txt"], "module": "desktop", "default": False,
-     "desc": "Open apps, manage windows, read/write clipboard, open files.",
-     "needs": "Actions off until modules.desktop.allow_actions: true."},
-    {"key": "league", "label": "League of Legends stats", "reqs": ["automation.txt"],
-     "module": "league", "default": False,
-     "desc": "Player stats and match history.", "needs": ""},
-    {"key": "shelly", "label": "Shelly smart-home control", "reqs": [],
-     "module": "shelly", "default": False,
-     "desc": "Control Shelly devices on your network.",
-     "needs": "Set modules.shelly.base_url in config.yaml to your device IP."},
-    {"key": "mcp", "label": "MCP client (external tool servers)", "reqs": ["mcp.txt"],
-     "module": "mcp", "default": False,
-     "desc": "Connect external Model Context Protocol tool servers.",
-     "needs": "Configure servers in config.yaml under the mcp module."},
-    {"key": "semantic", "label": "Semantic memory (RAG recall)", "reqs": ["semantic.txt"],
-     "module": None, "default": False,
-     "desc": "Smarter long-term memory recall using embeddings (fastembed).", "needs": ""},
-    {"key": "shazam", "label": "Song recognition (Shazam)", "reqs": ["shazam.txt"],
-     "module": None, "default": False,
-     "desc": "Identify the song currently playing.", "needs": ""},
+    {
+        "key": "voice",
+        "label": "Voice I/O (speech recognition + text-to-speech)",
+        "reqs": ["voice.txt"],
+        "module": None,
+        "default": False,
+        "desc": "Talk to Wony and hear replies. Whisper STT + Kokoro TTS.",
+        "needs": "Downloads ~hundreds of MB of models on first run. NVIDIA GPU auto-accelerated; CPU otherwise.",
+    },
+    {
+        "key": "wakeword",
+        "label": "Wake word — hands-free 'hey jarvis'",
+        "reqs": ["wakeword.txt"],
+        "module": None,
+        "default": False,
+        "desc": "Start a conversation by voice with no key press.",
+        "needs": "Requires Voice I/O. Built-in phrase works immediately; for your own "
+        "phrase run: python setup.py wakeword",
+    },
+    {
+        "key": "tray",
+        "label": "System tray + web chat UI (recommended run mode)",
+        "reqs": ["tray.txt", "server.txt"],
+        "module": None,
+        "default": True,
+        "desc": "Run Wony in the background with a tray icon and a browser chat UI.",
+        "needs": "Start with: python wony.py   (then open the web UI URL it prints).",
+    },
+    {
+        "key": "weather",
+        "label": "Weather",
+        "reqs": ["weather.txt"],
+        "module": "weather",
+        "default": True,
+        "desc": "Current weather and forecasts.",
+        "needs": "Add WEATHER_API_KEY to .env (free key: openweathermap.org/api).",
+    },
+    {
+        "key": "web",
+        "label": "Web search + URL fetch",
+        "reqs": ["web.txt"],
+        "module": "web",
+        "default": True,
+        "desc": "Search the web and read pages.",
+        "needs": "Works out of the box (DuckDuckGo). Optional: TAVILY_API_KEY in .env.",
+    },
+    {
+        "key": "scheduler",
+        "label": "Reminders & recurring notifications",
+        "reqs": ["scheduler.txt"],
+        "module": "scheduler",
+        "default": False,
+        "desc": "Persistent reminders and scheduled tasks.",
+        "needs": "",
+    },
+    {
+        "key": "spotify",
+        "label": "Spotify playback control",
+        "reqs": [],
+        "module": "spotify",
+        "default": False,
+        "desc": "Play, pause, skip, search, set volume.",
+        "needs": "developer.spotify.com app; SPOTIFY_CLIENT_ID + SPOTIFY_CLIENT_SECRET in .env; "
+        "redirect URI http://127.0.0.1:8888/callback.",
+    },
+    {
+        "key": "gmail",
+        "label": "Gmail (read / search / monitor)",
+        "reqs": ["gmail.txt"],
+        "module": "gmail",
+        "default": False,
+        "desc": "Read, search and watch your inbox.",
+        "needs": "Google OAuth: credentials/google_credentials.json. Sending off until modules.gmail.allow_send: true.",
+    },
+    {
+        "key": "calendar",
+        "label": "Google Calendar",
+        "reqs": ["calendar.txt"],
+        "module": "calendar",
+        "default": False,
+        "desc": "Read events, check availability, find free slots.",
+        "needs": "Google OAuth: credentials/google_credentials.json. Writing off until modules.calendar.allow_write: true.",
+    },
+    {
+        "key": "google_accounts",
+        "label": "Multiple Google accounts",
+        "reqs": [],
+        "module": "google_accounts",
+        "default": False,
+        "desc": "Manage more than one Google account for Gmail/Calendar.",
+        "needs": "Builds on Gmail/Calendar — enable one of those too.",
+    },
+    {
+        "key": "screen",
+        "label": "Screen capture + OCR",
+        "reqs": ["screen.txt"],
+        "module": "screen",
+        "default": False,
+        "desc": "Screenshot the screen and extract text.",
+        "needs": "easyocr downloads OCR models (~tens of MB) on first use.",
+    },
+    {
+        "key": "desktop",
+        "label": "Desktop control (apps, windows, clipboard)",
+        "reqs": ["desktop.txt"],
+        "module": "desktop",
+        "default": False,
+        "desc": "Open apps, manage windows, read/write clipboard, open files.",
+        "needs": "Actions off until modules.desktop.allow_actions: true.",
+    },
+    {
+        "key": "league",
+        "label": "League of Legends stats",
+        "reqs": ["automation.txt"],
+        "module": "league",
+        "default": False,
+        "desc": "Player stats and match history.",
+        "needs": "",
+    },
+    {
+        "key": "shelly",
+        "label": "Shelly smart-home control",
+        "reqs": [],
+        "module": "shelly",
+        "default": False,
+        "desc": "Control Shelly devices on your network.",
+        "needs": "Set modules.shelly.base_url in config.yaml to your device IP.",
+    },
+    {
+        "key": "mcp",
+        "label": "MCP client (external tool servers)",
+        "reqs": ["mcp.txt"],
+        "module": "mcp",
+        "default": False,
+        "desc": "Connect external Model Context Protocol tool servers.",
+        "needs": "Configure servers in config.yaml under the mcp module.",
+    },
+    {
+        "key": "semantic",
+        "label": "Semantic memory (RAG recall)",
+        "reqs": ["semantic.txt"],
+        "module": None,
+        "default": False,
+        "desc": "Smarter long-term memory recall using embeddings (fastembed).",
+        "needs": "",
+    },
+    {
+        "key": "shazam",
+        "label": "Song recognition (Shazam)",
+        "reqs": ["shazam.txt"],
+        "module": None,
+        "default": False,
+        "desc": "Identify the song currently playing.",
+        "needs": "",
+    },
 ]
 
 # Representative import per feature — used to detect what's already installed.
 PROBE = {
-    "voice": "kokoro_onnx", "wakeword": "openwakeword", "tray": "pystray",
-    "weather": "geocoder", "web": "duckduckgo_search", "scheduler": "apscheduler",
-    "gmail": "simplegmail", "calendar": "googleapiclient", "screen": "mss",
-    "desktop": "pyautogui", "mcp": "mcp", "semantic": "fastembed", "shazam": "shazamio",
+    "voice": "kokoro_onnx",
+    "wakeword": "openwakeword",
+    "tray": "pystray",
+    "weather": "geocoder",
+    "web": "duckduckgo_search",
+    "scheduler": "apscheduler",
+    "gmail": "simplegmail",
+    "calendar": "googleapiclient",
+    "screen": "mss",
+    "desktop": "pyautogui",
+    "mcp": "mcp",
+    "semantic": "fastembed",
+    "shazam": "shazamio",
 }
 
 
@@ -270,8 +368,10 @@ def select_features(selected, detected):
         if lines_drawn:
             sys.stdout.write(f"\033[{lines_drawn}A\033[0J")  # up + clear down
         buf = []
-        buf.append(c("  Select features  ", "1;36")
-                   + c("(↑/↓ move · space toggle · a/n all/none · enter confirm)", "90"))
+        buf.append(
+            c("  Select features  ", "1;36")
+            + c("(↑/↓ move · space toggle · a/n all/none · enter confirm)", "90")
+        )
         buf.append(c(f"  Always installed: {', '.join(ALWAYS_ON)}", "90"))
         for i, f in enumerate(FEATURES):
             cursor = c("❯", "36") if i == cur else " "
@@ -282,7 +382,9 @@ def select_features(selected, detected):
         f = FEATURES[cur]
         buf.append("")
         buf.append(c("  " + f["desc"], "90"))
-        buf.append(c("  needs: " + f["needs"], "90") if f["needs"] else c("  needs: —", "90"))
+        buf.append(
+            c("  needs: " + f["needs"], "90") if f["needs"] else c("  needs: —", "90")
+        )
         out = "\n".join(buf)
         sys.stdout.write(out + "\n")
         sys.stdout.flush()
@@ -316,7 +418,12 @@ def select_features(selected, detected):
 
 def _select_numeric(selected, detected):
     while True:
-        print(c("\n  Select features (toggle by number, 'a' all, 'n' none, Enter to confirm)", "1"))
+        print(
+            c(
+                "\n  Select features (toggle by number, 'a' all, 'n' none, Enter to confirm)",
+                "1",
+            )
+        )
         print(c(f"  Always installed: {', '.join(ALWAYS_ON)}", "90"))
         for i, f in enumerate(FEATURES, 1):
             box = c("[x]", "32") if selected[f["key"]] else "[ ]"
@@ -351,8 +458,11 @@ def _finalize(selected):
 
 def choose_env():
     """Return (target_python, use_venv). Creates the venv if requested."""
-    venv_py = os.path.join(VENV_DIR, "Scripts", "python.exe") if os.name == "nt" \
+    venv_py = (
+        os.path.join(VENV_DIR, "Scripts", "python.exe")
+        if os.name == "nt"
         else os.path.join(VENV_DIR, "bin", "python")
+    )
 
     if os.path.exists(venv_py):
         print(c("  Found existing project venv (./venv) — using it.", "32"))
@@ -388,7 +498,9 @@ def ensure_env():
         print(c("  . .env exists — keeping it.", "90"))
         return
     print(c("\n  AI provider (Wony needs one; you can edit .env later):", "1"))
-    print("    1) Anthropic (Claude)   2) Google Gemini   3) Ollama (local, no key)   4) Skip")
+    print(
+        "    1) Anthropic (Claude)   2) Google Gemini   3) Ollama (local, no key)   4) Skip"
+    )
     ai = input("  Choose [1/2/3/4] (default 1): ").strip()
     lines = ["# Wony secrets — never commit this file."]
     if ai == "2":
@@ -423,7 +535,9 @@ def ensure_config():
     if not os.path.exists(CONFIG_EXAMPLE):
         print(c("  ! config.example.yaml missing — cannot create config.yaml.", "33"))
         return False, False
-    with open(CONFIG_EXAMPLE, "r", encoding="utf-8") as src, open(CONFIG, "w", encoding="utf-8") as dst:
+    with open(CONFIG_EXAMPLE, "r", encoding="utf-8") as src, open(
+        CONFIG, "w", encoding="utf-8"
+    ) as dst:
         dst.write(src.read())
     print(c("  ✓ created config.yaml from config.example.yaml", "32"))
     return True, True
@@ -466,8 +580,18 @@ def ask_media_pause(chosen):
         return
     if not any(f["key"] == "voice" for f in chosen):
         return
-    print(c("\n  Pause other apps' media (Spotify, browser tabs, ...) while Wony talks or listens?", "1"))
-    print(c("  Resumes automatically after. Change later via voice.media_pause.enabled in config.yaml.", "90"))
+    print(
+        c(
+            "\n  Pause other apps' media (Spotify, browser tabs, ...) while Wony talks or listens?",
+            "1",
+        )
+    )
+    print(
+        c(
+            "  Resumes automatically after. Change later via voice.media_pause.enabled in config.yaml.",
+            "90",
+        )
+    )
     ans = input("  Enable? [Y/n] ").strip().lower()
     if ans in ("n", "no"):
         set_media_pause_enabled(False)
@@ -515,7 +639,12 @@ def set_wake_word_config(phrase, model_path, threshold=0.5):
 
     voice_i = _find_key(lines, "voice", 0, 0, len(lines))
     if voice_i is None:
-        print(c("  ! No 'voice:' section in config.yaml — add wake word settings manually.", "33"))
+        print(
+            c(
+                "  ! No 'voice:' section in config.yaml — add wake word settings manually.",
+                "33",
+            )
+        )
         return
     voice_end = _block_end(lines, voice_i, 0)
 
@@ -555,7 +684,10 @@ def cmd_wakeword():
 
     print(c("\n  Custom wake word", "1;36"))
     print("  " + "-" * 50)
-    if importlib.util.find_spec("sounddevice") is None or importlib.util.find_spec("openwakeword") is None:
+    if (
+        importlib.util.find_spec("sounddevice") is None
+        or importlib.util.find_spec("openwakeword") is None
+    ):
         print(c("  Voice I/O + Wake word aren't installed yet.", "33"))
         print("  Run 'python setup.py', select them, then come back to this command.")
         return
@@ -563,22 +695,42 @@ def cmd_wakeword():
     phrase = input("  Phrase to train [hey wony]: ").strip() or "hey wony"
     stem = re.sub(r"[^a-z0-9]+", "_", phrase.lower()).strip("_") or "wake_word"
 
-    print(c("\n  Recording yourself saying it (optional, but the single best thing", "1"))
+    print(
+        c("\n  Recording yourself saying it (optional, but the single best thing", "1")
+    )
     print("  you can do for accuracy — training also works with none at all).")
     count = input("  How many clips to record now? [15, 0 to skip]: ").strip()
     count = int(count) if count.isdigit() else 15
     if count > 0:
-        subprocess.call([sys.executable, os.path.join(ROOT, "training", "record_wake_word.py"),
-                          phrase, "--count", str(count)])
+        subprocess.call(
+            [
+                sys.executable,
+                os.path.join(ROOT, "training", "record_wake_word.py"),
+                phrase,
+                "--count",
+                str(count),
+            ]
+        )
 
     set_wake_word_config(phrase, model_path=f"models/{stem}.onnx", threshold=0.5)
 
-    print(c("\n  Next: train the model (see training/train_hey_wony.sh header comment,", "1"))
+    print(
+        c(
+            "\n  Next: train the model (see training/train_hey_wony.sh header comment,",
+            "1",
+        )
+    )
     print(c("  or the notebook, for the full walkthrough):", "1"))
-    print(f'    1. Set WAKE_PHRASE = "{phrase}" at the top of the training script/notebook.')
+    print(
+        f'    1. Set WAKE_PHRASE = "{phrase}" at the top of the training script/notebook.'
+    )
     print("    2. WSL:   bash /mnt/d/Projekty/Wony/training/train_hey_wony.sh")
-    print("       Colab: open training/train_hey_wony.ipynb, Runtime -> GPU, run all cells.")
-    print(f"  Recorded clips and config.yaml are already in place. Model lands at models/{stem}.onnx.")
+    print(
+        "       Colab: open training/train_hey_wony.ipynb, Runtime -> GPU, run all cells."
+    )
+    print(
+        f"  Recorded clips and config.yaml are already in place. Model lands at models/{stem}.onnx."
+    )
     print("  When it's done: python wony.py doctor")
 
 
@@ -632,7 +784,12 @@ def install(chosen, detected):
     new = [f for f in chosen if f["key"] not in detected]
     skipped = [f for f in chosen if f["key"] in detected]
     if skipped:
-        print(c(f"  . skipping already-installed: {', '.join(f['key'] for f in skipped)}", "90"))
+        print(
+            c(
+                f"  . skipping already-installed: {', '.join(f['key'] for f in skipped)}",
+                "90",
+            )
+        )
 
     seen = set()
     for f in new:
@@ -652,7 +809,11 @@ def install(chosen, detected):
     # visible progress) means the runtime path loads with local_files_only=True
     # and never touches the network again — see helpers/recognizer.py.
     if any(f["key"] == "voice" for f in new):
-        for script in ("download_kokoro.py", "download_whisper.py", "render_voice_clips.py"):
+        for script in (
+            "download_kokoro.py",
+            "download_whisper.py",
+            "render_voice_clips.py",
+        ):
             path = os.path.join(ROOT, "scripts", script)
             if os.path.exists(path):
                 print(c(f"\n  Running {script}...", "1;36"))
@@ -661,6 +822,7 @@ def install(chosen, detected):
 
 def _dist_installed(name):
     import importlib.metadata
+
     try:
         importlib.metadata.version(name)
         return True
@@ -670,6 +832,7 @@ def _dist_installed(name):
 
 def _has_nvidia_gpu():
     import shutil
+
     return shutil.which("nvidia-smi") is not None
 
 
@@ -684,10 +847,14 @@ def _ensure_wony_exe():
         return  # already done
     try:
         import shutil
+
         shutil.copy2(src, dst)
         print(c("  ✓ created venv/Scripts/Wony.exe (process display name)", "32"))
     except Exception as e:
         print(c(f"  ! Could not create Wony.exe: {e}", "33"))
+
+
+_ORT_GPU_SPEC = "onnxruntime-gpu<1.27"
 
 
 def _ensure_gpu_onnxruntime(chosen, new):
@@ -706,8 +873,13 @@ def _ensure_gpu_onnxruntime(chosen, new):
 
     if not _has_nvidia_gpu():
         if any(f["key"] == "voice" for f in new):
-            print(c("  . No NVIDIA GPU detected — voice will run on CPU "
-                    "(fully supported, just slower).", "90"))
+            print(
+                c(
+                    "  . No NVIDIA GPU detected — voice will run on CPU "
+                    "(fully supported, just slower).",
+                    "90",
+                )
+            )
         return
 
     voice_new = any(f["key"] == "voice" for f in new)
@@ -716,10 +888,21 @@ def _ensure_gpu_onnxruntime(chosen, new):
         return
 
     print(c("\n  Securing GPU onnxruntime build...", "1;36"))
-    subprocess.call([sys.executable, "-m", "pip", "uninstall", "-y",
-                     "onnxruntime", "onnxruntime-gpu"])
-    if run_pip(["--no-deps", "onnxruntime-gpu"]) != 0:
-        print(c("  ✗ onnxruntime-gpu install failed — falling back to CPU build.", "31"))
+    subprocess.call(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "uninstall",
+            "-y",
+            "onnxruntime",
+            "onnxruntime-gpu",
+        ]
+    )
+    if run_pip(["--no-deps", _ORT_GPU_SPEC]) != 0:
+        print(
+            c("  ✗ onnxruntime-gpu install failed — falling back to CPU build.", "31")
+        )
         run_pip(["onnxruntime"])
 
 
@@ -747,8 +930,16 @@ def verify_install(chosen):
             failures.append(f)
             reqs = ", ".join(f["reqs"]) or "—"
             print(f"  {c('✗', '31')} {f['label']} — package '{probe}' missing.")
-            print(c(f"      fix: pip install -r requirements/{f['reqs'][0]}" if f["reqs"]
-                    else f"      fix: re-run python setup.py ({reqs})", "90"))
+            print(
+                c(
+                    (
+                        f"      fix: pip install -r requirements/{f['reqs'][0]}"
+                        if f["reqs"]
+                        else f"      fix: re-run python setup.py ({reqs})"
+                    ),
+                    "90",
+                )
+            )
     return failures
 
 
@@ -769,7 +960,9 @@ def write_marker(use_venv):
 def next_steps(chosen, use_venv):
     print(c("\n  Done. Next steps", "1;36"))
     print("  " + "-" * 50)
-    print("  1. Ensure an AI key is in .env (or set ai.provider: ollama in config.yaml).")
+    print(
+        "  1. Ensure an AI key is in .env (or set ai.provider: ollama in config.yaml)."
+    )
     notes = [(f["label"], f["needs"]) for f in chosen if f["needs"]]
     if notes:
         print("  2. Per-feature setup still required:")
@@ -777,7 +970,11 @@ def next_steps(chosen, use_venv):
             print(f"     • {c(label, '1')}: {need}")
     py = os.path.relpath(sys.executable, ROOT) if use_venv else "python"
     print(c("\n  3. Validate:  ", "1") + f"{py} wony.py doctor")
-    run = f"{py} wony.py" if any(f["key"] == "tray" for f in chosen) else f"{py} wony.py text"
+    run = (
+        f"{py} wony.py"
+        if any(f["key"] == "tray" for f in chosen)
+        else f"{py} wony.py text"
+    )
     print(c("     Start:     ", "1") + run)
     print()
 
@@ -799,14 +996,25 @@ def main():
 
     if not staged:
         target, use_venv = choose_env()
-        if os.path.normcase(os.path.abspath(target)) != os.path.normcase(os.path.abspath(sys.executable)):
+        if os.path.normcase(os.path.abspath(target)) != os.path.normcase(
+            os.path.abspath(sys.executable)
+        ):
             # Re-launch under the chosen interpreter and continue there.
             print(c(f"  → switching to {target}\n", "36"))
-            os.execv(target, [target, os.path.abspath(__file__), "--staged",
-                              f"--venv={1 if use_venv else 0}"])
+            os.execv(
+                target,
+                [
+                    target,
+                    os.path.abspath(__file__),
+                    "--staged",
+                    f"--venv={1 if use_venv else 0}",
+                ],
+            )
 
     print(c("\n  Upgrading pip...", "90"))
-    subprocess.call([sys.executable, "-m", "pip", "install", "--upgrade", "pip", "--quiet"])
+    subprocess.call(
+        [sys.executable, "-m", "pip", "install", "--upgrade", "pip", "--quiet"]
+    )
 
     ensure_dirs()
     ensure_env()
@@ -814,7 +1022,10 @@ def main():
 
     selected, detected = detect()
     chosen = select_features(selected, detected)
-    print(c("\n  Selected: ", "1") + (", ".join(f["label"] for f in chosen) or "core only"))
+    print(
+        c("\n  Selected: ", "1")
+        + (", ".join(f["label"] for f in chosen) or "core only")
+    )
     if input("  Proceed? [Y/n] ").strip().lower() in ("n", "no"):
         print("  Aborted — no changes installed.")
         return

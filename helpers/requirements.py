@@ -3,6 +3,8 @@ import os
 import typing
 from dataclasses import dataclass, field
 
+from helpers.paths import resolve as _resolve_path
+
 
 @dataclass
 class Requirement:
@@ -20,7 +22,9 @@ def evaluate(req: Requirement) -> typing.Tuple[bool, str]:
             return False, f"missing env: {var}"
 
     for path in req.files:
-        if not os.path.exists(path):
+        # Repo-relative, not CWD-relative — the tray starts from wherever
+        # Task Scheduler puts it.
+        if not os.path.exists(_resolve_path(path)):
             return False, f"missing file: {path}"
 
     for mod in req.pip_modules:

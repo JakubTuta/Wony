@@ -160,7 +160,8 @@ def cmd_text(args: argparse.Namespace) -> None:
             user_input = input("\nEnter a command: ")
             logger.log_user_input(user_input, "text")
             employer.job_on_command(user_input)
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, EOFError):
+            # EOFError: Ctrl+D, or stdin closing on piped input.
             print("\nExiting program...")
             break
 

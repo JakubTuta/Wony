@@ -2,6 +2,12 @@ import typing
 
 _seeded: bool = False
 
+# as_text() lands in every system prompt, so it cannot grow without bound.
+# Oldest-by-key facts past this are still stored and still reachable through
+# list_memory / semantic_recall — they just stop riding along on every request.
+_MAX_PROMPT_FACTS = 40
+_MAX_PROMPT_FACT_CHARS = 200
+
 
 def _seed_from_config() -> None:
     global _seeded
@@ -74,5 +80,11 @@ class Profile:
         data = cls.all()
         if not data:
             return ""
-        lines = [f"{k.replace('_', ' ')}: {v}" for k, v in sorted(data.items())]
-        return "Known user facts: " + "; ".join(lines) + "."
+        items = sorted(data.items())[:_MAX_PROMPT_FACTS]
+        lines = [
+            f"{k.replace('_', ' ')}: {v[:_MAX_PROMPT_FACT_CHARS]}" for k, v in items
+        ]
+        text = "Known user facts: " + "; ".join(lines) + "."
+        if len(data) > _MAX_PROMPT_FACTS:
+            text += f" ({len(data) - _MAX_PROMPT_FACTS} more — use semantic_recall.)"
+        return text

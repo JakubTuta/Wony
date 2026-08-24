@@ -1,5 +1,11 @@
 import typing
 
+# How many of the most recent turns carry their tool results forward as context.
+# Deeper costs tokens on every request for data the model rarely revisits.
+_TOOL_RESULT_TURNS = 2
+# Per-result cap inside that block.
+_TOOL_RESULT_MAX_CHARS = 800
+
 
 def _try_persist(
     user_text: str,
@@ -49,30 +55,29 @@ class Conversation:
     _turns: typing.List[typing.Dict[str, typing.Any]] = []
 
     @classmethod
-    def _config(cls) -> typing.Tuple[bool, int, int]:
+    def _config(cls) -> typing.Tuple[bool, int]:
         try:
             from helpers.config import Config
             enabled = Config.get("ai.history.enabled", True)
             max_turns = int(Config.get("ai.history.max_turns", 5))
-            results_turns = int(Config.get("ai.history.tool_results_turns", 2))
         except Exception:
-            enabled, max_turns, results_turns = True, 5, 2
-        return enabled, max_turns, results_turns
+            enabled, max_turns = True, 5
+        return enabled, max_turns
 
     @classmethod
     def get_messages(cls) -> typing.List[typing.Dict[str, str]]:
-        enabled, _, results_turns = cls._config()
+        enabled, _ = cls._config()
         if not enabled:
             return []
         messages = []
         turns = cls._turns
-        results_start = max(0, len(turns) - results_turns) if results_turns > 0 else len(turns)
+        results_start = max(0, len(turns) - _TOOL_RESULT_TURNS)
         for i, turn in enumerate(turns):
             messages.append({"role": "user", "content": turn["user"]})
             assistant_content = turn["assistant"]
             if i >= results_start:
                 calls = turn.get("calls") or []
-                block = _format_calls(calls, 800)
+                block = _format_calls(calls, _TOOL_RESULT_MAX_CHARS)
                 if block:
                     assistant_content = assistant_content + block
             messages.append({"role": "assistant", "content": assistant_content})
@@ -86,7 +91,7 @@ class Conversation:
         calls: typing.Optional[typing.List[typing.Dict[str, typing.Any]]] = None,
         emit: bool = True,
     ) -> typing.Optional[int]:
-        enabled, max_turns, _ = cls._config()
+        enabled, max_turns = cls._config()
         if not enabled or not user_text:
             return None
         cls._turns.append({
