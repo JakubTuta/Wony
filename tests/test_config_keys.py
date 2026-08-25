@@ -40,6 +40,33 @@ def _all_keys() -> dict:
     return keys
 
 
+def _dead_keys(node: dict, model: type, prefix: str = "") -> list:
+    """YAML key paths that `model` would silently drop (pydantic extra='ignore').
+
+    Recurses into nested models. A model declaring extra='allow' (ModulesSettings,
+    so a module can carry settings it defines for itself) ends the walk.
+    """
+    from pydantic import BaseModel
+
+    if model.model_config.get("extra") == "allow":
+        return []
+
+    dead = []
+    for key, value in node.items():
+        field = model.model_fields.get(key)
+        if field is None:
+            dead.append(f"{prefix}{key}")
+            continue
+        annotation = field.annotation
+        if (
+            isinstance(value, dict)
+            and isinstance(annotation, type)
+            and issubclass(annotation, BaseModel)
+        ):
+            dead += _dead_keys(value, annotation, f"{prefix}{key}.")
+    return dead
+
+
 class TestConfigKeys(unittest.TestCase):
     def test_every_key_resolves(self) -> None:
         from helpers.config import Config
@@ -61,18 +88,29 @@ class TestConfigKeys(unittest.TestCase):
 
     def test_example_config_matches_schema(self) -> None:
         """config.example.yaml must not document keys the schema drops."""
+        self._assert_no_dead_keys("config.example.yaml")
+
+    def test_live_config_matches_schema(self) -> None:
+        """The developer's own config.yaml drifts too. pydantic's extra='ignore'
+        makes a stale key look like a working setting forever — `voice.ducking`
+        survived a whole rewrite of that feature this way."""
+        if not os.path.exists(os.path.join(_REPO_ROOT, "config.yaml")):
+            self.skipTest("no config.yaml in this checkout")
+        self._assert_no_dead_keys("config.yaml")
+
+    def _assert_no_dead_keys(self, filename: str) -> None:
         import yaml
 
         from helpers.config import AppSettings
 
-        with open(os.path.join(_REPO_ROOT, "config.example.yaml"), encoding="utf-8") as fh:
+        with open(os.path.join(_REPO_ROOT, filename), encoding="utf-8") as fh:
             raw = yaml.safe_load(fh) or {}
 
-        known = set(AppSettings.model_fields)
-        unknown = sorted(set(raw) - known)
+        dead = _dead_keys(raw, AppSettings)
         self.assertFalse(
-            unknown,
-            f"config.example.yaml documents top-level keys the schema ignores: {unknown}",
+            dead,
+            f"{filename} sets keys the schema ignores — they look like working "
+            f"settings but do nothing:\n  " + "\n  ".join(dead),
         )
 
 

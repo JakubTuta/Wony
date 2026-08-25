@@ -27,11 +27,11 @@ Config keys (voice.wake_word.*):
                           valid: "hey jarvis", "alexa", "hey mycroft", "hey rhasspy"
   model_path       str   - path to a custom .onnx model (optional, relative to repo root)
   threshold        float - detection score cutoff, 0..1 (default 0.5)
-  cooldown_seconds float - ignore re-triggers within this window after detection
 
 False-trigger tuning lives in the constants below (_PATIENCE_FRAMES,
-_VAD_THRESHOLD) rather than config.yaml — they are developer knobs, not
-settings a user should have to understand to get a working app.
+_VAD_THRESHOLD, _COOLDOWN_SECONDS) rather than config.yaml — they are
+developer knobs, not settings a user should have to understand to get a
+working app.
 
 Required pip packages: openwakeword onnxruntime sounddevice soxr numpy
 No account or API key required.
@@ -67,6 +67,13 @@ _PATIENCE_FRAMES = 2
 # Silero speech pre-gate (openWakeWord's own): audio it scores below this never
 # reaches the wake-word model. Raise toward 0.7 if music or game audio triggers.
 _VAD_THRESHOLD = 0.5
+# Ignore further detections for this long after one fires — covers the tail of
+# the spoken phrase still sitting in the model's buffer.
+_COOLDOWN_SECONDS = 2.0
+# Speex noise suppression helps in noisy/far-field rooms, but the speexdsp-ns
+# package is effectively Linux-only, so it is off by default and the Model
+# construction below falls back when it isn't available.
+_NOISE_SUPPRESSION = False
 
 
 class WakeWordListener:
@@ -139,7 +146,7 @@ class WakeWordListener:
             model_path = os.path.join(_REPO_ROOT, model_path)
         phrase = cfg.get("phrase", "hey jarvis")
         self._threshold = float(cfg.get("threshold", 0.5))
-        self._cooldown = float(cfg.get("cooldown_seconds", 2.0))
+        self._cooldown = _COOLDOWN_SECONDS
         self._last_trigger = 0.0
 
         # A missing/invalid custom model or an unrecognized phrase must never
@@ -171,9 +178,7 @@ class WakeWordListener:
 
         # Silero VAD pre-gate cuts false triggers from non-speech noise.
         vad_threshold = _VAD_THRESHOLD
-        # Speex noise suppression helps in noisy/far-field rooms, but the
-        # speexdsp-ns package is effectively Linux-only — guarded below.
-        noise_suppression = bool(cfg.get("noise_suppression", False))
+        noise_suppression = _NOISE_SUPPRESSION
         models = [model_path] if model_path else [phrase]
 
         from openwakeword.model import Model

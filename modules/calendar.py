@@ -12,10 +12,22 @@ from helpers.logger import logger
 from helpers.paths import repo_path
 from helpers.registry import method_job, register_service
 from helpers.requirements import Requirement
-from helpers.timeutil import local_tz, local_tz_name, now_local
+from helpers.timeutil import local_tz, now_local
 
 _SCOPES = ["https://www.googleapis.com/auth/calendar"]
 _CREDENTIALS_FILE = repo_path("credentials", "google_credentials.json")
+
+# Tuning knobs, not settings — nobody asking "what's on today" should have to
+# pick a result cap or a search window, and the right values don't vary by user.
+# Events returned when the caller doesn't cap it.
+_DEFAULT_MAX_RESULTS = 10
+# How far ahead "what's coming up" looks by default.
+_DEFAULT_LOOKAHEAD_HOURS = 24
+# Window a keyword search covers when no dates are given.
+_SEARCH_DAYS_BACK = 30
+_SEARCH_DAYS_AHEAD = 90
+# How often "watch my calendar" polls when no interval is given.
+_DEFAULT_POLL_INTERVAL_MINUTES = 15
 
 
 def _calendar_job_name(account_name: str) -> str:
@@ -103,9 +115,8 @@ class Calendar:
         time_min: typing.Optional[str] = None,
         time_max: typing.Optional[str] = None,
     ) -> typing.List[dict]:
-        cfg = self._cfg()
         if max_results is None:
-            max_results = int(cfg.get("max_results", 10))
+            max_results = _DEFAULT_MAX_RESULTS
 
         now = now_local()
 
@@ -117,7 +128,7 @@ class Calendar:
             t_max = now.isoformat()
         else:
             if hours_ahead is None:
-                hours_ahead = int(cfg.get("lookahead_hours", 24))
+                hours_ahead = _DEFAULT_LOOKAHEAD_HOURS
             t_min = now.isoformat()
             t_max = (now + timedelta(hours=hours_ahead)).isoformat()
 
@@ -360,7 +371,7 @@ class Calendar:
             start_date (str): Start of a date range. Pairs with end_date.
             end_date (str): End of a date range (defaults to a week after start_date).
             days_back (int): Look this many days into the past instead of ahead.
-            hours_ahead (int): Look-ahead window in hours (default from config).
+            hours_ahead (int): Look-ahead window in hours (defaults to 24).
             calendar_name (str): Restrict to a named calendar, e.g. 'work', 'family'.
             limit (int): Max events to return. Use 1 for "what's my next event".
             account (str): Google account to use (default: primary).
@@ -369,7 +380,6 @@ class Calendar:
             str: Matching events with time, title and details.
         """
         audio = Cache.get_audio()
-        cfg = self._cfg()
         max_results = self._as_int(limit) or None
 
         calendar_id = "primary"
@@ -397,7 +407,7 @@ class Calendar:
                 count_template=f"You have {{count}} event(s) on {label}.",
             )
 
-        window = int(cfg.get("max_results", 10)) * 3
+        window = _DEFAULT_MAX_RESULTS * 3
         back = self._as_int(days_back)
 
         if start_date or end_date:
@@ -416,8 +426,8 @@ class Calendar:
             )
         elif query:
             now = now_local()
-            t_min = (now - timedelta(days=back or int(cfg.get("search_days_back", 30)))).isoformat()
-            t_max = (now + timedelta(days=int(cfg.get("search_days_ahead", 90)))).isoformat()
+            t_min = (now - timedelta(days=back or _SEARCH_DAYS_BACK)).isoformat()
+            t_max = (now + timedelta(days=_SEARCH_DAYS_AHEAD)).isoformat()
             header = f"Events matching '{query}':"
             events = self._fetch_events_range(
                 account=account,
@@ -439,7 +449,7 @@ class Calendar:
             hours = self._as_int(hours_ahead) or None
             # "What's next" asks for one event but shouldn't miss one next week.
             if max_results == 1 and hours is None:
-                hours = int(cfg.get("lookahead_hours", 24)) * 7
+                hours = _DEFAULT_LOOKAHEAD_HOURS * 7
             header = "Upcoming events:"
             events = self._fetch_events_range(
                 account=account,
@@ -476,7 +486,7 @@ class Calendar:
                  background calendar, auto check calendar, notify new event, event reminders
 
         Args:
-            interval_minutes (int): How often to check in minutes (default from config).
+            interval_minutes (int): How often to check in minutes (defaults to 15).
             account (str): Google account to monitor (default: primary).
 
         Returns:
@@ -489,7 +499,7 @@ class Calendar:
             return f"Calendar polling for '{name}' is already running."
 
         if not interval_minutes or interval_minutes <= 0:
-            interval_minutes = int(self._cfg().get("poll_interval_minutes", 15))
+            interval_minutes = _DEFAULT_POLL_INTERVAL_MINUTES
 
         def _poll():
             events = self._get_new_events(name)
@@ -789,10 +799,8 @@ class Calendar:
             str: All events for the next 7 days.
         """
         audio = Cache.get_audio()
-        cfg = self._cfg()
-        max_results = int(cfg.get("max_results", 10)) * 3
         events = self._fetch_events_range(
-            account=account, hours_ahead=168, max_results=max_results
+            account=account, hours_ahead=168, max_results=_DEFAULT_MAX_RESULTS * 3
         )
         return self._render_events(
             events,
@@ -898,12 +906,10 @@ class Calendar:
             if resolved:
                 calendar_id = resolved
 
-        tz_name = local_tz_name()
+        # isoformat() carries the UTC offset, which is all Google Calendar needs
+        # — no separate timeZone field.
         start_entry: typing.Dict[str, str] = {"dateTime": start_dt.isoformat()}
         end_entry: typing.Dict[str, str] = {"dateTime": end_dt.isoformat()}
-        if tz_name:
-            start_entry["timeZone"] = tz_name
-            end_entry["timeZone"] = tz_name
 
         event_body: typing.Dict[str, typing.Any] = {
             "summary": title,
@@ -1036,12 +1042,8 @@ class Calendar:
                 except Exception:
                     end_dt = start_dt + timedelta(hours=1)
 
-            tz_name = local_tz_name()
             start_entry: typing.Dict[str, str] = {"dateTime": start_dt.isoformat()}
             end_entry: typing.Dict[str, str] = {"dateTime": end_dt.isoformat()}
-            if tz_name:
-                start_entry["timeZone"] = tz_name
-                end_entry["timeZone"] = tz_name
             patch["start"] = start_entry
             patch["end"] = end_entry
 

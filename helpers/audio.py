@@ -24,6 +24,34 @@ def _abs_path(path: str) -> str:
 
 _tts_warned = False
 _tts_lock = threading.Lock()  # Kokoro is not re-entrant; serialize calls
+
+# How much synthesized audio to buffer before the first sample plays, so a slow
+# first synthesis doesn't leave the stream starved out of the gate (the audible
+# "pause every couple of words" stutter). Skipped on CUDA — see _playback().
+# Developer knob: raise it only if CPU synthesis still stutters on slow hardware.
+_PREBUFFER_MS = 600
+
+# Consecutive VAD speech frames (30 ms each) required before barge-in fires.
+# ~450 ms — long enough that speaker bleed and a cough don't stop playback,
+# short enough that talking over Wony feels immediate.
+_BARGEIN_SUSTAIN_FRAMES = 15
+# webrtcvad aggressiveness (0-3) for the barge-in listener and for command
+# capture. 2 is the balance point: 3 clips quiet speakers, 1 trips on noise.
+_VAD_AGGRESSIVENESS = 2
+
+# Hard cap on one spoken command. Past this a capture is almost always a stuck
+# VAD rather than someone still talking.
+_MAX_CAPTURE_SECONDS = 12.0
+
+# Play a short tone when a listening turn opens while Wony is muted — otherwise
+# a muted assistant is indistinguishable from a broken one.
+_EARCON_WHEN_MUTED = True
+
+# Where Kokoro runs. "auto" takes the GPU when onnxruntime actually has a
+# working CUDA provider and falls back to CPU otherwise, including after a
+# recorded CUDA failure (see _setup_onnx_provider). There is no case where a
+# user is better off pinning this by hand.
+_TTS_DEVICE = "auto"
 _tts_singleton: typing.Optional["TTS_Engine"] = None
 
 # Only one speech session (streamed reply, cached clip, or notification) plays
@@ -168,7 +196,7 @@ def _setup_onnx_provider() -> None:
 
     Must be called before constructing Kokoro() since the ONNX session is built inside its constructor.
     """
-    device = str(Config.get("voice.tts_device", "auto")).lower()
+    device = _TTS_DEVICE
     provider = select_onnx_provider(device)
     if provider and device != "cuda":
         # A prior genuine CUDA failure was recorded for this onnxruntime build —
@@ -447,13 +475,6 @@ class Audio:
         _notify_q.put(combined)
 
     @staticmethod
-    def record_audio(duration: int = 3) -> np.ndarray:
-        """Record a fixed-length window. Returns float32 @16kHz mono numpy array."""
-        from helpers import mic
-
-        return mic.record_16k(duration)
-
-    @staticmethod
     def record_command(start_timeout: typing.Optional[float] = None) -> np.ndarray:
         """Record a spoken command with VAD endpointing. Returns float32 @16kHz mono."""
         from helpers import events, mic
@@ -465,10 +486,10 @@ class Audio:
             else float(cfg.get("start_timeout", 4.0))
         )
         return mic.record_until_silence(
-            max_seconds=float(cfg.get("max_seconds", 12.0)),
+            max_seconds=_MAX_CAPTURE_SECONDS,
             start_timeout=effective_timeout,
             silence_ms=int(cfg.get("silence_ms", 700)),
-            vad_aggressiveness=int(cfg.get("vad_aggressiveness", 2)),
+            vad_aggressiveness=_VAD_AGGRESSIVENESS,
             cancel_event=events.session_cancel,
         )
 
@@ -488,9 +509,8 @@ class BargeinListener:
     closes its stream before _listen returns, so the caller can open a fresh
     stream for STT.
 
-    Echo guard: requires `sustain_frames` consecutive speech frames (default 15,
-    ~450ms) to avoid false triggers from speaker bleed. Configurable via
-    voice.barge_in.sustain_frames in config.yaml.
+    Echo guard: requires _BARGEIN_SUSTAIN_FRAMES consecutive speech frames to
+    avoid false triggers from speaker bleed.
     """
 
     def __init__(self, interrupt_event: threading.Event) -> None:
@@ -515,16 +535,13 @@ class BargeinListener:
         except ImportError:
             return
 
-        cfg = Config.get("voice.barge_in", {}) or {}
-        sustain_frames = int(cfg.get("sustain_frames", 15))
-
         speech_frames = 0
-        gen = mic.vad_frame_stream(self._stop, vad_aggressiveness=2)
+        gen = mic.vad_frame_stream(self._stop, vad_aggressiveness=_VAD_AGGRESSIVENESS)
         try:
             for is_speech, _ in gen:
                 if is_speech:
                     speech_frames += 1
-                    if speech_frames >= sustain_frames:
+                    if speech_frames >= _BARGEIN_SUSTAIN_FRAMES:
                         self._interrupt.set()
                         break
                 else:
@@ -614,7 +631,7 @@ def stream_text_to_speech(
             # out of the gate (the audible "pause every couple words" stutter).
             # Skipped on CUDA — GPU synthesis is fast enough that buffering only
             # adds onset latency without preventing any real underrun.
-            prebuffer_ms = int(Config.get("voice.tts.prebuffer_ms", 600) or 0)
+            prebuffer_ms = _PREBUFFER_MS
             if os.environ.get("ONNX_PROVIDER", "") == "CUDAExecutionProvider":
                 prebuffer_ms = 0
             prebuffering = prebuffer_ms > 0
@@ -790,7 +807,7 @@ def acknowledge_wake() -> None:
 
     if Cache.get_audio():
         Audio.play_cached("Yes?")
-    elif bool(Config.get("voice.feedback.ack_when_muted", True)):
+    elif _EARCON_WHEN_MUTED:
         # Muted: no spoken ack, but a short tone still confirms the turn landed
         # instead of leaving the user guessing.
         play_earcon()

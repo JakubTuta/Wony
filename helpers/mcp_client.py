@@ -11,6 +11,7 @@ ServiceRegistry dynamically — no restart needed.
 """
 import asyncio
 import json
+import re
 import threading
 import time
 import typing
@@ -248,29 +249,57 @@ def reconnect_enabled_servers() -> None:
 
 # ------------------------------------------------------------------ registry helpers
 
+_SAFE_TOOL_NAME = re.compile(r"[^A-Za-z0-9_-]")
+
+
+def _job_name_for(server: str, tool_name: str, taken: typing.Dict[str, str]) -> str:
+    """Pick a registry name for an MCP tool that can't shadow anything.
+
+    An external server naming a tool `exit`, `send_email` or `wipe_data` would
+    otherwise silently replace the built-in job of that name — and unregistering
+    the server later would delete the built-in too. Providers also reject tool
+    names outside [A-Za-z0-9_-], so names are sanitized here as well.
+    """
+    safe = _SAFE_TOOL_NAME.sub("_", tool_name)[:64] or "tool"
+    module_name = f"mcp:{server}"
+    owner = taken.get(safe)
+    if owner is None or owner == module_name:
+        return safe
+    return _SAFE_TOOL_NAME.sub("_", f"{server}_{safe}")[:64]
+
+
 def _register_tools(session: MCPServerSession) -> None:
     from helpers.registry import ServiceRegistry
 
     module_name = f"mcp:{session.name}"
     for tool in session.list_tools():
-        tool_name = tool["name"]
+        raw_name = tool["name"]
+        tool_name = _job_name_for(session.name, raw_name, ServiceRegistry._job_modules)
+        if tool_name != raw_name:
+            logger.log_system_event(
+                "mcp_tool_renamed",
+                f"{session.name}: '{raw_name}' registered as '{tool_name}'",
+            )
         description = tool.get("description") or tool_name
         input_schema = tool.get("inputSchema") or {"type": "object", "properties": {}}
 
         def _make_wrapper(
             sess: MCPServerSession,
-            tname: str,
+            remote_name: str,
+            local_name: str,
             desc: str,
             schema: typing.Dict,
         ) -> typing.Callable:
             def wrapper(**kwargs: typing.Any) -> str:
-                return sess.call_tool(tname, kwargs)
-            wrapper.__name__ = tname
+                # remote_name, not local_name: the server only knows the tool by
+                # the name it published, even when we registered it under another.
+                return sess.call_tool(remote_name, kwargs)
+            wrapper.__name__ = local_name
             wrapper.__doc__ = desc
             wrapper._tool_schema = schema  # type: ignore[attr-defined]
             return wrapper
 
-        fn = _make_wrapper(session, tool_name, description, input_schema)
+        fn = _make_wrapper(session, raw_name, tool_name, description, input_schema)
         ServiceRegistry._jobs[tool_name] = fn
         ServiceRegistry._job_modules[tool_name] = module_name
         ServiceRegistry._job_summaries[tool_name] = description[:80]

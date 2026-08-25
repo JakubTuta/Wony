@@ -53,6 +53,11 @@ _idle_sweeper_stop = threading.Event()
 # How often failed modules are retried (helpers/health_watcher.py).
 _HEALTH_CHECK_INTERVAL_MINUTES = 5.0
 
+# Free the Whisper/Kokoro models again after this long unused, so an idle tray
+# doesn't sit on GPU/RAM all day. Long enough that a normal back-and-forth never
+# pays a reload. 0 would mean "never unload".
+_IDLE_UNLOAD_MINUTES = 15.0
+
 
 class BootstrapError(Exception):
     pass
@@ -207,10 +212,11 @@ def bootstrap(
         except Exception:
             pass
 
+    _warn_if_web_exposed(Config)
     _reconnect_mcp_servers(Config, quiet)
     _start_health_watcher(quiet)
     if audio:
-        _start_idle_sweeper(Config)
+        _start_idle_sweeper()
 
     if not quiet:
         print()
@@ -220,6 +226,28 @@ def bootstrap(
         print()
 
     return employer
+
+
+def _warn_if_web_exposed(Config: typing.Any) -> None:
+    """Flag a web server bound beyond localhost.
+
+    The HTTP API has no authentication: /api/invoke can run any registered job
+    — send an email, delete a calendar event, type on the desktop, wipe the
+    database, exit the app. On 127.0.0.1 that is fine; on any other address it
+    hands those to everyone who can reach the port.
+    """
+    host = str(Config.get("server.host", "127.0.0.1")).strip()
+    if host in ("127.0.0.1", "localhost", "::1", ""):
+        return
+    import helpers.diagnostics
+
+    helpers.diagnostics.add(
+        "warning", "Server",
+        f"Web API is bound to {host}, not localhost — anyone who can reach "
+        f"port {Config.get('server.port', 8000)} can run any job without a password.",
+        hint='Set server.host: "127.0.0.1" in config.yaml unless you have put '
+             "the port behind your own authenticated proxy.",
+    )
 
 
 def _reconnect_mcp_servers(Config: typing.Any, quiet: bool) -> None:
@@ -247,22 +275,18 @@ def _start_health_watcher(quiet: bool) -> None:
         pass
 
 
-def _start_idle_sweeper(Config: typing.Any) -> None:
+def _start_idle_sweeper() -> None:
     """Periodic background thread, ticking every 60s, that unloads the
-    STT/TTS models after idle_unload_minutes of disuse (see
+    STT/TTS models after _IDLE_UNLOAD_MINUTES of disuse (see
     helpers.recognizer.unload_if_idle / helpers.audio.unload_tts_if_idle).
-    No-op entirely when idle_unload_minutes is 0 — nothing else currently
-    needs a periodic sweep (media_pause needs no crash-recovery: it mutates
-    no persistent state, so there's nothing to sweep for)."""
+    Nothing else currently needs a periodic sweep (media_pause needs no
+    crash-recovery: it mutates no persistent state, so there's nothing to
+    sweep for)."""
     global _idle_sweeper_thread
     if _idle_sweeper_thread is not None and _idle_sweeper_thread.is_alive():
         return
 
-    try:
-        idle_minutes = float(Config.get("models.idle_unload_minutes", 15))
-    except Exception:
-        idle_minutes = 15.0
-    idle_seconds = idle_minutes * 60.0
+    idle_seconds = _IDLE_UNLOAD_MINUTES * 60.0
     if idle_seconds <= 0:
         return
     _idle_sweeper_stop.clear()

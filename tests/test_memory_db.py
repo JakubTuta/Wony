@@ -54,6 +54,43 @@ class TestMemoryDb(unittest.TestCase):
             with self.subTest(needle=needle):
                 self.assertIsInstance(self.db.search_turns(needle), list)
 
+    def test_search_treats_metacharacters_as_words(self) -> None:
+        """FTS5 operators in a spoken phrase must match text, not change the
+        query — 'flight AND hotel' is a thing a user says, not an operator."""
+        self.db.insert_turn("book the flight and hotel", "ok")
+        self.assertTrue(self.db.search_turns("flight AND hotel"))
+        self.assertTrue(self.db.search_turns("hotel"))
+        self.assertFalse(self.db.search_turns("submarine"))
+
+    def test_recent_turns_ordered_within_one_second(self) -> None:
+        """Timestamps are second-resolution, so ordering must key on the
+        autoincrement id or a fast burst comes back shuffled."""
+        for i in range(5):
+            self.db.insert_turn(f"turn {i}", "ok")
+        recent = self.db.recent_turns(10)
+        self.assertEqual([t["user_text"] for t in recent], [f"turn {i}" for i in range(5)])
+
+    def test_embedding_upsert_replaces_in_place(self) -> None:
+        """The unique indexes are partial, and SQLite only matches an
+        ON CONFLICT target to a partial index when the WHERE clause is
+        repeated — without it every semantic write raised and was swallowed."""
+        self.db.upsert_embedding("fact", None, "boss", "boss: Anna", b"\x01" * 4)
+        self.db.upsert_embedding("fact", None, "boss", "boss: Bea", b"\x02" * 4)
+        self.db.upsert_embedding("turn", 7, None, "a turn", b"\x03" * 4)
+        self.db.upsert_embedding("turn", 7, None, "same turn again", b"\x04" * 4)
+
+        rows = {r["ref_key"] or r["ref_id"]: r["text"] for r in self.db.all_embeddings()}
+        self.assertEqual(rows, {"boss": "boss: Bea", 7: "same turn again"})
+
+    def test_delete_embeddings_by_key_prefix(self) -> None:
+        for i in range(3):
+            self.db.upsert_embedding("doc", None, f"/tmp/a.txt#{i}", "text", b"\x00" * 4)
+        self.db.upsert_embedding("doc", None, "/tmp/b.txt#0", "text", b"\x00" * 4)
+
+        self.db.delete_embeddings_by_key_prefix("doc", "/tmp/a.txt#")
+        keys = {row["ref_key"] for row in self.db.all_embeddings(["doc"])}
+        self.assertEqual(keys, {"/tmp/b.txt#0"})
+
     def test_facts_roundtrip_and_overwrite(self) -> None:
         self.db.set_fact("preferred_units", "metric")
         self.assertEqual(self.db.get_fact("preferred_units"), "metric")

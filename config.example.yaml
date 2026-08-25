@@ -117,8 +117,6 @@ modules:
     # Safety gate — set to true to allow creating, editing, and deleting events.
     # Note: requires re-authentication after upgrading from the old readonly scope.
     allow_write: false
-  # web search needs no settings here — add TAVILY_API_KEY to .env for
-  # higher-quality results (free tier). Without it, DuckDuckGo is used.
   desktop:
     # Safety gate — set to true to enable type/click/clipboard-write/file-open actions.
     allow_actions: false
@@ -129,6 +127,10 @@ tray:
   open_browser_on_start: false
 
 server:
+  # Keep this at 127.0.0.1. The web API has no password, and it can run every
+  # command Wony has — send email, delete calendar events, control the desktop,
+  # erase her memory. Any other address hands all of that to whoever can reach
+  # the port.
   host: "127.0.0.1"
   port: 8000
 

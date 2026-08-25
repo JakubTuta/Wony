@@ -573,8 +573,11 @@ class AI:
         if not text:
             return f"Could not extract text from '{path}'."
 
-        _sem.store_doc(path, text)
-        return f"Indexed '{os.path.basename(path)}' ({len(text)} chars). Use ask_my_docs to query it."
+        chunks = _sem.store_doc(path, text)
+        return (
+            f"Indexing '{os.path.basename(path)}' ({len(text)} chars, {chunks} chunk(s)). "
+            "Use ask_my_docs to query it."
+        )
 
     @register_job
     @capture_response
@@ -608,12 +611,23 @@ class AI:
                 "Document search unavailable — install fastembed: pip install fastembed"
             )
 
-        results = _sem.retrieve(query, k=3, source_types=["doc"])
+        results = _sem.retrieve(query, k=5, source_types=["doc"])
         if not results:
             return "No indexed documents found. Use index_document to add files first."
 
-        context = "\n\n".join(r["text"] for r in results)
-        return f"From indexed documents (top {len(results)} chunk(s)):\n\n{context}"
+        import os
+
+        blocks = []
+        for r in results:
+            # ref_key is "<path>#<chunk index>" — name the file so the model can
+            # attribute the answer instead of quoting anonymous text.
+            source = str(r.get("ref_key") or "").rsplit("#", 1)[0]
+            label = os.path.basename(source) or "document"
+            blocks.append(f"[{label}]\n{r['text']}")
+        return (
+            f"From indexed documents (top {len(results)} chunk(s)):\n\n"
+            + "\n\n".join(blocks)
+        )
 
     def explain_screenshot(
         self,

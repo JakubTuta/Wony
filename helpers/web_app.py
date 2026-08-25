@@ -118,6 +118,64 @@ class ChatRequest(BaseModel):
     message: str
 
 
+# Wall-clock backstop for one web turn, mirroring _TURN_TIMEOUT_SECONDS in
+# modules/employer.py — without it a stuck tool loop held agent_lock (and so
+# every other turn, voice included) until the process was restarted.
+_WEB_TURN_TIMEOUT_SECONDS = 120.0
+
+
+def _run_web_turn(
+    message: str,
+    on_text: typing.Optional[typing.Callable[[str], None]] = None,
+) -> typing.Any:
+    """Run one agent turn for a web client. Shared by POST /api/chat and the
+    WebSocket chat path so both get the same cancel and timeout behaviour."""
+    import threading
+
+    from helpers.agent import run_agent
+    from helpers.bootstrap import get_ai_client
+    from helpers.conversation import Conversation
+    from helpers.decorators import agent_lock, set_agent_active
+    from helpers.events import clear_cancel, session_cancel
+    from modules.ai import build_agent_system_prompt
+    from modules.employer import MAX_AGENT_STEPS
+
+    ai_client = get_ai_client()
+    system_prompt = build_agent_system_prompt()
+    all_jobs = ServiceRegistry.get_all_jobs()
+
+    timed_out = threading.Event()
+    timer = threading.Timer(_WEB_TURN_TIMEOUT_SECONDS, timed_out.set)
+    timer.daemon = True
+
+    class _TurnCancel:
+        @staticmethod
+        def is_set() -> bool:
+            return session_cancel.is_set() or timed_out.is_set()
+
+    with agent_lock:
+        # Inside the lock: a cancel raised against a previous turn must not
+        # abort this one, but clearing it earlier could cancel a voice turn
+        # that is still running.
+        clear_cancel()
+        set_agent_active(True)
+        timer.start()
+        try:
+            return run_agent(
+                client=ai_client,
+                user_input=message,
+                available_jobs=all_jobs,
+                system_instructions=system_prompt,
+                history=Conversation.get_messages(),
+                max_steps=MAX_AGENT_STEPS,
+                on_text=on_text,
+                cancel_event=_TurnCancel(),
+            )
+        finally:
+            timer.cancel()
+            set_agent_active(False)
+
+
 def build_app() -> FastAPI:
     """Build and return the FastAPI application. Must be called after bootstrap()."""
     from contextlib import asynccontextmanager
@@ -169,6 +227,8 @@ def build_app() -> FastAPI:
     @app.get("/api/config")
     def get_config() -> typing.Dict[str, typing.Any]:
         """Return frontend-relevant config values."""
+        from helpers.audio import _MAX_CAPTURE_SECONDS
+
         return {
             "assistant": {
                 "name": Config.get("assistant.name", "Wony"),
@@ -178,7 +238,7 @@ def build_app() -> FastAPI:
                 "stt": {
                     "silence_ms": int(Config.get("voice.stt.silence_ms", 700)),
                     "start_timeout": int(Config.get("voice.stt.start_timeout", 4)),
-                    "max_seconds": int(Config.get("voice.stt.max_seconds", 12)),
+                    "max_seconds": int(_MAX_CAPTURE_SECONDS),
                 },
             },
         }
@@ -296,37 +356,14 @@ def build_app() -> FastAPI:
 
     @app.post("/api/chat")
     def chat(req: ChatRequest) -> typing.Dict[str, typing.Any]:
-        from helpers.agent import run_agent
-        from helpers.bootstrap import get_ai_client
         from helpers.conversation import Conversation
-        from helpers.decorators import agent_lock, set_agent_active
         from helpers.logger import logger
-        from modules.ai import build_agent_system_prompt
 
         if not req.message or not req.message.strip():
             raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
         try:
-            ai_client = get_ai_client()
-            system_prompt = build_agent_system_prompt()
-            history = Conversation.get_messages()
-            max_steps = int(Config.get("ai.agent.max_steps", 5))
-            all_jobs = ServiceRegistry.get_all_jobs()
-
-            with agent_lock:
-                set_agent_active(True)
-                try:
-                    result = run_agent(
-                        client=ai_client,
-                        user_input=req.message,
-                        available_jobs=all_jobs,
-                        system_instructions=system_prompt,
-                        history=history,
-                        max_steps=max_steps,
-                    )
-                finally:
-                    set_agent_active(False)
-
+            result = _run_web_turn(req.message)
             safe_calls = _sanitize_calls(result.calls)
             turn_id = Conversation.record_turn(
                 req.message, result.text, calls=safe_calls
@@ -441,13 +478,8 @@ def build_app() -> FastAPI:
                     "warning": "Your browser microphone captured silence — check the browser's mic permission and Windows input device.",
                 }
 
-            from helpers.recognizer import _get_model
-            model = _get_model()
-            raw_lang = str(Config.get("assistant.language", "en")).lower()
-            language = raw_lang.split("-")[0].split("_")[0]
-            segments, _ = model.transcribe(audio, language=language, beam_size=1, no_speech_threshold=0.6)
-            text = " ".join(s.text for s in segments).strip()
-            return {"text": text}
+            from helpers.recognizer import transcribe
+            return {"text": transcribe(audio)}
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"STT failed: {e}")
 
@@ -494,34 +526,11 @@ def build_app() -> FastAPI:
         loop = asyncio.get_running_loop()
 
         def _run() -> None:
-            from helpers.agent import run_agent
-            from helpers.bootstrap import get_ai_client
             from helpers.conversation import Conversation
-            from helpers.decorators import agent_lock, set_agent_active
             from helpers.logger import logger
-            from modules.ai import build_agent_system_prompt
 
             try:
-                ai_client = get_ai_client()
-                system_prompt = build_agent_system_prompt()
-                history = Conversation.get_messages()
-                max_steps = int(Config.get("ai.agent.max_steps", 5))
-                all_jobs = ServiceRegistry.get_all_jobs()
-
-                with agent_lock:
-                    set_agent_active(True)
-                    try:
-                        result = run_agent(
-                            client=ai_client,
-                            user_input=message,
-                            available_jobs=all_jobs,
-                            system_instructions=system_prompt,
-                            history=history,
-                            max_steps=max_steps,
-                            on_text=lambda c: q.put(("delta", c)),
-                        )
-                    finally:
-                        set_agent_active(False)
+                result = _run_web_turn(message, on_text=lambda c: q.put(("delta", c)))
 
                 safe_calls = _sanitize_calls(result.calls)
                 # emit=False: we broadcast ourselves below with session_id included

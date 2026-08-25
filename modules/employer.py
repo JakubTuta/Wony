@@ -21,6 +21,16 @@ from modules.ai import AI, build_agent_system_prompt
 # in flight, which is what the AI client / helpers.net timeouts are for.
 _TURN_TIMEOUT_SECONDS = 90.0
 
+# How many tool calls the agent may chain before it has to answer. Deep enough
+# for the real chains ("read that email, then put it in my calendar"), shallow
+# enough that a confused model can't spend a minute looping.
+MAX_AGENT_STEPS = 5
+
+# Say "one moment" if no narration has started by this point, so a slow tool
+# call doesn't leave the user in silence wondering if anything happened.
+# 0 disables the cue.
+_THINKING_CUE_SECONDS = 6.0
+
 
 class Employer:
     available_jobs: typing.Dict[str, typing.Callable] = {}
@@ -192,10 +202,8 @@ class Employer:
             Conversation.record_turn(user_input, result_str)
             return result_str
 
-        from helpers.config import Config
         from helpers.decorators import agent_lock
 
-        max_steps = int(Config.get("ai.agent.max_steps", 5))
         system_prompt = build_agent_system_prompt()
 
         # Always stream the model's reply. Audio mode pipes deltas into the TTS
@@ -260,15 +268,13 @@ class Employer:
         # if no narration has started by the deadline reassures them without
         # interrupting a fast reply.
         thinking_timer: typing.Optional[threading.Timer] = None
-        if audio:
-            thinking_cue_seconds = float(Config.get("voice.feedback.thinking_cue_seconds", 6) or 0)
-            if thinking_cue_seconds > 0:
-                def _thinking_cue() -> None:
-                    if not first_chunk_seen.is_set() and not session_cancel.is_set():
-                        Audio.play_cached("One moment.")
-                thinking_timer = threading.Timer(thinking_cue_seconds, _thinking_cue)
-                thinking_timer.daemon = True
-                thinking_timer.start()
+        if audio and _THINKING_CUE_SECONDS > 0:
+            def _thinking_cue() -> None:
+                if not first_chunk_seen.is_set() and not session_cancel.is_set():
+                    Audio.play_cached("One moment.")
+            thinking_timer = threading.Timer(_THINKING_CUE_SECONDS, _thinking_cue)
+            thinking_timer.daemon = True
+            thinking_timer.start()
 
         # Wall-clock backstop for the whole turn — checked between agent steps
         # and before each tool call (helpers/agent.py), not a hard preempt of
@@ -299,7 +305,7 @@ class Employer:
                     available_jobs=self.available_jobs,
                     system_instructions=system_prompt,
                     history=Conversation.get_messages(),
-                    max_steps=max_steps,
+                    max_steps=MAX_AGENT_STEPS,
                     on_text=on_text,
                     cancel_event=_TurnCancel(),
                 )

@@ -5,9 +5,17 @@ from helpers.registry import register_job
 from helpers.requirements import Requirement
 
 
+# How much of a fetched page reaches the model. A tuning knob, not a setting:
+# the tradeoff is answer quality against tokens per request, and a user has no
+# way to judge where that line sits.
+_MAX_CONTENT_CHARS = 6000
+
+
 def _web_requirement() -> Requirement:
     return Requirement(
-        pip_modules=["duckduckgo_search"],
+        # `ddgs` is the current name of the package formerly published as
+        # duckduckgo-search, which is no longer maintained under the old name.
+        pip_modules=["ddgs"],
         setup_hint=(
             "pip install -r requirements/web.txt\n"
             "Optional: add TAVILY_API_KEY to .env for higher-quality search results."
@@ -120,9 +128,12 @@ def _do_search(query: str, max_results: int = 5) -> typing.List[typing.Dict]:
 def _tavily_search(query: str, api_key: str, max_results: int) -> typing.List[typing.Dict]:
     import httpx
 
+    # Bearer header, not an api_key field in the body — the body form is the
+    # legacy contract and is no longer what Tavily documents.
     resp = httpx.post(
         "https://api.tavily.com/search",
-        json={"query": query, "max_results": max_results, "api_key": api_key},
+        json={"query": query, "max_results": max_results},
+        headers={"Authorization": f"Bearer {api_key}"},
         timeout=10,
     )
     resp.raise_for_status()
@@ -135,17 +146,13 @@ def _tavily_search(query: str, api_key: str, max_results: int) -> typing.List[ty
 
 
 def _ddg_search(query: str, max_results: int) -> typing.List[typing.Dict]:
-    from duckduckgo_search import DDGS
+    from ddgs import DDGS
 
-    with DDGS() as ddgs:
-        results = list(ddgs.text(query, max_results=max_results))
-    return results
+    return list(DDGS().text(query, max_results=max_results))
 
 
 def _do_fetch(url: str) -> str:
-    from helpers.config import Config
-
-    max_chars = int(Config.get("modules.web.max_content_chars", 3000))
+    max_chars = _MAX_CONTENT_CHARS
 
     try:
         import trafilatura

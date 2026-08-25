@@ -26,21 +26,30 @@ class AssistantController:
     # ── Public interface ──────────────────────────────────────────────────────
 
     def start(self) -> None:
-        """Start web server + wake-word listener (idempotent)."""
+        """Start web server + wake-word listener + suspended pollers (idempotent)."""
         with self._lock:
             self._web.start()
             if self._wakeword is not None:
                 self._wakeword.start()
+            try:
+                from helpers.jobs import BackgroundJobs
+                BackgroundJobs.resume_suspended()
+            except Exception:
+                pass
             self._state = "running"
 
     def stop(self) -> None:
-        """Stop everything: wake word + web server + background jobs (idempotent)."""
+        """Pause everything: wake word + web server + background jobs (idempotent).
+
+        Pollers are suspended rather than stopped, so resuming restores the ones
+        the user set up instead of quietly losing them.
+        """
         with self._lock:
             if self._wakeword is not None:
                 self._wakeword.stop()
             try:
                 from helpers.jobs import BackgroundJobs
-                BackgroundJobs.stop_all()
+                BackgroundJobs.suspend_all()
             except Exception:
                 pass
             self._web.stop()

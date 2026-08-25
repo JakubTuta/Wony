@@ -7,11 +7,6 @@ def local_tz() -> tzinfo:
     return datetime.now().astimezone().tzinfo or timezone.utc
 
 
-def local_tz_name() -> None:
-    """Always None — no IANA name override, offset is carried in isoformat."""
-    return None
-
-
 def now_local() -> datetime:
     """Return the current datetime in the system-local timezone."""
     return datetime.now(local_tz())

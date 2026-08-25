@@ -19,6 +19,14 @@ import numpy as np
 _engine: typing.Any = None
 _engine_lock = threading.Lock()
 
+# bge-small-en-v1.5 truncates at 512 tokens; ~1200 chars stays comfortably
+# inside that so nothing handed to it is silently dropped.
+_CHUNK_CHARS = 1200
+_CHUNK_OVERLAP_CHARS = 150
+# Ceiling per document. A book would otherwise fill the embeddings table and
+# slow every recall (retrieval is a brute-force scan over all rows).
+_MAX_DOC_CHUNKS = 400
+
 
 def _get_engine() -> typing.Any:
     global _engine
@@ -26,17 +34,22 @@ def _get_engine() -> typing.Any:
         with _engine_lock:
             if _engine is None:
                 from fastembed import TextEmbedding
-                # Deliberately CPU (no providers=): bge-small is ~30MB and embeds
-                # in single-digit ms on CPU, so GPU has no meaningful latency win
-                # here — and fastembed's CUDA provider needs the separate
-                # fastembed-gpu extra, which isn't worth the dependency for this.
-                _engine = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+                # Deliberately CPU: bge-small is ~30MB and embeds in single-digit
+                # ms on CPU, so GPU has no meaningful latency win here — and
+                # fastembed's CUDA provider needs the separate fastembed-gpu
+                # extra, which isn't worth the dependency for this. Pinned
+                # explicitly rather than left to the default: fastembed's device
+                # is AUTO, so it tried CUDA, failed, and warned on every load.
+                _engine = TextEmbedding(
+                    model_name="BAAI/bge-small-en-v1.5",
+                    providers=["CPUExecutionProvider"],
+                )
     return _engine
 
 
 def embed(text: str) -> typing.List[float]:
     """Embed text → 384-dim vector. Lazy-loads the model on first call."""
-    return next(iter(_get_engine().embed([text[:2000]]))).tolist()
+    return next(iter(_get_engine().embed([text[:_CHUNK_CHARS]]))).tolist()
 
 
 def _pack(vec: typing.List[float]) -> bytes:
@@ -163,22 +176,71 @@ def remove_fact(key: str) -> None:
     _fire(_run)
 
 
-def store_doc(path: str, text: str) -> None:
-    """Embed a document chunk and persist it. Called from index_document job."""
+def chunk_text(text: str) -> typing.List[str]:
+    """Split a document into overlapping chunks on paragraph/sentence boundaries.
+
+    Chunks exist because bge-small only embeds the first `_CHUNK_CHARS` of what
+    it is given: storing a whole document as one row meant a 50-page PDF was
+    searchable by its first page and nothing else. The overlap keeps a fact that
+    straddles a boundary retrievable from both sides.
+    """
+    text = text.strip()
+    if not text:
+        return []
+
+    chunks: typing.List[str] = []
+    start = 0
+    while start < len(text):
+        end = min(start + _CHUNK_CHARS, len(text))
+        if end < len(text):
+            # Prefer a paragraph break, then a sentence end, then a space —
+            # cutting mid-word makes a chunk that embeds to nothing useful.
+            window = text[start:end]
+            for marker in ("\n\n", ". ", "\n", " "):
+                cut = window.rfind(marker)
+                if cut > _CHUNK_CHARS // 2:
+                    end = start + cut + len(marker)
+                    break
+        chunk = text[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+        if end >= len(text):
+            break
+        start = max(end - _CHUNK_OVERLAP_CHARS, start + 1)
+    return chunks
+
+
+def store_doc(path: str, text: str) -> int:
+    """Embed a document as overlapping chunks and persist them.
+
+    Returns the number of chunks queued. Embedding itself runs on a daemon
+    thread so index_document answers immediately on a large file.
+    """
+    chunks = chunk_text(text)[:_MAX_DOC_CHUNKS]
+
     def _run() -> None:
         try:
-            from helpers.memory_db import upsert_embedding
-            chunk = text[:2000]
-            upsert_embedding(
-                source_type="doc",
-                ref_id=None,
-                ref_key=path,
-                text=chunk,
-                vector=_pack(embed(chunk)),
+            from helpers.memory_db import (
+                delete_embeddings_by_key_prefix,
+                upsert_embedding,
             )
+
+            # Re-indexing replaces the file's chunks rather than layering new
+            # ones on top of a stale set.
+            delete_embeddings_by_key_prefix("doc", f"{path}#")
+            for index, chunk in enumerate(chunks):
+                upsert_embedding(
+                    source_type="doc",
+                    ref_id=None,
+                    ref_key=f"{path}#{index}",
+                    text=chunk,
+                    vector=_pack(embed(chunk)),
+                )
         except Exception:
             pass
+
     _fire(_run)
+    return len(chunks)
 
 
 def is_available() -> bool:

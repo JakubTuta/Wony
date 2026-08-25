@@ -140,6 +140,18 @@ def insert_turn(
         return row_id
 
 
+def _fts_query(keyword: str) -> str:
+    """Turn a user phrase into a safe FTS5 query: every word quoted, ANDed.
+
+    A raw keyword is FTS5 *syntax*, so an apostrophe, a quote, a hyphen or a
+    bare `AND` either changes the meaning of the search or raises and silently
+    demotes it to the slower LIKE scan. Quoting each token keeps the words
+    literal while preserving the implicit-AND behaviour users expect.
+    """
+    words = [w.replace('"', "") for w in keyword.split()]
+    return " ".join(f'"{w}"' for w in words if w)
+
+
 def search_turns(
     keyword: str,
     days_back: int = 30,
@@ -147,8 +159,9 @@ def search_turns(
 ) -> typing.List[typing.Dict]:
     conn = _get_conn()
     cutoff = (datetime.now() - timedelta(days=days_back)).isoformat(timespec="seconds")
+    match = _fts_query(keyword)
     with _lock:
-        if _fts_available:
+        if _fts_available and match:
             try:
                 rows = conn.execute(
                     """
@@ -156,10 +169,10 @@ def search_turns(
                     FROM turns t
                     JOIN turns_fts f ON t.id = f.rowid
                     WHERE turns_fts MATCH ? AND t.ts >= ?
-                    ORDER BY t.ts DESC
+                    ORDER BY t.id DESC
                     LIMIT ?
                     """,
-                    (keyword, cutoff, limit),
+                    (match, cutoff, limit),
                 ).fetchall()
                 return [dict(r) for r in rows]
             except sqlite3.OperationalError:
@@ -170,7 +183,7 @@ def search_turns(
             SELECT id, session_id, ts, user_text, assistant_text
             FROM turns
             WHERE (user_text LIKE ? OR assistant_text LIKE ?) AND ts >= ?
-            ORDER BY ts DESC
+            ORDER BY id DESC
             LIMIT ?
             """,
             (pattern, pattern, cutoff, limit),
@@ -183,7 +196,9 @@ def turns_on_date(date_str: str) -> typing.List[typing.Dict]:
     day = _normalize_date(date_str)
     with _lock:
         rows = conn.execute(
-            "SELECT id, session_id, ts, user_text, assistant_text FROM turns WHERE ts LIKE ? ORDER BY ts ASC",
+            # id, not ts: timestamps are second-resolution, so several turns in
+            # the same second would come back in arbitrary order.
+            "SELECT id, session_id, ts, user_text, assistant_text FROM turns WHERE ts LIKE ? ORDER BY id ASC",
             (f"{day}%",),
         ).fetchall()
         return [dict(r) for r in rows]
@@ -193,7 +208,7 @@ def recent_turns(limit: int = 10) -> typing.List[typing.Dict]:
     conn = _get_conn()
     with _lock:
         rows = conn.execute(
-            "SELECT id, session_id, ts, user_text, assistant_text, calls FROM turns ORDER BY ts DESC LIMIT ?",
+            "SELECT id, session_id, ts, user_text, assistant_text, calls FROM turns ORDER BY id DESC LIMIT ?",
             (limit,),
         ).fetchall()
         result = []
@@ -397,27 +412,26 @@ def upsert_embedding(
 ) -> None:
     conn = _get_conn()
     ts = datetime.now().isoformat(timespec="seconds")
+    # idx_emb_turn / idx_emb_keyed are PARTIAL unique indexes, and SQLite only
+    # matches an ON CONFLICT target to a partial index when the target repeats
+    # the index's WHERE clause. Without it every insert here raised
+    # "ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE constraint"
+    # — swallowed by the fire-and-forget callers, so semantic memory silently
+    # stored nothing at all.
+    if ref_id is not None:
+        conflict = "ON CONFLICT(source_type, ref_id) WHERE ref_id IS NOT NULL"
+    else:
+        conflict = "ON CONFLICT(source_type, ref_key) WHERE ref_key IS NOT NULL"
     with _lock:
-        if ref_id is not None:
-            conn.execute(
-                """
-                INSERT INTO embeddings (source_type, ref_id, ref_key, text, vector, ts)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(source_type, ref_id) DO UPDATE SET
-                    text=excluded.text, vector=excluded.vector, ts=excluded.ts
-                """,
-                (source_type, ref_id, ref_key, text, vector, ts),
-            )
-        else:
-            conn.execute(
-                """
-                INSERT INTO embeddings (source_type, ref_id, ref_key, text, vector, ts)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(source_type, ref_key) DO UPDATE SET
-                    text=excluded.text, vector=excluded.vector, ts=excluded.ts
-                """,
-                (source_type, ref_id, ref_key, text, vector, ts),
-            )
+        conn.execute(
+            f"""
+            INSERT INTO embeddings (source_type, ref_id, ref_key, text, vector, ts)
+            VALUES (?, ?, ?, ?, ?, ?)
+            {conflict} DO UPDATE SET
+                text=excluded.text, vector=excluded.vector, ts=excluded.ts
+            """,
+            (source_type, ref_id, ref_key, text, vector, ts),
+        )
         conn.commit()
 
 
@@ -437,6 +451,22 @@ def all_embeddings(
                 "SELECT id, source_type, ref_id, ref_key, text, vector FROM embeddings"
             ).fetchall()
         return [dict(r) for r in rows]
+
+
+def delete_embeddings_by_key_prefix(source_type: str, prefix: str) -> None:
+    """Delete every embedding whose ref_key starts with `prefix`.
+
+    Documents are stored as `<path>#<chunk>` keys, so re-indexing a file must
+    clear its old chunks — otherwise a shortened document keeps answering from
+    text it no longer contains.
+    """
+    conn = _get_conn()
+    with _lock:
+        conn.execute(
+            "DELETE FROM embeddings WHERE source_type = ? AND ref_key LIKE ? ESCAPE '\\'",
+            (source_type, prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"),
+        )
+        conn.commit()
 
 
 def delete_embedding_by_ref(

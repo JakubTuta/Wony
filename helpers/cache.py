@@ -20,11 +20,14 @@ class Cache:
 
     @staticmethod
     def load_values() -> None:
+        # Explicit utf-8 both ways: Python's default on Windows is the ANSI code
+        # page, so a cached value with any non-ASCII character (a device name, a
+        # voice name) round-trips wrong or raises on read.
         try:
-            with open(Cache._filename, "r") as file:
+            with open(Cache._filename, "r", encoding="utf-8") as file:
                 Cache._values = json.load(file)
-        except (FileNotFoundError, json.JSONDecodeError):
-            with open(Cache._filename, "w") as file:
+        except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError):
+            with open(Cache._filename, "w", encoding="utf-8") as file:
                 json.dump({}, file, indent=4)
                 Cache._values = {}
         Cache._loaded = True
@@ -41,7 +44,7 @@ class Cache:
         with Cache._lock:
             Cache._values[key] = value
             tmp = Cache._filename + ".tmp"
-            with open(tmp, "w") as file:
+            with open(tmp, "w", encoding="utf-8") as file:
                 json.dump(Cache._values, file, indent=4)
             os.replace(tmp, Cache._filename)
 

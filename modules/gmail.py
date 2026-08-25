@@ -20,6 +20,18 @@ from helpers.requirements import Requirement
 _METADATA_HEADERS = ["From", "To", "Cc", "Bcc", "Subject", "Date"]
 _CREDENTIALS_FILE = repo_path("credentials", "google_credentials.json")
 
+# Tuning knobs, not settings: a user asking "read my email" has no way to judge
+# any of these numbers, and the right answer doesn't vary by person.
+# How many messages a search returns when the caller doesn't cap it.
+_DEFAULT_MAX_RESULTS = 20
+# Body text kept per message. Above this, a spoken read-out drags and a
+# summarisation request costs tokens for boilerplate and signatures.
+_MAX_BODY_CHARS = 1500
+# Ceiling on messages fed to one AI inbox summary.
+_AI_SUMMARY_MAX_EMAILS = 30
+# How often "check my email every so often" polls when no interval is given.
+_DEFAULT_POLL_INTERVAL_MINUTES = 15
+
 
 @dataclasses.dataclass
 class Msg:
@@ -189,16 +201,16 @@ class Gmail:
     # ------------------------------------------------------------------
 
     def _default_max(self) -> int:
-        return int(Config.module_settings("gmail").get("max_results", 20))
+        return _DEFAULT_MAX_RESULTS
 
     def _max_body_chars(self) -> int:
-        return int(Config.module_settings("gmail").get("max_body_chars", 1500))
+        return _MAX_BODY_CHARS
 
     def _use_ai(self) -> bool:
         return bool(Config.module_settings("gmail").get("use_ai", False))
 
     def _ai_summary_max_emails(self) -> int:
-        return int(Config.module_settings("gmail").get("ai_summary_max_emails", 30))
+        return _AI_SUMMARY_MAX_EMAILS
 
     # ------------------------------------------------------------------
     # Raw API helpers
@@ -582,7 +594,7 @@ class Gmail:
             starred (bool): Only starred mail.
             important (bool): Only mail Gmail marked important.
             has_attachment (bool): Only mail with file attachments.
-            max_results (int): Cap on how many to return (default from config).
+            max_results (int): Cap on how many to return (defaults to 20).
             account (str): Google account to use (default: primary).
 
         Returns:
@@ -898,7 +910,7 @@ class Gmail:
                  background email, auto check email, email alerts, notify new email
 
         Args:
-            interval_minutes (int): How often to check in minutes (default from config).
+            interval_minutes (int): How often to check in minutes (defaults to 15).
             account (str): Google account to monitor (default: primary).
 
         Returns:
@@ -911,9 +923,7 @@ class Gmail:
             return f"Email polling for '{name}' is already running."
 
         if not interval_minutes or interval_minutes <= 0:
-            interval_minutes = int(
-                Config.module_settings("gmail").get("poll_interval_minutes", 15)
-            )
+            interval_minutes = _DEFAULT_POLL_INTERVAL_MINUTES
 
         def _poll():
             messages = self._get_new_messages(name)

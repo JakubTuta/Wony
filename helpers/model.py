@@ -26,6 +26,11 @@ _MIN_CACHEABLE_CHARS = 4096
 _FALLBACK_GEMINI_MODEL = "gemini-2.0-flash"
 _FALLBACK_ANTHROPIC_MODEL = "claude-sonnet-4-6"
 
+# Ceiling on a single reply. Generous enough that nothing Wony says is ever cut
+# off mid-sentence, and it costs nothing when unused — output is billed on what
+# the model actually produces, not on this number.
+_MAX_TOKENS = 8192
+
 # Auto-resolved model ids, cached per process — resolving costs a models.list()
 # HTTP round-trip, which would otherwise be paid on every message.
 _resolved_model_cache: typing.Dict[str, str] = {}
@@ -299,9 +304,12 @@ def send_message(
             helpers_tools.function_to_schema(func) for func in available_tools
         ]
 
-    base64_image = None
+    base64_image: typing.Optional[str] = None
     if image is not None:
-        base64_image = helpers_tools.numpy_image_to_base64_bytes(image)
+        encoded = helpers_tools.numpy_image_to_base64_bytes(image)
+        # Every provider wants base64 as text, not bytes; decoding here rather
+        # than relying on each SDK's implicit bytes→str coercion.
+        base64_image = encoded.decode("ascii") if encoded is not None else None
 
     if isinstance(client, genai.Client):
         model = _get_gemini_model(client)
@@ -311,7 +319,8 @@ def send_message(
         if base64_image is not None:
             current_parts.append(
                 genai_types.Part.from_bytes(
-                    data=base64.b64decode(base64_image), mime_type="image/jpeg"
+                    data=base64.b64decode(base64_image),
+                    mime_type=helpers_tools.IMAGE_MIME_TYPE,
                 )
             )
         current_parts.append(genai_types.Part.from_text(text=message))
@@ -343,7 +352,7 @@ def send_message(
                     "type": "image",
                     "source": {
                         "type": "base64",
-                        "media_type": "image/jpeg",
+                        "media_type": helpers_tools.IMAGE_MIME_TYPE,
                         "data": base64_image,
                     },
                 },
@@ -352,15 +361,13 @@ def send_message(
         anthropic_messages = list(history) if history else []
         anthropic_messages.append({"role": "user", "content": messages_content})
 
-        from helpers.config import Config
-        max_tokens = int(Config.get("ai.max_tokens", 8192))
         model = _get_anthropic_model(client)
         thinking = _anthropic_thinking(bool(parsed_tools), model)
 
         def _create(think: typing.Any) -> typing.Any:
             return client.messages.create(
                 model=model,
-                max_tokens=max_tokens,
+                max_tokens=_MAX_TOKENS,
                 messages=anthropic_messages,
                 system=_anthropic_system(system_instructions),
                 tools=_cached_tools(parsed_tools),  # type: ignore
@@ -375,7 +382,7 @@ def send_message(
             raise
 
     elif isinstance(client, ollama.Client):
-        ollama_messages: typing.List[typing.Dict[str, str]] = []
+        ollama_messages: typing.List[typing.Dict[str, typing.Any]] = []
 
         system_text = _system_text(system_instructions)
         if system_text:
@@ -384,23 +391,19 @@ def send_message(
         if history:
             ollama_messages.extend(history)
 
-        ollama_messages.append({"role": "user", "content": message})
-
-        messages = ollama_messages
-
-        from helpers.config import Config
-
-        model = Config.get("ai.ollama_model") or os.getenv("AI_MODEL")
-        if not model:
-            raise Exception(
-                "Ollama model not configured. Set ai.ollama_model in config.yaml or AI_MODEL env var."
-            )
+        user_message: typing.Dict[str, typing.Any] = {"role": "user", "content": message}
+        if base64_image is not None:
+            # Vision models (llava, llama3.2-vision, …) take base64 images on the
+            # message. Without this, "explain what's on screen" on Ollama answered
+            # from the prompt alone, having never seen the screenshot.
+            user_message["images"] = [base64_image]
+        ollama_messages.append(user_message)
 
         return _ollama_chat(
             client,
             think=_ollama_think(bool(parsed_tools)),
-            model=model,
-            messages=messages,
+            model=_require_ollama_model(),
+            messages=ollama_messages,
             stream=False,
         )
 
@@ -570,18 +573,26 @@ def send_agent_messages(
         return _gemini_generate(client, model, _to_gemini_contents(messages), config)
 
     elif isinstance(client, anthropic.Anthropic):
-        from helpers.config import Config
-        max_tokens = int(Config.get("ai.max_tokens", 8192))
 
         model = _get_anthropic_model(client)
-        return client.messages.create(
-            model=model,
-            max_tokens=max_tokens,
-            messages=_to_anthropic_messages(messages),
-            system=_anthropic_system(system_instructions),
-            tools=_cached_tools(parsed_tools),  # type: ignore
-            thinking=_anthropic_thinking(bool(parsed_tools), model),
-        )
+        thinking = _anthropic_thinking(bool(parsed_tools), model)
+
+        def _create(think: typing.Any) -> typing.Any:
+            return client.messages.create(
+                model=model,
+                max_tokens=_MAX_TOKENS,
+                messages=_to_anthropic_messages(messages),
+                system=_anthropic_system(system_instructions),
+                tools=_cached_tools(parsed_tools),  # type: ignore
+                thinking=think,
+            )
+
+        try:
+            return _create(thinking)
+        except Exception:
+            if thinking is not anthropic.NOT_GIVEN:
+                return _create(anthropic.NOT_GIVEN)  # model rejected adaptive thinking
+            raise
 
     elif isinstance(client, ollama.Client):
         return client.chat(
@@ -623,8 +634,6 @@ def stream_agent_step(
         ]
 
     if isinstance(client, anthropic.Anthropic):
-        from helpers.config import Config
-        max_tokens = int(Config.get("ai.max_tokens", 8192))
 
         # ai.thinking used to be honoured on the Gemini path only, so the main
         # (streaming) Anthropic path silently ignored it. _should_think still
@@ -633,7 +642,7 @@ def stream_agent_step(
         text_parts: typing.List[str] = []
         with client.messages.stream(
             model=model,
-            max_tokens=max_tokens,
+            max_tokens=_MAX_TOKENS,
             messages=_to_anthropic_messages(messages),
             system=_anthropic_system(system_instructions),
             tools=_cached_tools(parsed_tools),  # type: ignore

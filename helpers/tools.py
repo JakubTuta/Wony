@@ -22,12 +22,12 @@ def _python_type_to_json(hint: typing.Any) -> str:
         inner = next(a for a in args if a is not type(None))
         return _python_type_to_json(inner)
 
-    if hint is int or hint is bool:
-        return "boolean" if hint is bool else "integer"
-    if hint is float:
-        return "number"
     if hint is bool:
         return "boolean"
+    if hint is int:
+        return "integer"
+    if hint is float:
+        return "number"
     if origin in (list, typing.List) or hint is list:
         return "array"
     if origin in (dict, typing.Dict) or hint is dict:
@@ -252,8 +252,15 @@ def function_to_schema_anthropic(func: typing.Callable) -> typing.Dict[str, typi
 
 # ------------------------------------------------------------------ image helpers
 
+# Screenshots are encoded losslessly: they are mostly text and UI edges, which
+# JPEG smears. Providers are told this exact type — declaring the wrong one
+# (image/jpeg for PNG bytes) is rejected by Anthropic and mis-sniffed by Gemini.
+IMAGE_FORMAT = "PNG"
+IMAGE_MIME_TYPE = "image/png"
+
+
 def numpy_image_to_base64_bytes(
-    image_array: np.ndarray, image_format: str = "PNG"
+    image_array: np.ndarray, image_format: str = IMAGE_FORMAT
 ) -> typing.Optional[bytes]:
     """
     Encodes a NumPy array image into a base64 byte string.

@@ -17,18 +17,7 @@ class AssistantSettings(BaseModel):
 
 class SttSettings(BaseModel):
     start_timeout: float = 4.0
-    max_seconds: float = 12.0
     silence_ms: int = 700
-    vad_aggressiveness: int = 2
-
-
-class TtsSettings(BaseModel):
-    prebuffer_ms: int = 600
-
-
-class FeedbackSettings(BaseModel):
-    thinking_cue_seconds: float = 6.0
-    ack_when_muted: bool = True
 
 
 class MediaPauseSettings(BaseModel):
@@ -44,7 +33,6 @@ class ConversationSettings(BaseModel):
 
 class BargeInSettings(BaseModel):
     enabled: bool = False
-    sustain_frames: int = 15
 
 
 class HotkeySettings(BaseModel):
@@ -63,8 +51,6 @@ class WakeWordSettings(BaseModel):
     phrase: str = "hey jarvis"
     model_path: typing.Optional[str] = None
     threshold: float = 0.5
-    cooldown_seconds: float = 2.0
-    noise_suppression: bool = False
 
 
 class VoiceSettings(BaseModel):
@@ -73,12 +59,9 @@ class VoiceSettings(BaseModel):
     volume: float = 0.6
     model_path: str = "models/kokoro-v1.0.onnx"
     voices_path: str = "models/voices-v1.0.bin"
-    tts_device: str = "auto"
     input_device: typing.Optional[typing.Union[int, str]] = None
     output_device: typing.Optional[typing.Union[int, str]] = None
     stt: SttSettings = Field(default_factory=SttSettings)
-    tts: TtsSettings = Field(default_factory=TtsSettings)
-    feedback: FeedbackSettings = Field(default_factory=FeedbackSettings)
     media_pause: MediaPauseSettings = Field(default_factory=MediaPauseSettings)
     conversation: ConversationSettings = Field(default_factory=ConversationSettings)
     barge_in: BargeInSettings = Field(default_factory=BargeInSettings)
@@ -87,12 +70,7 @@ class VoiceSettings(BaseModel):
 
 
 class HistorySettings(BaseModel):
-    enabled: bool = True
     max_turns: int = 5
-
-
-class AgentSettings(BaseModel):
-    max_steps: int = 5
 
 
 class AiSettings(BaseModel):
@@ -100,13 +78,11 @@ class AiSettings(BaseModel):
     anthropic_model: typing.Optional[str] = None
     gemini_model: typing.Optional[str] = None
     ollama_model: str = "llama3.1"
-    max_tokens: int = 8192
     # Reasoning policy: "on" (default) thinks only on direct knowledge
     # questions, never on tool-dispatch steps (keeps voice latency low);
     # "off" disables thinking everywhere.
     thinking: str = "on"
     history: HistorySettings = Field(default_factory=HistorySettings)
-    agent: AgentSettings = Field(default_factory=AgentSettings)
 
 
 class TraySettings(BaseModel):
@@ -122,8 +98,6 @@ class ModelsSettings(BaseModel):
     # False: load Whisper/Kokoro lazily on first wake instead of at startup,
     # so idle tray holds only the tiny always-on wake-word model.
     preload: bool = False
-    # Unload both after this many idle minutes (0 = never unload).
-    idle_unload_minutes: int = 15
 
 
 class ServerSettings(BaseModel):
@@ -142,27 +116,14 @@ class WeatherSettings(BaseModel):
 
 
 class GmailSettings(BaseModel):
-    poll_interval_minutes: int = 15
-    max_results: int = 20
-    max_body_chars: int = 1500
     allow_send: bool = False
     use_ai: bool = False
-    ai_summary_max_emails: int = 30
 
 
 class CalendarSettings(BaseModel):
-    poll_interval_minutes: int = 15
-    lookahead_hours: int = 24
-    max_results: int = 10
-    search_days_back: int = 30
-    search_days_ahead: int = 90
     work_start_hour: int = 9
     work_end_hour: int = 18
     allow_write: bool = False
-
-
-class WebSettings(BaseModel):
-    max_content_chars: int = 3000
 
 
 class DesktopSettings(BaseModel):
@@ -177,7 +138,6 @@ class ModulesSettings(BaseModel):
     weather: WeatherSettings = Field(default_factory=WeatherSettings)
     gmail: GmailSettings = Field(default_factory=GmailSettings)
     calendar: CalendarSettings = Field(default_factory=CalendarSettings)
-    web: WebSettings = Field(default_factory=WebSettings)
     desktop: DesktopSettings = Field(default_factory=DesktopSettings)
 
 
@@ -222,9 +182,18 @@ class AppSettings(BaseSettings):
 
 
 def _resolve_yaml_path(path: str) -> typing.Optional[str]:
+    """Locate the config file, anchoring relative names to the repo root.
+
+    Resolving against the process CWD instead meant `wony.py text` started from
+    another directory — and the tray, which Task Scheduler starts from wherever
+    it likes — silently fell through to config.example.yaml and ran on defaults.
+    """
+    from helpers.paths import resolve as _repo_resolve
+
     for candidate in [path, "config.example.yaml"]:
-        if os.path.exists(candidate):
-            return candidate
+        full = _repo_resolve(candidate)  # absolute paths pass through unchanged
+        if os.path.exists(full):
+            return full
     return None
 
 
@@ -237,30 +206,6 @@ class Config:
         AppSettings._yaml_file = _resolve_yaml_path(path)
         cls._settings = AppSettings()
         cls._loaded = True
-        cls._apply_legacy_ducking_shim()
-
-    @classmethod
-    def _apply_legacy_ducking_shim(cls) -> None:
-        """`voice.ducking.enabled` (pre-media-pause config key) is unknown to
-        AppSettings and silently dropped by pydantic's extra="ignore" during
-        parsing — so anyone who had explicitly disabled ducking would
-        otherwise come back with media_pause silently re-enabled. Read the
-        raw YAML once and carry an explicit `enabled: false` forward.
-        TODO: remove once configs have had time to migrate to voice.media_pause.
-        """
-        if not AppSettings._yaml_file:
-            return
-        try:
-            import yaml
-
-            with open(AppSettings._yaml_file, "r", encoding="utf-8") as f:
-                raw = yaml.safe_load(f) or {}
-            legacy_enabled = raw.get("voice", {}).get("ducking", {}).get("enabled")
-            if legacy_enabled is False:
-                assert cls._settings is not None
-                cls._settings.voice.media_pause.enabled = False
-        except Exception:
-            pass
 
     @classmethod
     def _ensure_loaded(cls) -> None:

@@ -1,5 +1,6 @@
 # Web search + URL fetch dependencies (web module).
-duckduckgo-search>=6.0
+# ddgs is the maintained successor to the duckduckgo-search package.
+ddgs>=9.0
 # Declared as a Requirement in modules/web.py; only arrives transitively otherwise.
 httpx>=0.27
 trafilatura>=1.8

@@ -170,7 +170,7 @@ def greeting() -> str:
 def _weather_line() -> typing.Optional[str]:
     try:
         import geocoder
-        from modules.weather import _get_weather_for_coordinates
+        from modules.weather import _get_weather_for_coordinates, temperature_symbol
 
         api_key = os.environ.get("WEATHER_API_KEY")
         if not api_key:
@@ -188,7 +188,7 @@ def _weather_line() -> typing.Optional[str]:
         desc = data["weather"][0]["description"]
         temp = round(data["main"]["temp"])
         city = g.city or "your location"
-        return f"Weather in {city}: {desc}, {temp}°C."
+        return f"Weather in {city}: {desc}, {temp}{temperature_symbol()}."
     except Exception:
         return None
 

@@ -203,12 +203,13 @@ def _audio_selftest() -> list:
         from helpers import recognizer as _recognizer
         from helpers.config import Config as _Config
 
+        from helpers.bootstrap import _IDLE_UNLOAD_MINUTES
+
         preload = bool(_Config.get("models.preload", False))
-        idle_minutes = _Config.get("models.idle_unload_minutes", 15)
         stt_loaded = _recognizer._model is not None
         tts_loaded = _audio._tts_singleton is not None
         lines.append(
-            f"    ✓ Models — preload: {preload}, idle_unload_minutes: {idle_minutes}, "
+            f"    ✓ Models — preload: {preload}, idle unload after {_IDLE_UNLOAD_MINUTES:.0f} min, "
             f"STT loaded: {stt_loaded}, TTS loaded: {tts_loaded}"
         )
     except Exception as e:

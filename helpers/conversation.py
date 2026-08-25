@@ -55,20 +55,15 @@ class Conversation:
     _turns: typing.List[typing.Dict[str, typing.Any]] = []
 
     @classmethod
-    def _config(cls) -> typing.Tuple[bool, int]:
+    def _max_turns(cls) -> int:
         try:
             from helpers.config import Config
-            enabled = Config.get("ai.history.enabled", True)
-            max_turns = int(Config.get("ai.history.max_turns", 5))
+            return int(Config.get("ai.history.max_turns", 5))
         except Exception:
-            enabled, max_turns = True, 5
-        return enabled, max_turns
+            return 5
 
     @classmethod
     def get_messages(cls) -> typing.List[typing.Dict[str, str]]:
-        enabled, _ = cls._config()
-        if not enabled:
-            return []
         messages = []
         turns = cls._turns
         results_start = max(0, len(turns) - _TOOL_RESULT_TURNS)
@@ -91,9 +86,9 @@ class Conversation:
         calls: typing.Optional[typing.List[typing.Dict[str, typing.Any]]] = None,
         emit: bool = True,
     ) -> typing.Optional[int]:
-        enabled, max_turns = cls._config()
-        if not enabled or not user_text:
+        if not user_text:
             return None
+        max_turns = cls._max_turns()
         cls._turns.append({
             "user": user_text,
             "assistant": assistant_text or "",

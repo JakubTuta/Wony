@@ -50,8 +50,9 @@ def weather(city: str) -> str:
 
     if city == "":
         my_geolocation = geocoder.ip("me")
-        city = my_geolocation.city
-        lat, lon = my_geolocation.latlng
+        latlng = my_geolocation.latlng or (None, None)
+        city = my_geolocation.city or "your location"
+        lat, lon = latlng
     else:
         lat, lon = _get_coordinates_for_city_name(city, api_key)
 
@@ -63,7 +64,22 @@ def weather(city: str) -> str:
     if weather_data is None:
         return "Error: Could not retrieve weather information."
 
-    return f"The weather for {city} is {weather_data['weather'][0]['description']} with {weather_data['main']['temp']}°C."
+    return (
+        f"The weather for {city} is {weather_data['weather'][0]['description']} "
+        f"with {weather_data['main']['temp']}{temperature_symbol()}."
+    )
+
+
+def units() -> str:
+    """OpenWeatherMap units name from modules.weather.default_units."""
+    from helpers.config import Config
+
+    configured = str(Config.get("modules.weather.default_units", "metric")).lower()
+    return configured if configured in ("metric", "imperial", "standard") else "metric"
+
+
+def temperature_symbol() -> str:
+    return {"metric": "°C", "imperial": "°F", "standard": "K"}[units()]
 
 
 def _get_coordinates_for_city_name(
@@ -74,9 +90,13 @@ def _get_coordinates_for_city_name(
     from helpers import net
 
     try:
+        # https, not http: the API key travels in the query string, so a plain
+        # request puts it on the wire in cleartext.
         response = net.get(
-            f"http://api.openweathermap.org/geo/1.0/direct?q={city_name}&appid={api_key}&limit=1"
+            "https://api.openweathermap.org/geo/1.0/direct",
+            params={"q": city_name, "appid": api_key, "limit": 1},
         )
+        response.raise_for_status()
         data = response.json()
         if len(data) == 0:
             return None, None
@@ -96,8 +116,16 @@ def _get_weather_for_coordinates(
 
     try:
         response = net.get(
-            f"https://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={api_key}&units=metric&lang=en"
+            "https://api.openweathermap.org/data/2.5/weather",
+            params={
+                "lat": lat,
+                "lon": lon,
+                "appid": api_key,
+                "units": units(),
+                "lang": "en",
+            },
         )
+        response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
         logger.log_error(str(e), "get_weather_for_coordinates")

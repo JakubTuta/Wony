@@ -6,6 +6,11 @@ class BackgroundJobs:
     """Centralized registry for daemon background threads with cooperative stop."""
 
     _jobs: typing.Dict[str, typing.Dict[str, typing.Any]] = {}
+    # Specs of jobs stopped by suspend_all(), so resume_suspended() can bring
+    # them back. Pausing the assistant used to call stop_all(), which silently
+    # ended every poller the user had asked for ("check my email every 15 min")
+    # with no way to get them back short of restarting the app.
+    _suspended: typing.Dict[str, typing.Dict[str, typing.Any]] = {}
     _lock = threading.Lock()
 
     @classmethod
@@ -75,7 +80,16 @@ class BackgroundJobs:
                 thread_target = _once
 
             thread = threading.Thread(target=thread_target, name=name, daemon=True)
-            cls._jobs[name] = {"thread": thread, "stop_event": stop_event}
+            cls._jobs[name] = {
+                "thread": thread,
+                "stop_event": stop_event,
+                "spec": {
+                    "target": target,
+                    "interval": interval,
+                    "pass_stop_event": pass_stop_event,
+                },
+            }
+            cls._suspended.pop(name, None)
             thread.start()
             return True
 
@@ -84,6 +98,7 @@ class BackgroundJobs:
         """Signal a named job to stop. Returns False if not found."""
         with cls._lock:
             job = cls._jobs.get(name)
+            cls._suspended.pop(name, None)
             if job is None:
                 return False
             job["stop_event"].set()
@@ -92,13 +107,47 @@ class BackgroundJobs:
 
     @classmethod
     def stop_all(cls) -> typing.List[str]:
-        """Stop all running jobs. Returns list of stopped job names."""
+        """Stop all running jobs for good. Returns list of stopped job names."""
         with cls._lock:
             names = list(cls._jobs.keys())
             for job in cls._jobs.values():
                 job["stop_event"].set()
             cls._jobs.clear()
+            cls._suspended.clear()
         return names
+
+    @classmethod
+    def suspend_all(cls) -> typing.List[str]:
+        """Stop every running job but remember how to start it again.
+
+        Used when the assistant is paused — a paused assistant should not be
+        announcing new email, but resuming should give the user back the
+        pollers they asked for rather than silently dropping them.
+        """
+        with cls._lock:
+            names = list(cls._jobs.keys())
+            for name, job in cls._jobs.items():
+                job["stop_event"].set()
+                cls._suspended[name] = job["spec"]
+            cls._jobs.clear()
+        return names
+
+    @classmethod
+    def resume_suspended(cls) -> typing.List[str]:
+        """Restart everything suspend_all() stopped. Returns restarted names."""
+        with cls._lock:
+            pending = dict(cls._suspended)
+            cls._suspended.clear()
+        restarted = []
+        for name, spec in pending.items():
+            if cls.start(
+                name,
+                spec["target"],
+                interval=spec["interval"],
+                pass_stop_event=spec["pass_stop_event"],
+            ):
+                restarted.append(name)
+        return restarted
 
     @classmethod
     def list_jobs(cls) -> typing.List[str]:

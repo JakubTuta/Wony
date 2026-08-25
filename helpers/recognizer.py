@@ -136,6 +136,40 @@ def _drop_hallucinations(segments: typing.Iterable[typing.Any], max_no_speech: f
     return " ".join(kept).strip()
 
 
+def transcribe(audio: typing.Any) -> str:
+    """Transcribe a 16 kHz mono float32 array. Single entry point for STT.
+
+    Holds _model_lock for the whole transcription (so the idle sweeper can
+    never unload the model mid-use) and refreshes the idle clock, and applies
+    the same hallucination gate every caller needs — a second, lock-free copy
+    of this in the web layer raced the voice path and let an actively-used
+    model be swept out from under it.
+    """
+    raw_lang = str(Config.get("assistant.language", "en")).lower()
+    # Normalize "en-us" / "en_US" → "en"; faster-whisper expects ISO 639-1 codes.
+    language = raw_lang.split("-")[0].split("_")[0]
+    if language != raw_lang:
+        helpers.diagnostics.add(
+            "info", "STT",
+            f"Language '{raw_lang}' normalized to '{language}' for faster-whisper."
+        )
+
+    global _last_used
+    with _model_lock:
+        model = _get_model()
+        # no vad_filter: record_command already endpoints with webrtcvad; a second pass over-trims short clips.
+        segments, _ = model.transcribe(
+            audio,
+            language=language,
+            beam_size=1,
+            condition_on_previous_text=False,
+            no_speech_threshold=0.6,
+        )
+        text = _drop_hallucinations(segments, _MAX_NO_SPEECH_PROB)
+        _last_used = time.monotonic()
+    return text
+
+
 class Recognizer:
     # True after a call that failed (STT exception), False after a call that
     # simply captured no speech. Lets callers distinguish "didn't hear you"
@@ -150,7 +184,6 @@ class Recognizer:
 
     @staticmethod
     def recognize_speech_from_mic(start_timeout: typing.Optional[float] = None) -> str:
-        global _last_used
         Recognizer.last_call_failed = False
         Recognizer.last_capture_empty = False
         try:
@@ -158,26 +191,7 @@ class Recognizer:
             if audio is None or len(audio) == 0:
                 Recognizer.last_capture_empty = True
                 return ""
-            raw_lang = str(Config.get("assistant.language", "en")).lower()
-            # Normalize "en-us" / "en_US" → "en"; faster-whisper expects ISO 639-1 codes.
-            language = raw_lang.split("-")[0].split("_")[0]
-            if language != raw_lang:
-                helpers.diagnostics.add(
-                    "info", "STT",
-                    f"Language '{raw_lang}' normalized to '{language}' for faster-whisper."
-                )
-            with _model_lock:
-                model = _get_model()
-                # no vad_filter: record_command already endpoints with webrtcvad; a second pass over-trims short clips.
-                segments, _ = model.transcribe(
-                    audio,
-                    language=language,
-                    beam_size=1,
-                    condition_on_previous_text=False,
-                    no_speech_threshold=0.6,
-                )
-                text = _drop_hallucinations(segments, _MAX_NO_SPEECH_PROB)
-                _last_used = time.monotonic()
+            text = transcribe(audio)
             if not text:
                 # Whisper produced only filler — the same outcome as capturing
                 # nothing, and callers must treat it that way (stay quiet, don't
