@@ -49,10 +49,6 @@ _FRAME_SIZE = 1280  # 80 ms at 16 kHz
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _MAX_BACKOFF = 5.0
 _DEGRADED_RECHECK_INTERVAL = 300.0  # 5 min
-# Floor between full PortAudio re-inits. See _recover() — a re-init disturbs
-# every audio app on the machine, so a persistently failing mic must not cause
-# one on every retry cycle.
-_MIN_REINIT_INTERVAL = 60.0
 # Consecutive FrameReader read timeouts (0.5s each) tolerated before the stream
 # is considered stalled and reopened. See the read() call site.
 _MAX_READ_TIMEOUTS = 4
@@ -335,27 +331,31 @@ class WakeWordListener:
         failures = 0
         streak = 0  # consecutive frames at/above threshold (see _PATIENCE_FRAMES)
         last_degraded_check = time.monotonic()
-        last_reinit = 0.0
         read_timeouts = 0
 
         def _recover() -> None:
-            nonlocal failures, last_reinit
+            nonlocal failures
             failures += 1
             mic._invalidate_input_device()
-            now = time.monotonic()
-            # A full re-init re-enumerates every host API (MME, DirectSound,
-            # WASAPI, WDM-KS) and WDM-KS enumeration pokes kernel pins on every
-            # audio device on the machine — audible as clicks in whatever else
-            # is playing. Reopening the stream is cheap and is retried on every
-            # failure; the re-init is the heavy hammer, so a device that keeps
-            # failing must not trigger one every backoff cycle.
-            if failures >= 3 and now - last_reinit >= _MIN_REINIT_INTERVAL:
-                # No-op (returns False) if another stream (e.g. TTS) is active —
-                # safe to call every time; it just won't do anything until free.
-                if mic.try_reinitialize_portaudio():
-                    last_reinit = now
+            # Reopening the stream is cheap and is retried on every failure; the
+            # re-init is the heavy hammer (see mic._MIN_REINIT_INTERVAL for what
+            # it costs), so only reach for it once reopening has clearly stopped
+            # working. No-op if another stream is active or one ran recently.
+            if failures >= 3:
+                mic.reinitialize_portaudio_throttled()
             backoff = min(_MAX_BACKOFF, 0.5 * (2 ** (min(failures, 5) - 1)))
             time.sleep(backoff)
+
+        def _service_reinit_request() -> None:
+            """Run a reinit the output side asked for, keeping the request
+            alive if a stream was still open — dropping it would leave output
+            bound to a dead device until something else failed."""
+            if not mic.consume_reinit_request():
+                return
+            if mic.try_reinitialize_portaudio():
+                diagnostics.add("info", "WakeWord", "PortAudio reinitialized for output device change.")
+            else:
+                mic.request_portaudio_reinit()
 
         try:
             while not self._stop_event.is_set():
@@ -367,6 +367,10 @@ class WakeWordListener:
                             self._close_stream()
                             streak = 0
                             read_timeouts = 0
+                        # Serve reinit requests while paused too: a voice turn
+                        # is exactly what pauses us, so that is when the output
+                        # side hits a dead device and asks for one.
+                        _service_reinit_request()
                         self._resume_event.clear()
                         # Timeout only so stop_event still gets checked periodically.
                         self._resume_event.wait(timeout=1.0)
@@ -375,9 +379,6 @@ class WakeWordListener:
                     if self._reader is None:
                         try:
                             self._open_stream()
-                            if failures > 0:
-                                diagnostics.add("info", "WakeWord", f"Mic capture recovered on [{mic.resolve_input_device()}].")
-                                failures = 0
                         except Exception as e:
                             diagnostics.add("warning", "WakeWord", f"Failed to open mic stream: {e} — retrying.")
                             _recover()
@@ -401,15 +402,24 @@ class WakeWordListener:
                     # long-lived input stream, so it's the one place that can
                     # safely close and re-enumerate (pa_stream_guard requires
                     # zero open streams).
-                    if mic.consume_reinit_request():
+                    if mic.reinit_pending():
                         self._close_stream()
-                        if mic.try_reinitialize_portaudio():
-                            diagnostics.add("info", "WakeWord", "PortAudio reinitialized for output device change.")
+                        _service_reinit_request()
                         continue
 
                     try:
                         mono = self._reader.read()
                         read_timeouts = 0
+                        if failures > 0:
+                            # Recovery means audio arriving, not a stream that
+                            # opened. An endpoint invalidated by a suspend or a
+                            # driver restart reopens happily and then delivers
+                            # nothing, so counting the open as success pinned
+                            # `failures` at 1 and put _recover()'s re-enumeration
+                            # — the only thing that fixes that state — out of
+                            # reach. The loop flapped open→stall→open instead.
+                            diagnostics.add("info", "WakeWord", f"Mic capture recovered on [{mic.resolve_input_device()}].")
+                            failures = 0
                     except queue.Empty:
                         # A single late block is a hiccup, not a dead device, and
                         # tearing the stream down costs more than it fixes: the

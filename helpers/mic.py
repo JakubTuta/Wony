@@ -44,14 +44,27 @@ open stream, so try_reinitialize_portaudio() can safely re-enumerate devices
 process-wide — it must only run when nothing is open). This lets the never-die
 capture loop rediscover a changed OS default (Windows switches the default
 input when devices connect/disconnect, but PortAudio freezes its list at init).
+Every thread that opens a stream needs a COM apartment first — PortAudio's
+WASAPI backend is COM-based and fails with paUnanticipatedHostError without one.
+pa_stream_guard() handles that; see _ensure_com_apartment.
+
+A failed open is retried once behind a re-enumeration
+(reinitialize_portaudio_throttled) — PortAudio's device list is frozen at
+process init, so after the machine sleeps or an audio driver restarts every
+open fails with paUnanticipatedHostError until that list is refreshed.
+
 Lock-ordering rules: never take _resolved_input_lock while holding _pa_lock,
 and never take _CaptureHub._lock while holding _pa_lock (the hub takes
-pa_stream_guard, which takes _pa_lock).
+pa_stream_guard, which takes _pa_lock). A hub must also run its open-failure
+reinit *outside* its own _lock — the reinit touches both hubs, so doing it
+under one hub's lock would invert the order against the other hub's recovery.
 """
 import contextlib
 import collections
+import ctypes
 import os
 import queue
+import sys
 import threading
 import time
 import typing
@@ -387,6 +400,12 @@ def request_portaudio_reinit() -> None:
     _reinit_requested.set()
 
 
+def reinit_pending() -> bool:
+    """True while a reinit request is outstanding. Lets a caller do its own
+    prep (closing its stream) before consuming the request."""
+    return _reinit_requested.is_set()
+
+
 def consume_reinit_request() -> bool:
     """True (once) if a reinit was requested. Clears the flag."""
     if _reinit_requested.is_set():
@@ -398,14 +417,60 @@ def consume_reinit_request() -> bool:
 # ── PortAudio stream registry ────────────────────────────────────────────────
 
 
+_com_apartment = threading.local()
+_COINIT_MULTITHREADED = 0x0
+# The thread already joined a different apartment — someone else's CoInitialize
+# got there first, which serves us just as well.
+_RPC_E_CHANGED_MODE = -2147417850
+
+
+def _ensure_com_apartment() -> None:
+    """Give the calling thread a COM apartment before it touches PortAudio.
+
+    PortAudio's WASAPI backend works through COM, and a stream started from a
+    thread with no apartment fails with paUnanticipatedHostError — every time,
+    on every retry. Verified with bare sounddevice, no Wony code in the way: an
+    InputStream start fails 4/4 on a worker thread and succeeds first try on the
+    main thread (the one that ran Pa_Initialize), and a CoInitializeEx on the
+    worker makes it succeed. Both apartment models work; MTA is the right one
+    for threads that don't pump a message loop.
+
+    This is why a PortAudio re-init used to "fix" the failure: sd._initialize()
+    re-runs Pa_Initialize on whichever thread called it, so the device would
+    start working for *that* thread and break again for the next one.
+
+    Deliberately never uninitialized — the apartment has to outlive every stream
+    the thread opens, and these are long-lived audio threads.
+    """
+    if getattr(_com_apartment, "ready", False):
+        return
+    _com_apartment.ready = True  # one attempt per thread, success or not
+    if sys.platform != "win32":
+        return
+    try:
+        hr = ctypes.windll.ole32.CoInitializeEx(None, _COINIT_MULTITHREADED)
+    except Exception as e:
+        import helpers.diagnostics
+        helpers.diagnostics.add("warning", "Audio", f"COM init failed on {threading.current_thread().name} ({e}) — audio on this thread may fail.")
+        return
+    if hr < 0 and hr != _RPC_E_CHANGED_MODE:
+        import helpers.diagnostics
+        helpers.diagnostics.add("warning", "Audio", f"CoInitializeEx returned 0x{hr & 0xFFFFFFFF:08X} on {threading.current_thread().name} — audio on this thread may fail.")
+
+
 @contextlib.contextmanager
 def pa_stream_guard() -> typing.Generator[None, None, None]:
     """Hold for the full lifetime of any sounddevice stream.
 
     Lets try_reinitialize_portaudio() know it's safe to call sd._terminate()/
     sd._initialize() (which destroys every open PortAudio stream process-wide).
+
+    Also the single choke point every stream open passes through, so it is where
+    the calling thread's COM apartment is established (see
+    _ensure_com_apartment) — that must happen before the stream is created.
     """
     global _pa_stream_count
+    _ensure_com_apartment()
     with _pa_lock:
         _pa_stream_count += 1
     try:
@@ -450,6 +515,9 @@ def try_reinitialize_portaudio() -> bool:
 
     Only runs when no stream is currently open — returns False otherwise so
     the caller can retry later instead of tearing down active audio.
+
+    Unthrottled: for reinits something explicitly asked for. Automatic
+    recovery from a failed open goes through reinitialize_portaudio_throttled().
     """
     global _pa_render_id
     # The hubs hold the only long-lived streams, so pa_stream_guard's count can
@@ -469,6 +537,42 @@ def try_reinitialize_portaudio() -> bool:
     _invalidate_output_device()
     _pa_render_id = _get_default_render_endpoint_id()
     return True
+
+
+# Floor between automatic re-inits. A re-init re-enumerates every host API, and
+# WDM-KS enumeration pokes kernel pins on every audio device on the machine —
+# audible as clicks in whatever else is playing. So a device that keeps failing
+# to open must not cause one on every retry cycle.
+_MIN_REINIT_INTERVAL = 60.0
+_last_reinit_time = 0.0
+_reinit_throttle_lock = threading.Lock()
+
+
+def reinitialize_portaudio_throttled() -> bool:
+    """try_reinitialize_portaudio(), at most once per _MIN_REINIT_INTERVAL.
+
+    A refused re-init (some stream was still open) is not charged against the
+    interval — otherwise one badly timed attempt would block the real recovery
+    for a minute.
+
+    Held across the whole call so two failing directions can't reinit twice;
+    this lock is outermost and is never taken by anything the reinit itself
+    touches.
+    """
+    global _last_reinit_time
+    arrived = time.monotonic()
+    with _reinit_throttle_lock:
+        if _last_reinit_time > arrived:
+            # Someone re-enumerated while we waited for the lock (both
+            # directions fail together on a stale device list). The list is
+            # already fresh, so the caller's retry is worth making.
+            return True
+        if arrived - _last_reinit_time < _MIN_REINIT_INTERVAL:
+            return False
+        if not try_reinitialize_portaudio():
+            return False
+        _last_reinit_time = time.monotonic()
+        return True
 
 
 # ── Signal probe ──────────────────────────────────────────────────────────────
@@ -612,6 +716,22 @@ class _CaptureHub:
     # ── Consumer API ────────────────────────────────────────────────────────
 
     def subscribe(self) -> _Subscription:
+        try:
+            return self._subscribe_once()
+        except Exception:
+            # PortAudio freezes its device list at process init. After the
+            # machine sleeps or an audio driver restarts, every open fails with
+            # paUnanticipatedHostError until that list is re-enumerated — so
+            # re-enumerate and try once more rather than losing a whole voice
+            # turn to a failure that heals in a few hundred ms.
+            # Deliberately outside _lock: the reinit takes the *other* hub's
+            # locks, and doing that under this one would invert the order the
+            # playback hub's recovery uses.
+            if not reinitialize_portaudio_throttled():
+                raise
+        return self._subscribe_once()
+
+    def _subscribe_once(self) -> _Subscription:
         with self._lock:
             self._cancel_linger()
             if self._stream is not None and self._stale and not self._subs:
@@ -872,17 +992,27 @@ class _PlaybackHub:
         """Take the writer lock and make sure the stream is open."""
         self._writer_lock.acquire()
         try:
-            with self._lock:
-                self._cancel_linger()
-                if self._stream is not None and self._stale:
-                    self._close_locked()
-                if self._stream is None:
-                    self._open_locked()
-                    self._stale = False
+            try:
+                self._ensure_open()
+            except Exception:
+                # Same stale-device-list recovery as _CaptureHub.subscribe().
+                # Outside _lock for the same lock-ordering reason.
+                if not reinitialize_portaudio_throttled():
+                    raise
+                self._ensure_open()
             return _PlaybackWriter(self)
         except Exception:
             self._writer_lock.release()
             raise
+
+    def _ensure_open(self) -> None:
+        with self._lock:
+            self._cancel_linger()
+            if self._stream is not None and self._stale:
+                self._close_locked()
+            if self._stream is None:
+                self._open_locked()
+                self._stale = False
 
     def release(self) -> None:
         with self._lock:
