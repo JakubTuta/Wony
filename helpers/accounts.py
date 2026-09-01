@@ -6,6 +6,10 @@ from helpers.paths import repo_path
 
 _ACCOUNTS_FILE = repo_path("credentials", "accounts.json")
 
+# The OAuth client downloaded from Google Cloud Console. One file covers every
+# account — accounts differ by their token, not by the client that issued it.
+CREDENTIALS_FILE = repo_path("credentials", "google_credentials.json")
+
 _TOKEN_KEYS = ("gmail_token", "calendar_token")
 
 
@@ -115,6 +119,13 @@ class GoogleAccounts:
         if name not in data["accounts"]:
             raise ValueError(f"Account '{name}' not found.")
         rec = data["accounts"].pop(name)
+        cls._delete_token_files(rec)
+        if data.get("primary") == name:
+            data["primary"] = next(iter(data["accounts"]), None)
+        cls._save()
+
+    @staticmethod
+    def _delete_token_files(rec: dict) -> None:
         for key in _TOKEN_KEYS:
             path = _abs(rec.get(key, ""))
             if path and os.path.exists(path):
@@ -122,9 +133,34 @@ class GoogleAccounts:
                     os.remove(path)
                 except OSError:
                     pass
-        if data.get("primary") == name:
-            data["primary"] = next(iter(data["accounts"]), None)
-        cls._save()
+
+    @classmethod
+    def clear_tokens(cls, name: str) -> None:
+        """Delete an account's stored tokens so the next use re-runs OAuth.
+
+        Re-authorizing is a no-op without this: both Google libraries load
+        whatever token file is already on disk, and a revoked token loads as
+        happily as a good one.
+        """
+        data = cls._load()
+        if name not in data["accounts"]:
+            raise ValueError(f"Account '{name}' not found.")
+        cls._delete_token_files(data["accounts"][name])
+
+    @classmethod
+    def token_status(cls, name: str) -> typing.Dict[str, bool]:
+        """Which services this account has a stored token for.
+
+        A file on disk is not proof the token still works — Google can revoke
+        it at any time — but it is the only answer available without a network
+        call, and this is read on every screen open.
+        """
+        rec = cls.record(name)
+        return {
+            "gmail": bool(rec.get("gmail_token")) and os.path.exists(rec["gmail_token"]),
+            "calendar": bool(rec.get("calendar_token"))
+            and os.path.exists(rec["calendar_token"]),
+        }
 
     @classmethod
     def set_email(cls, name: str, email: str) -> None:

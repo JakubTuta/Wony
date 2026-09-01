@@ -15,58 +15,27 @@ class AssistantSettings(BaseModel):
     language: str = "en"
 
 
-class SttSettings(BaseModel):
-    start_timeout: float = 4.0
-    silence_ms: int = 700
+class TileSettings(BaseModel):
+    """One button on the home screen."""
+
+    # Stable id — the UI posts to /api/tiles/{id}.
+    id: str
+    label: str
+    # Emoji or icon name; the UI decides how to render it.
+    icon: str = ""
+    # "job" runs a registered job directly (instant, no AI involved).
+    # "prompt" sends a canned sentence through the assistant.
+    kind: str = "job"
+    job: typing.Optional[str] = None
+    prompt: typing.Optional[str] = None
+    args: typing.Dict[str, typing.Any] = Field(default_factory=dict)
 
 
-class MediaPauseSettings(BaseModel):
-    enabled: bool = True
-    # None = use the built-in default (see MediaPause._RESUME_LINGER).
-    resume_linger_seconds: typing.Optional[float] = None
+class KioskSettings(BaseModel):
+    """The screen itself, as opposed to what is on it."""
 
-
-class ConversationSettings(BaseModel):
-    enabled: bool = True
-    follow_up_timeout: float = 4.0
-
-
-class BargeInSettings(BaseModel):
-    enabled: bool = False
-
-
-class HotkeySettings(BaseModel):
-    # pynput combination string; null/empty disables the hotkey entirely.
-    #
-    # Deliberately NOT "<ctrl>+l". pynput's HotKey matcher only tracks the keys
-    # named in the combination and ignores any others held at the same time, so
-    # a two-key binding also fires on ctrl+shift+l and ctrl+alt+l. Ctrl+L is the
-    # browser address bar, clear-terminal, and VS Code select-line — every one of
-    # those presses was silently opening a listening turn.
-    push_to_talk: typing.Optional[str] = "<ctrl>+<alt>+w"
-
-
-class WakeWordSettings(BaseModel):
-    enabled: bool = False
-    phrase: str = "hey jarvis"
-    model_path: typing.Optional[str] = None
-    threshold: float = 0.5
-
-
-class VoiceSettings(BaseModel):
-    tts_voice: str = "af_heart"
-    speed: float = 1.0
-    volume: float = 0.6
-    model_path: str = "models/kokoro-v1.0.onnx"
-    voices_path: str = "models/voices-v1.0.bin"
-    input_device: typing.Optional[typing.Union[int, str]] = None
-    output_device: typing.Optional[typing.Union[int, str]] = None
-    stt: SttSettings = Field(default_factory=SttSettings)
-    media_pause: MediaPauseSettings = Field(default_factory=MediaPauseSettings)
-    conversation: ConversationSettings = Field(default_factory=ConversationSettings)
-    barge_in: BargeInSettings = Field(default_factory=BargeInSettings)
-    wake_word: WakeWordSettings = Field(default_factory=WakeWordSettings)
-    hotkeys: HotkeySettings = Field(default_factory=HotkeySettings)
+    # Minutes of nobody touching the screen before it switches to the clock.
+    idle_minutes: int = 15
 
 
 class HistorySettings(BaseModel):
@@ -85,19 +54,8 @@ class AiSettings(BaseModel):
     history: HistorySettings = Field(default_factory=HistorySettings)
 
 
-class TraySettings(BaseModel):
-    notify_on_ready: bool = True
-    open_browser_on_start: bool = False
-
-
 class LoggingSettings(BaseModel):
     keep_days: int = 14
-
-
-class ModelsSettings(BaseModel):
-    # False: load Whisper/Kokoro lazily on first wake instead of at startup,
-    # so idle tray holds only the tiny always-on wake-word model.
-    preload: bool = False
 
 
 class ServerSettings(BaseModel):
@@ -109,6 +67,12 @@ class HomeAssistantSettings(BaseModel):
     # homeassistant.local is the standard mDNS hostname a stock install answers on.
     base_url: str = "http://homeassistant.local:8123"
     allow_locks: bool = False
+
+
+class BasicsSettings(BaseModel):
+    # Safety gate for power_off / reboot. There is no console on this device to
+    # type a confirmation into, so the gate lives here instead.
+    allow_power_off: bool = False
 
 
 class WeatherSettings(BaseModel):
@@ -126,19 +90,14 @@ class CalendarSettings(BaseModel):
     allow_write: bool = False
 
 
-class DesktopSettings(BaseModel):
-    allow_actions: bool = False
-    file_search_root: str = "~"
-
-
 class ModulesSettings(BaseModel):
     model_config = ConfigDict(extra="allow")
 
+    basics: BasicsSettings = Field(default_factory=BasicsSettings)
     home_assistant: HomeAssistantSettings = Field(default_factory=HomeAssistantSettings)
     weather: WeatherSettings = Field(default_factory=WeatherSettings)
     gmail: GmailSettings = Field(default_factory=GmailSettings)
     calendar: CalendarSettings = Field(default_factory=CalendarSettings)
-    desktop: DesktopSettings = Field(default_factory=DesktopSettings)
 
 
 class AppSettings(BaseSettings):
@@ -153,16 +112,16 @@ class AppSettings(BaseSettings):
     _yaml_file: typing.ClassVar[typing.Optional[str]] = None
 
     assistant: AssistantSettings = Field(default_factory=AssistantSettings)
-    voice: VoiceSettings = Field(default_factory=VoiceSettings)
     ai: AiSettings = Field(default_factory=AiSettings)
     enabled_modules: list[str] = Field(
-        default_factory=lambda: ["ai", "status", "basics", "weather", "spotify", "screen"]
+        default_factory=lambda: ["ai", "status", "basics", "scheduler", "weather"]
     )
     modules: ModulesSettings = Field(default_factory=ModulesSettings)
-    tray: TraySettings = Field(default_factory=TraySettings)
+    # Empty list = fall back to the built-in manifest (helpers/kiosk.py).
+    tiles: list[TileSettings] = Field(default_factory=list)
+    kiosk: KioskSettings = Field(default_factory=KioskSettings)
     server: ServerSettings = Field(default_factory=ServerSettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
-    models: ModelsSettings = Field(default_factory=ModelsSettings)
 
     @classmethod
     def settings_customise_sources(

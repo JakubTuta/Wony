@@ -6,26 +6,21 @@ venv/
 config.yaml
 config.yaml.bak
 .wony_setup
-screenshots/
 logs/
 .vscode/
-frontend/node_modules/
-frontend/.vscode/
-frontend/bun.lock
-frontend/package-lock.json
 *.db
 *.onnx
 *.tflite
 
-training/*
-!training/train_hey_wony.ipynb
-!training/train_hey_wony.sh
-!training/record_wake_word.py
-web/node_modules/
-web/dist/
-web/.vscode/
+# Leftovers from the voice build; this branch has no speech models or training.
+models/
+training/
+voice/
+kiosk/node_modules/
+kiosk/dist/
+kiosk/.vscode/
 
-# WEB
+# The touch UI
 # Logs
 logs
 *.log

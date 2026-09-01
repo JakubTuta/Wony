@@ -1,10 +1,8 @@
-import base64
 import os
 import typing
 import uuid
 
 import anthropic
-import numpy as np
 import ollama
 from google import genai
 from google.genai import types as genai_types
@@ -287,7 +285,6 @@ def send_message(
     message: str,
     system_instructions: SystemInstructions = None,
     available_tools: typing.Optional[typing.List[typing.Callable]] = None,
-    image: typing.Optional[np.ndarray] = None,
     history: typing.Optional[typing.List[typing.Dict[str, str]]] = None,
 ) -> typing.Union[
     genai_types.GenerateContentResponse, anthropic.types.Message, ollama.ChatResponse
@@ -304,26 +301,13 @@ def send_message(
             helpers_tools.function_to_schema(func) for func in available_tools
         ]
 
-    base64_image: typing.Optional[str] = None
-    if image is not None:
-        encoded = helpers_tools.numpy_image_to_base64_bytes(image)
-        # Every provider wants base64 as text, not bytes; decoding here rather
-        # than relying on each SDK's implicit bytes→str coercion.
-        base64_image = encoded.decode("ascii") if encoded is not None else None
-
     if isinstance(client, genai.Client):
         model = _get_gemini_model(client)
         config = _gemini_config(system_instructions, parsed_tools, model)
 
-        current_parts: typing.List[typing.Any] = []
-        if base64_image is not None:
-            current_parts.append(
-                genai_types.Part.from_bytes(
-                    data=base64.b64decode(base64_image),
-                    mime_type=helpers_tools.IMAGE_MIME_TYPE,
-                )
-            )
-        current_parts.append(genai_types.Part.from_text(text=message))
+        current_parts: typing.List[typing.Any] = [
+            genai_types.Part.from_text(text=message)
+        ]
 
         if history:
             contents: typing.List[typing.Any] = []
@@ -344,22 +328,8 @@ def send_message(
         return _gemini_generate(client, model, contents, config)
 
     elif isinstance(client, anthropic.Anthropic):
-        messages_content: typing.Any = message
-        if base64_image is not None:
-            messages_content = [
-                {"type": "text", "text": message},
-                {
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": helpers_tools.IMAGE_MIME_TYPE,
-                        "data": base64_image,
-                    },
-                },
-            ]
-
         anthropic_messages = list(history) if history else []
-        anthropic_messages.append({"role": "user", "content": messages_content})
+        anthropic_messages.append({"role": "user", "content": message})
 
         model = _get_anthropic_model(client)
         thinking = _anthropic_thinking(bool(parsed_tools), model)
@@ -391,13 +361,7 @@ def send_message(
         if history:
             ollama_messages.extend(history)
 
-        user_message: typing.Dict[str, typing.Any] = {"role": "user", "content": message}
-        if base64_image is not None:
-            # Vision models (llava, llama3.2-vision, …) take base64 images on the
-            # message. Without this, "explain what's on screen" on Ollama answered
-            # from the prompt alone, having never seen the screenshot.
-            user_message["images"] = [base64_image]
-        ollama_messages.append(user_message)
+        ollama_messages.append({"role": "user", "content": message})
 
         return _ollama_chat(
             client,

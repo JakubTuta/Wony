@@ -1,9 +1,8 @@
 import os
+import subprocess
 import typing
 from datetime import datetime, timedelta
 
-from helpers.audio import Audio
-from helpers.cache import Cache
 from helpers.config import Config
 from helpers.decorators import capture_response
 from helpers.logger import logger
@@ -61,47 +60,82 @@ def get_date() -> str:
 # --- system ---
 
 
-@register_job(module_name="basics")
-@capture_response
-def close_computer() -> str:
+def _run_power_command(verb: str, systemctl_action: str) -> str:
+    """Shared body of power_off and reboot.
+
+    The gate is a config key rather than a typed confirmation: there is no
+    console on this device, and a touch screen cannot answer input(). The UI
+    is expected to confirm before it ever gets here.
     """
-    [SYSTEM CONTROL JOB] Immediately shuts down the entire computer system.
-    This is a critical system operation that forcefully terminates all processes
-    and powers off the machine. Use with extreme caution as it will close all applications.
+    if not bool(Config.get("modules.basics.allow_power_off", False)):
+        logger.log_system_event(f"{systemctl_action}_refused", "Power control is disabled.")
+        return (
+            f"Power control is off. Set modules.basics.allow_power_off: true in "
+            f"config.yaml to let me {verb} this device."
+        )
+
+    logger.log_system_event(systemctl_action, f"Running systemctl {systemctl_action}.")
+    try:
+        result = subprocess.run(
+            ["systemctl", systemctl_action],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except FileNotFoundError:
+        return "Can't find systemctl — this job only works on a systemd Linux system."
+    except subprocess.TimeoutExpired:
+        # systemctl normally returns immediately and the machine goes down
+        # afterwards, so a timeout means the request is stuck, not succeeding.
+        return f"The {verb} request timed out."
+
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        return f"Couldn't {verb}: {detail or f'systemctl exited {result.returncode}'}"
+
+    return f"{verb.capitalize()}ing now. o7"
+
+
+@register_job(module_name="basics", summary="Power off this device")
+@capture_response
+def power_off() -> str:
+    """
+    [SYSTEM CONTROL JOB] Shuts down this device.
 
     Use this job when the user wants to:
-    - Completely power down the computer
-    - Shut down the system via voice command
-    - Emergency system shutdown
-    - End the computing session entirely
+    - Power down the device
+    - Turn the machine off completely
 
-    Keywords: close computer, shut down, power off, turn off, exit, close system, shutdown, power down,
-             restart computer, shut down pc, power down system, close everything
+    Keywords: shut down, power off, turn off, shutdown, power down, switch off
 
     Args:
         None
 
     Returns:
-        str: Confirmation of shutdown, cancellation, or why it couldn't be confirmed.
+        str: Confirmation, or why the shutdown did not happen.
     """
-    try:
-        confirmation = input("Shut down the computer? Type 'yes' to confirm: ").strip().lower()
-    except (EOFError, RuntimeError):
-        # No console attached (tray/pythonw mode) — input() can't prompt at all.
-        # Refuse rather than either hanging forever or shutting down unconfirmed.
-        logger.log_system_event("shutdown_refused", "No console available to confirm shutdown.")
-        return "Can't confirm a shutdown without a console — run 'wony.py text' or 'wony.py voice' to do this."
+    return _run_power_command("shut down", "poweroff")
 
-    if confirmation != "yes":
-        logger.log_system_event("shutdown_cancelled", "User did not confirm shutdown.")
-        return "Shutdown cancelled."
 
-    audio = Cache.get_audio()
-    if audio:
-        Audio.play_cached("Closing computer. o7")
-    logger.log_system_event("shutdown", "Shutting down computer.")
-    os.system("shutdown /s /f /t 0")
-    return "Shutting down now."
+@register_job(module_name="basics", summary="Restart this device")
+@capture_response
+def reboot() -> str:
+    """
+    [SYSTEM CONTROL JOB] Restarts this device.
+
+    Use this job when the user wants to:
+    - Reboot or restart the machine
+    - Power-cycle the device to clear a problem
+
+    Keywords: reboot, restart, restart the device, reboot the system, power cycle
+
+    Args:
+        None
+
+    Returns:
+        str: Confirmation, or why the restart did not happen.
+    """
+    return _run_power_command("restart", "reboot")
 
 
 # --- greeting ---

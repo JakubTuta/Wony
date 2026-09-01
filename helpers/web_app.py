@@ -1,6 +1,7 @@
 """
 FastAPI app factory. Call build_app() after bootstrap() has run.
-The app is built in-process by the unified web entry point and the tray host.
+Serves the JSON API, the WebSocket the screen listens on, and — once
+`kiosk/dist` has been built — the touch UI itself.
 """
 
 import asyncio
@@ -21,7 +22,8 @@ from helpers.registry import ServiceRegistry
 # list is a code change, not a setting.
 _DESTRUCTIVE_JOBS: typing.Set[str] = {
     "exit",
-    "close_computer",
+    "power_off",
+    "reboot",
     "stop_active_jobs",
     "send_email",
     "reply_to_email",
@@ -39,6 +41,9 @@ _DESTRUCTIVE_JOBS: typing.Set[str] = {
     # accounts
     "remove_google_account",
     "edit_google_account",
+    # Discards the stored token before re-running consent: an interrupted
+    # sign-in leaves the account worse off than it started.
+    "authorize_google_account",
 }
 
 
@@ -89,8 +94,6 @@ def _coerce_args(
     return coerced
 
 
-from helpers.errors import classify_api_error as _classify_api_error, emit_api_diagnostic as _emit_api_diagnostic
-
 
 def _sanitize_calls(
     calls: typing.List[typing.Dict[str, typing.Any]],
@@ -118,62 +121,10 @@ class ChatRequest(BaseModel):
     message: str
 
 
-# Wall-clock backstop for one web turn, mirroring _TURN_TIMEOUT_SECONDS in
-# modules/employer.py — without it a stuck tool loop held agent_lock (and so
-# every other turn, voice included) until the process was restarted.
-_WEB_TURN_TIMEOUT_SECONDS = 120.0
-
-
-def _run_web_turn(
-    message: str,
-    on_text: typing.Optional[typing.Callable[[str], None]] = None,
-) -> typing.Any:
-    """Run one agent turn for a web client. Shared by POST /api/chat and the
-    WebSocket chat path so both get the same cancel and timeout behaviour."""
-    import threading
-
-    from helpers.agent import run_agent
-    from helpers.bootstrap import get_ai_client
-    from helpers.conversation import Conversation
-    from helpers.decorators import agent_lock, set_agent_active
-    from helpers.events import clear_cancel, session_cancel
-    from modules.ai import build_agent_system_prompt
-    from modules.employer import MAX_AGENT_STEPS
-
-    ai_client = get_ai_client()
-    system_prompt = build_agent_system_prompt()
-    all_jobs = ServiceRegistry.get_all_jobs()
-
-    timed_out = threading.Event()
-    timer = threading.Timer(_WEB_TURN_TIMEOUT_SECONDS, timed_out.set)
-    timer.daemon = True
-
-    class _TurnCancel:
-        @staticmethod
-        def is_set() -> bool:
-            return session_cancel.is_set() or timed_out.is_set()
-
-    with agent_lock:
-        # Inside the lock: a cancel raised against a previous turn must not
-        # abort this one, but clearing it earlier could cancel a voice turn
-        # that is still running.
-        clear_cancel()
-        set_agent_active(True)
-        timer.start()
-        try:
-            return run_agent(
-                client=ai_client,
-                user_input=message,
-                available_jobs=all_jobs,
-                system_instructions=system_prompt,
-                history=Conversation.get_messages(),
-                max_steps=MAX_AGENT_STEPS,
-                on_text=on_text,
-                cancel_event=_TurnCancel(),
-            )
-        finally:
-            timer.cancel()
-            set_agent_active(False)
+class DeviceControlRequest(BaseModel):
+    entity_id: str
+    action: str = "toggle"
+    brightness_percent: typing.Optional[int] = None
 
 
 def build_app() -> FastAPI:
@@ -227,19 +178,13 @@ def build_app() -> FastAPI:
     @app.get("/api/config")
     def get_config() -> typing.Dict[str, typing.Any]:
         """Return frontend-relevant config values."""
-        from helpers.audio import _MAX_CAPTURE_SECONDS
-
         return {
             "assistant": {
                 "name": Config.get("assistant.name", "Wony"),
                 "language": Config.get("assistant.language", "en"),
             },
-            "voice": {
-                "stt": {
-                    "silence_ms": int(Config.get("voice.stt.silence_ms", 700)),
-                    "start_timeout": int(Config.get("voice.stt.start_timeout", 4)),
-                    "max_seconds": int(_MAX_CAPTURE_SECONDS),
-                },
+            "kiosk": {
+                "idle_minutes": Config.get("kiosk.idle_minutes", 15),
             },
         }
 
@@ -273,13 +218,6 @@ def build_app() -> FastAPI:
                 "hint": hints.get(name, ""),
             }
 
-        compute: typing.Dict[str, typing.Any] = {}
-        try:
-            from helpers.compute import compute_status
-            compute = compute_status()
-        except Exception:
-            pass
-
         diagnostics: typing.List[typing.Dict] = []
         try:
             from helpers.diagnostics import get_all
@@ -291,7 +229,6 @@ def build_app() -> FastAPI:
             "provider": provider,
             "model": model_name,
             "modules": modules_out,
-            "compute": compute,
             "diagnostics": diagnostics,
         }
 
@@ -357,27 +294,123 @@ def build_app() -> FastAPI:
     @app.post("/api/chat")
     def chat(req: ChatRequest) -> typing.Dict[str, typing.Any]:
         from helpers.conversation import Conversation
-        from helpers.logger import logger
+        from helpers.turn import run_turn
 
         if not req.message or not req.message.strip():
             raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
-        try:
-            result = _run_web_turn(req.message)
-            safe_calls = _sanitize_calls(result.calls)
-            turn_id = Conversation.record_turn(
-                req.message, result.text, calls=safe_calls
-            )
-            return {"id": turn_id, "text": result.text, "calls": safe_calls}
-        except Exception as e:
-            logger.log_error(str(e), "web_chat")
-            classified = _classify_api_error(e)
-            if classified:
-                user_msg, hint = classified
-                _emit_api_diagnostic(user_msg, hint)
-                raise HTTPException(status_code=503, detail=user_msg)
-            raise HTTPException(status_code=500, detail=str(e))
+        result = run_turn(req.message)
+        if result.error is not None:
+            raise HTTPException(status_code=503, detail=result.error)
 
+        safe_calls = _sanitize_calls(result.calls)
+        turn_id = Conversation.record_turn(req.message, result.text, calls=safe_calls)
+        return {"id": turn_id, "text": result.text, "calls": safe_calls}
+
+    @app.get("/api/tiles")
+    def list_tiles() -> typing.Dict[str, typing.Any]:
+        """The home-screen manifest for the touch UI."""
+        from helpers.kiosk import tiles
+
+        return {"tiles": tiles()}
+
+    @app.post("/api/tiles/{tile_id}")
+    def run_tile_endpoint(tile_id: str) -> typing.Dict[str, typing.Any]:
+        """Run one tile. A job tile answers without involving the model at all."""
+        from helpers.kiosk import run_tile
+
+        try:
+            result = run_tile(tile_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"No tile '{tile_id}'.")
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        return {"ok": result.ok, "text": result.text, "source": result.source}
+
+    @app.get("/api/ambient")
+    def get_ambient() -> typing.Dict[str, typing.Any]:
+        """Cards for the idle screen. Cached server-side; safe to poll."""
+        from helpers.kiosk import ambient
+
+        return {"cards": ambient()}
+
+    @app.get("/api/panel/{key}")
+    def get_panel(key: str) -> typing.Dict[str, typing.Any]:
+        """Structured data for one screen — weather, agenda, devices, music,
+        accounts. The write side of every panel goes through /api/invoke like
+        any other job; only reading needs a shape."""
+        from helpers.panels import PanelUnavailable, panel
+
+        try:
+            return panel(key)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"No panel '{key}'.")
+        except PanelUnavailable as e:
+            raise HTTPException(status_code=503, detail=str(e))
+        except Exception as e:
+            from helpers.logger import logger
+
+            logger.log_error(str(e), f"web_panel.{key}")
+            raise HTTPException(status_code=502, detail=str(e))
+
+    @app.post("/api/devices/control")
+    def control_device(req: DeviceControlRequest) -> typing.Dict[str, typing.Any]:
+        """Act on one Home Assistant device by its exact id.
+
+        The one panel with a write path, and the reason it is not /api/invoke:
+        control_home_device resolves a spoken name, which would toggle both
+        lamps called 'Lamp'. The screen already knows which one was tapped.
+        """
+        if "home_assistant" not in Config.enabled_modules():
+            raise HTTPException(status_code=503, detail="Home Assistant is not enabled.")
+
+        from helpers.logger import logger
+        from modules import home_assistant
+
+        logger.log_function_call(
+            "control_device", "[screen]", {"entity_id": req.entity_id, "action": req.action}
+        )
+        try:
+            ok, text = home_assistant.control(
+                req.entity_id, req.action, req.brightness_percent
+            )
+        except Exception as e:
+            logger.log_error(str(e), "web_control_device")
+            raise HTTPException(status_code=502, detail=str(e))
+
+        logger.log_function_response("control_device", text[:200], "[screen]")
+        return {"ok": ok, "text": text}
+
+    @app.get("/api/notifications")
+    def list_notifications(
+        include_acknowledged: bool = False,
+        limit: int = 50,
+    ) -> typing.Dict[str, typing.Any]:
+        """Proactive messages the screen has not shown yet (newest first)."""
+        from helpers.memory_db import all_notifications
+
+        return {
+            "notifications": all_notifications(
+                include_acknowledged=include_acknowledged,
+                limit=min(limit, 200),
+            )
+        }
+
+    @app.post("/api/notifications/{notification_id}/ack")
+    def ack_notification(notification_id: int) -> typing.Dict[str, str]:
+        from helpers.memory_db import acknowledge_notification
+
+        if not acknowledge_notification(notification_id):
+            raise HTTPException(
+                status_code=404, detail=f"No notification {notification_id}."
+            )
+        return {"status": "acknowledged"}
+
+    @app.post("/api/notifications/ack-all")
+    def ack_all_notifications() -> typing.Dict[str, int]:
+        from helpers.memory_db import acknowledge_all_notifications
+
+        return {"cleared": acknowledge_all_notifications()}
 
     @app.post("/api/chat/clear")
     def clear_chat() -> typing.Dict[str, str]:
@@ -397,91 +430,6 @@ def build_app() -> FastAPI:
         except Exception as e:
             logger.log_error(str(e), "web_wipe_data")
             raise HTTPException(status_code=500, detail=str(e))
-
-    @app.post("/api/ack")
-    async def play_ack() -> typing.Dict[str, bool]:
-        """Play the 'Yes?' acknowledgement chime through PC speakers."""
-        try:
-            from helpers.audio import Audio
-            Audio.play_cached("Yes?")
-        except Exception:
-            pass
-        return {"ok": True}
-
-    @app.post("/api/stt")
-    async def stt_from_audio(request: Request) -> typing.Dict[str, typing.Any]:
-        """Decode uploaded audio (webm/opus from MediaRecorder) → text via Whisper."""
-        data = await request.body()
-        if not data:
-            raise HTTPException(status_code=400, detail="No audio data received.")
-        try:
-            import tempfile
-
-            import numpy as np
-
-            # Decode via av (already bundled with faster-whisper)
-            import av
-
-            with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as tmp:
-                tmp.write(data)
-                tmp_path = tmp.name
-
-            try:
-                frames_by_rate: typing.Dict[int, typing.List[np.ndarray]] = {}
-                with av.open(tmp_path) as container:
-                    for frame in container.decode(audio=0):
-                        raw = frame.to_ndarray()
-                        channels = len(frame.layout.channels) if frame.layout else 1
-                        if np.issubdtype(raw.dtype, np.integer):
-                            raw = raw.astype(np.float32) / float(np.iinfo(raw.dtype).max)
-                        else:
-                            raw = raw.astype(np.float32)
-                        if raw.ndim > 1 and raw.shape[0] == channels and channels > 1:
-                            mono = raw.mean(axis=0)  # planar: (channels, samples)
-                        elif raw.ndim > 1:
-                            flat = raw.reshape(-1)
-                            mono = flat.reshape(-1, channels).mean(axis=1) if channels > 1 else flat
-                        else:
-                            mono = raw
-                        frames_by_rate.setdefault(int(frame.sample_rate), []).append(mono)
-                os.unlink(tmp_path)
-            except Exception:
-                try:
-                    os.unlink(tmp_path)
-                except Exception:
-                    pass
-                raise
-
-            if not frames_by_rate:
-                return {"text": ""}
-
-            # Resample each same-rate run to 16k, then concatenate. Using the
-            # frame's actual sample_rate (instead of assuming 48000) also
-            # fixes the silent failure mode where a browser encoding at a
-            # different rate got mislabeled and fed straight to Whisper.
-            from helpers import mic
-            chunks = [
-                mic.to_16k_mono_f32(np.concatenate(parts), rate)
-                for rate, parts in frames_by_rate.items()
-            ]
-            audio = chunks[0] if len(chunks) == 1 else np.concatenate(chunks)
-
-            if not np.all(np.isfinite(audio)):
-                return {
-                    "text": "",
-                    "warning": "Your browser microphone captured invalid audio — check the browser's mic permission and Windows input device.",
-                }
-            rms = float(np.sqrt(np.mean(np.square(audio)))) if len(audio) else 0.0
-            if rms < 1e-4:
-                return {
-                    "text": "",
-                    "warning": "Your browser microphone captured silence — check the browser's mic permission and Windows input device.",
-                }
-
-            from helpers.recognizer import transcribe
-            return {"text": transcribe(audio)}
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"STT failed: {e}")
 
     @app.get("/api/chat/history")
     def chat_history(limit: int = 50) -> typing.Dict[str, typing.Any]:
@@ -506,7 +454,7 @@ def build_app() -> FastAPI:
 
         Streams deltas back to the requesting client only, then broadcasts the
         completed turn (with session_id) to all connected clients so other tabs
-        and the voice UI stay in sync without a separate SSE connection.
+        stay in sync without a separate SSE connection.
         """
         import queue as _queue
         import threading as _threading
@@ -527,10 +475,13 @@ def build_app() -> FastAPI:
 
         def _run() -> None:
             from helpers.conversation import Conversation
-            from helpers.logger import logger
+            from helpers.turn import run_turn
 
             try:
-                result = _run_web_turn(message, on_text=lambda c: q.put(("delta", c)))
+                result = run_turn(message, on_text=lambda c: q.put(("delta", c)))
+                if result.error is not None:
+                    q.put(("error", result.error))
+                    return
 
                 safe_calls = _sanitize_calls(result.calls)
                 # emit=False: we broadcast ourselves below with session_id included
@@ -542,15 +493,6 @@ def build_app() -> FastAPI:
                     "calls": safe_calls,
                     "ts": _dt.now().isoformat(timespec="seconds"),
                 }))
-            except Exception as e:
-                logger.log_error(str(e), "ws_chat")
-                classified = _classify_api_error(e)
-                if classified:
-                    user_msg, hint = classified
-                    _emit_api_diagnostic(user_msg, hint)
-                    q.put(("error", user_msg))
-                else:
-                    q.put(("error", str(e)))
             finally:
                 q.put(None)
 
@@ -592,7 +534,7 @@ def build_app() -> FastAPI:
         finally:
             _ws_clients.discard(ws)
 
-    _dist = os.path.join(os.path.dirname(os.path.dirname(__file__)), "web", "dist")
+    _dist = os.path.join(os.path.dirname(os.path.dirname(__file__)), "kiosk", "dist")
 
     if os.path.isdir(_dist):
         _assets = os.path.join(_dist, "assets")
@@ -607,7 +549,16 @@ def build_app() -> FastAPI:
                 return JSONResponse({"detail": "Not found"}, status_code=404)
             index = os.path.join(_dist, "index.html")
             if os.path.isfile(index):
-                return FileResponse(index)
+                # no-cache means "revalidate every time", not "never store".
+                # Without it the browser only has ETag and Last-Modified, so it
+                # falls back to heuristic freshness and may serve this shell
+                # from disk without asking — which pins the screen to whichever
+                # hashed bundle it named when it was cached. Rebuilding and
+                # restarting the service would then change nothing visible,
+                # because the stale shell is the thing choosing the bundle.
+                # The bundles themselves are content-hashed, so they are safe
+                # to cache; only this file must never go stale.
+                return FileResponse(index, headers={"Cache-Control": "no-cache"})
             return JSONResponse({"detail": "Not found"}, status_code=404)
 
     return app

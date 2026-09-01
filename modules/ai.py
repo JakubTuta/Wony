@@ -1,7 +1,6 @@
 import typing
 
 import anthropic
-import numpy as np
 import ollama
 from google import genai
 from google.genai import types as genai_types
@@ -638,79 +637,3 @@ class AI:
             f"From indexed documents (top {len(results)} chunk(s)):\n\n"
             + "\n\n".join(blocks)
         )
-
-    def explain_screenshot(
-        self,
-        user_input: str,
-        screenshot: np.ndarray,
-    ) -> str:
-        assistant_instructions = (
-            _persona()
-            + " You are tasked with explaining what is shown in the screenshot."
-            " If there is highlighted or selected text, focus on that text and explain its meaning or context."
-            " If there is no highlighted text, describe what the screenshot shows: the application, content, and any"
-            " notable elements visible."
-            " Reply in plain prose, 1-3 sentences. Be direct and specific — avoid vague descriptions."
-        )
-
-        try:
-            response = helpers_model.send_message(
-                client=self.client,
-                message=user_input,
-                system_instructions=assistant_instructions,
-                image=screenshot,
-            )
-        except Exception:
-            return "Error: Could not retrieve an answer."
-
-        answer = helpers_model.get_text_from_response(response)
-        if answer is None:
-            return "Error: Could not retrieve an answer."
-
-        return answer
-
-    def find_text_in_screenshot(
-        self,
-        screenshot: np.ndarray,
-        text: str,
-    ) -> typing.Optional[typing.List[float]]:
-        assistant_instructions = (
-            _persona()
-            + " Your only task is to locate the specified text in the screenshot and return its bounding box."
-            " Output ONLY a JSON array in the format [ymin, xmin, ymax, xmax] with values normalized to 0-1000."
-            " Example: [120, 340, 180, 620]"
-            " Do not include any explanation, label, or extra text — just the array."
-            " If the text is not visible in the screenshot, output exactly: [0, 0, 0, 0]"
-        )
-
-        try:
-            response = helpers_model.send_message(
-                client=self.client,
-                message=text,
-                system_instructions=assistant_instructions,
-                image=screenshot,
-            )
-        except Exception:
-            return None
-
-        answer = helpers_model.get_text_from_response(response)
-        if answer is None:
-            return None
-
-        try:
-            import ast
-
-            clean = answer.strip()
-            if clean.startswith("```"):
-                clean = clean.split("\n", 1)[-1] if "\n" in clean else clean[3:]
-            if clean.endswith("```"):
-                clean = clean[:-3]
-            clean = clean.strip()
-            coordinates = ast.literal_eval(clean)
-
-            if not isinstance(coordinates, list) or len(coordinates) != 4:
-                raise ValueError("Couldn't find the text in the screenshot.")
-
-            return coordinates
-        except Exception:
-            raise ValueError("Couldn't find the text in the screenshot.")

@@ -15,17 +15,9 @@ modules that are already set up — only the newly checked ones get installed.
 Stdlib only. The feature menu is a scrollable arrow-key checklist (space to
 toggle, enter to confirm); on a non-interactive terminal it falls back to a
 numeric toggle prompt.
-
-    python setup.py wakeword
-
-Separate guided flow for training a custom wake word (see training/). Picks
-a phrase, optionally records real samples of you saying it, and wires
-config.yaml — the actual (multi-hour, WSL/Colab) training step still runs on
-its own.
 """
 
 import os
-import re
 import subprocess
 import sys
 
@@ -77,32 +69,13 @@ ALWAYS_ON = ["ai", "status", "basics"]
 # default, description, external setup still needed.
 FEATURES = [
     {
-        "key": "voice",
-        "label": "Voice I/O (speech recognition + text-to-speech)",
-        "reqs": ["voice.txt"],
-        "module": None,
-        "default": False,
-        "desc": "Talk to Wony and hear replies. Whisper STT + Kokoro TTS.",
-        "needs": "Downloads ~hundreds of MB of models on first run. NVIDIA GPU auto-accelerated; CPU otherwise.",
-    },
-    {
-        "key": "wakeword",
-        "label": "Wake word — hands-free 'hey jarvis'",
-        "reqs": ["wakeword.txt"],
-        "module": None,
-        "default": False,
-        "desc": "Start a conversation by voice with no key press.",
-        "needs": "Requires Voice I/O. Built-in phrase works immediately; for your own "
-        "phrase run: python setup.py wakeword",
-    },
-    {
-        "key": "tray",
-        "label": "System tray + web chat UI (recommended run mode)",
-        "reqs": ["tray.txt", "server.txt"],
+        "key": "kiosk",
+        "label": "Kiosk — the touch screen UI and web API (recommended run mode)",
+        "reqs": ["server.txt"],
         "module": None,
         "default": True,
-        "desc": "Run Wony in the background with a tray icon and a browser chat UI.",
-        "needs": "Start with: python wony.py   (then open the web UI URL it prints).",
+        "desc": "Run Wony as a screen: tap tiles, type on the on-screen keyboard.",
+        "needs": "Start with: python wony.py   (then open the URL it prints).",
     },
     {
         "key": "weather",
@@ -162,39 +135,12 @@ FEATURES = [
     },
     {
         "key": "google_accounts",
-        "label": "Multiple Google accounts",
+        "label": "Google account manager",
         "reqs": [],
         "module": "google_accounts",
         "default": False,
-        "desc": "Manage more than one Google account for Gmail/Calendar.",
+        "desc": "Add, sign in to and switch Google accounts from the screen.",
         "needs": "Builds on Gmail/Calendar — enable one of those too.",
-    },
-    {
-        "key": "screen",
-        "label": "Screen capture + OCR",
-        "reqs": ["screen.txt"],
-        "module": "screen",
-        "default": False,
-        "desc": "Screenshot the screen and extract text.",
-        "needs": "easyocr downloads OCR models (~tens of MB) on first use.",
-    },
-    {
-        "key": "desktop",
-        "label": "Desktop control (apps, windows, clipboard)",
-        "reqs": ["desktop.txt"],
-        "module": "desktop",
-        "default": False,
-        "desc": "Open apps, manage windows, read/write clipboard, open files.",
-        "needs": "Actions off until modules.desktop.allow_actions: true.",
-    },
-    {
-        "key": "league",
-        "label": "League of Legends stats",
-        "reqs": ["automation.txt"],
-        "module": "league",
-        "default": False,
-        "desc": "Player stats and match history.",
-        "needs": "",
     },
     {
         "key": "home_assistant",
@@ -225,32 +171,18 @@ FEATURES = [
         "desc": "Smarter long-term memory recall using embeddings (fastembed).",
         "needs": "",
     },
-    {
-        "key": "shazam",
-        "label": "Song recognition (Shazam)",
-        "reqs": ["shazam.txt"],
-        "module": None,
-        "default": False,
-        "desc": "Identify the song currently playing.",
-        "needs": "",
-    },
 ]
 
 # Representative import per feature — used to detect what's already installed.
 PROBE = {
-    "voice": "kokoro_onnx",
-    "wakeword": "openwakeword",
-    "tray": "pystray",
+    "kiosk": "uvicorn",
     "weather": "geocoder",
     "web": "duckduckgo_search",
     "scheduler": "apscheduler",
     "gmail": "simplegmail",
     "calendar": "googleapiclient",
-    "screen": "mss",
-    "desktop": "pyautogui",
     "mcp": "mcp",
     "semantic": "fastembed",
-    "shazam": "shazamio",
 }
 
 
@@ -450,9 +382,6 @@ def _select_numeric(selected, detected):
 
 def _finalize(selected):
     keys = {k for k, v in selected.items() if v}
-    if "wakeword" in keys and "voice" not in keys:
-        print(c("\n  ! Wake word needs Voice I/O — adding it too.", "33"))
-        keys.add("voice")
     return [f for f in FEATURES if f["key"] in keys]
 
 
@@ -489,7 +418,7 @@ def choose_env():
 
 
 def ensure_dirs():
-    for d in ("credentials", "models", "logs"):
+    for d in ("credentials", "logs"):
         p = os.path.join(ROOT, d)
         if not os.path.isdir(p):
             os.makedirs(p, exist_ok=True)
@@ -547,61 +476,6 @@ def ensure_config():
     return True, True
 
 
-def set_media_pause_enabled(value):
-    """Flip voice.media_pause.enabled in config.yaml. Stdlib-only line edit
-    (matches apply_enabled_modules() below) rather than pulling in a YAML
-    library just for this."""
-    if not os.path.exists(CONFIG):
-        return
-    with open(CONFIG, "r", encoding="utf-8") as fh:
-        lines = fh.readlines()
-    base_indent = None
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if base_indent is None:
-            if stripped == "media_pause:":
-                base_indent = len(line) - len(line.lstrip())
-            continue
-        if stripped == "":
-            continue
-        indent = len(line) - len(line.lstrip())
-        if indent <= base_indent:
-            break  # left the media_pause: block without finding enabled:
-        if stripped.startswith("enabled:"):
-            pad = line[:indent]
-            lines[i] = f"{pad}enabled: {'true' if value else 'false'}\n"
-            with open(CONFIG, "w", encoding="utf-8") as fh:
-                fh.writelines(lines)
-            return
-
-
-def ask_media_pause(chosen):
-    """One-time prompt: should Wony pause other apps' media (Spotify, browser
-    tabs, ...) while it talks or listens? Windows-only capability (System
-    Media Transport Controls) — skip asking on other platforms, where it's
-    always a no-op regardless of the config value."""
-    if os.name != "nt":
-        return
-    if not any(f["key"] == "voice" for f in chosen):
-        return
-    print(
-        c(
-            "\n  Pause other apps' media (Spotify, browser tabs, ...) while Wony talks or listens?",
-            "1",
-        )
-    )
-    print(
-        c(
-            "  Resumes automatically after. Change later via voice.media_pause.enabled in config.yaml.",
-            "90",
-        )
-    )
-    ans = input("  Enable? [Y/n] ").strip().lower()
-    if ans in ("n", "no"):
-        set_media_pause_enabled(False)
-        print(c("  . media pause disabled.", "90"))
-
-
 def _line_key(line):
     """(indent, key) for a `key: value` / `key:` line, else None (blank/comment)."""
     stripped = line.rstrip("\n").strip()
@@ -630,112 +504,6 @@ def _find_key(lines, key, indent, start, end):
             return i
     return None
 
-
-def set_wake_word_config(phrase, model_path, threshold=0.5):
-    """Write voice.wake_word.{enabled,phrase,model_path,threshold} into
-    config.yaml, inserting the block if missing — it ships absent from
-    config.example.yaml since wake word is opt-in (see Config philosophy in
-    CLAUDE.md: not a setting a first-time user needs to see)."""
-    if not os.path.exists(CONFIG):
-        return
-    with open(CONFIG, "r", encoding="utf-8") as fh:
-        lines = fh.readlines()
-
-    voice_i = _find_key(lines, "voice", 0, 0, len(lines))
-    if voice_i is None:
-        print(
-            c(
-                "  ! No 'voice:' section in config.yaml — add wake word settings manually.",
-                "33",
-            )
-        )
-        return
-    voice_end = _block_end(lines, voice_i, 0)
-
-    wanted = {
-        "enabled": "true",
-        "phrase": f'"{phrase}"',
-        "model_path": f'"{model_path}"',
-        "threshold": str(threshold),
-    }
-
-    ww_i = _find_key(lines, "wake_word", 2, voice_i + 1, voice_end)
-    if ww_i is None:
-        block = ["  wake_word:\n"] + [f"    {k}: {v}\n" for k, v in wanted.items()]
-        lines[voice_end:voice_end] = block
-    else:
-        ww_end = _block_end(lines, ww_i, 2)
-        for key, value in wanted.items():
-            k_i = _find_key(lines, key, 4, ww_i + 1, ww_end)
-            line = f"    {key}: {value}\n"
-            if k_i is not None:
-                lines[k_i] = line
-            else:
-                lines.insert(ww_end, line)
-                ww_end += 1
-
-    with open(CONFIG, "w", encoding="utf-8") as fh:
-        fh.writelines(lines)
-    print(c(f'  ✓ voice.wake_word.phrase = "{phrase}" in config.yaml', "32"))
-
-
-def cmd_wakeword():
-    """Guided flow for a custom wake word: pick a phrase, optionally record
-    real samples of it, wire config.yaml, print the training command. The
-    multi-hour training itself always runs separately (WSL/Colab) — this
-    only handles the parts that are quick and local."""
-    import importlib.util
-
-    print(c("\n  Custom wake word", "1;36"))
-    print("  " + "-" * 50)
-    if (
-        importlib.util.find_spec("sounddevice") is None
-        or importlib.util.find_spec("openwakeword") is None
-    ):
-        print(c("  Voice I/O + Wake word aren't installed yet.", "33"))
-        print("  Run 'python setup.py', select them, then come back to this command.")
-        return
-
-    phrase = input("  Phrase to train [hey wony]: ").strip() or "hey wony"
-    stem = re.sub(r"[^a-z0-9]+", "_", phrase.lower()).strip("_") or "wake_word"
-
-    print(
-        c("\n  Recording yourself saying it (optional, but the single best thing", "1")
-    )
-    print("  you can do for accuracy — training also works with none at all).")
-    count = input("  How many clips to record now? [15, 0 to skip]: ").strip()
-    count = int(count) if count.isdigit() else 15
-    if count > 0:
-        subprocess.call(
-            [
-                sys.executable,
-                os.path.join(ROOT, "training", "record_wake_word.py"),
-                phrase,
-                "--count",
-                str(count),
-            ]
-        )
-
-    set_wake_word_config(phrase, model_path=f"models/{stem}.onnx", threshold=0.5)
-
-    print(
-        c(
-            "\n  Next: train the model (see training/train_hey_wony.sh header comment,",
-            "1",
-        )
-    )
-    print(c("  or the notebook, for the full walkthrough):", "1"))
-    print(
-        f'    1. Set WAKE_PHRASE = "{phrase}" at the top of the training script/notebook.'
-    )
-    print("    2. WSL:   bash /mnt/d/Projekty/Wony/training/train_hey_wony.sh")
-    print(
-        "       Colab: open training/train_hey_wony.ipynb, Runtime -> GPU, run all cells."
-    )
-    print(
-        f"  Recorded clips and config.yaml are already in place. Model lands at models/{stem}.onnx."
-    )
-    print("  When it's done: python wony.py doctor")
 
 
 def apply_enabled_modules(chosen):
@@ -805,24 +573,6 @@ def install(chosen, detected):
             if run_pip(["-r", os.path.join(REQ, rf)]) != 0:
                 print(c(f"  ✗ {rf} failed — continuing.", "31"))
 
-    _ensure_gpu_onnxruntime(chosen, new)
-    _ensure_wony_exe()
-
-    # Download Kokoro (TTS) + faster-whisper (STT) model files once here, then
-    # pre-render cached voice clips. Downloading now (interactive terminal,
-    # visible progress) means the runtime path loads with local_files_only=True
-    # and never touches the network again — see helpers/recognizer.py.
-    if any(f["key"] == "voice" for f in new):
-        for script in (
-            "download_kokoro.py",
-            "download_whisper.py",
-            "render_voice_clips.py",
-        ):
-            path = os.path.join(ROOT, "scripts", script)
-            if os.path.exists(path):
-                print(c(f"\n  Running {script}...", "1;36"))
-                subprocess.call([sys.executable, path])
-
 
 def _dist_installed(name):
     import importlib.metadata
@@ -833,81 +583,6 @@ def _dist_installed(name):
     except importlib.metadata.PackageNotFoundError:
         return False
 
-
-def _has_nvidia_gpu():
-    import shutil
-
-    return shutil.which("nvidia-smi") is not None
-
-
-def _ensure_wony_exe():
-    """Copy pythonw.exe → Wony.exe so Task Manager shows the process as 'Wony'."""
-    scripts = os.path.join(VENV_DIR, "Scripts")
-    src = os.path.join(scripts, "pythonw.exe")
-    dst = os.path.join(scripts, "Wony.exe")
-    if not os.path.isfile(src):
-        return
-    if os.path.isfile(dst):
-        return  # already done
-    try:
-        import shutil
-
-        shutil.copy2(src, dst)
-        print(c("  ✓ created venv/Scripts/Wony.exe (process display name)", "32"))
-    except Exception as e:
-        print(c(f"  ! Could not create Wony.exe: {e}", "33"))
-
-
-_ORT_GPU_SPEC = "onnxruntime-gpu<1.27"
-
-
-def _ensure_gpu_onnxruntime(chosen, new):
-    """Keep the GPU onnxruntime build when it makes sense; CPU everywhere else.
-
-    Other feature requirements (wakeword, semantic, screen) pull the plain CPU
-    `onnxruntime` package, which clobbers `onnxruntime-gpu`'s provider. When
-    voice is selected on a CUDA machine, reinstall the GPU build whenever the
-    CPU package has crept in. macOS has no CUDA build at all — never touch it.
-    """
-    if sys.platform == "darwin":
-        return
-    voice_selected = any(f["key"] == "voice" for f in chosen)
-    if not voice_selected:
-        return
-
-    if not _has_nvidia_gpu():
-        if any(f["key"] == "voice" for f in new):
-            print(
-                c(
-                    "  . No NVIDIA GPU detected — voice will run on CPU "
-                    "(fully supported, just slower).",
-                    "90",
-                )
-            )
-        return
-
-    voice_new = any(f["key"] == "voice" for f in new)
-    cpu_clobber = _dist_installed("onnxruntime") and _dist_installed("onnxruntime-gpu")
-    if not voice_new and not cpu_clobber:
-        return
-
-    print(c("\n  Securing GPU onnxruntime build...", "1;36"))
-    subprocess.call(
-        [
-            sys.executable,
-            "-m",
-            "pip",
-            "uninstall",
-            "-y",
-            "onnxruntime",
-            "onnxruntime-gpu",
-        ]
-    )
-    if run_pip(["--no-deps", _ORT_GPU_SPEC]) != 0:
-        print(
-            c("  ✗ onnxruntime-gpu install failed — falling back to CPU build.", "31")
-        )
-        run_pip(["onnxruntime"])
 
 
 def verify_install(chosen):
@@ -972,14 +647,24 @@ def next_steps(chosen, use_venv):
         print("  2. Per-feature setup still required:")
         for label, need in notes:
             print(f"     • {c(label, '1')}: {need}")
+    step = 3 if notes else 2
+    # The touch UI is a built artifact, and skipping the build is silent: the
+    # API answers fine and the display shows nothing at all.
+    if any(f["key"] == "kiosk" for f in chosen) and not os.path.isfile(
+        os.path.join(ROOT, "kiosk", "dist", "index.html")
+    ):
+        print(f"  {step}. Build the screen:  cd kiosk && npm install && npm run build")
+        step += 1
+
     py = os.path.relpath(sys.executable, ROOT) if use_venv else "python"
-    print(c("\n  3. Validate:  ", "1") + f"{py} wony.py doctor")
+    print(c(f"\n  {step}. Validate:  ", "1") + f"{py} wony.py doctor")
     run = (
         f"{py} wony.py"
-        if any(f["key"] == "tray" for f in chosen)
+        if any(f["key"] == "kiosk" for f in chosen)
         else f"{py} wony.py text"
     )
     print(c("     Start:     ", "1") + run)
+    print(c("     At boot:   ", "1") + f"{py} wony.py autostart install")
     print()
 
 
@@ -987,10 +672,6 @@ def next_steps(chosen, use_venv):
 
 
 def main():
-    if len(sys.argv) > 1 and sys.argv[1] == "wakeword":
-        cmd_wakeword()
-        return
-
     print(c("\n  Wony setup", "1;36"))
     print("  " + "-" * 50)
     print(f"  Python {sys.version.split()[0]}  ({sys.executable})")
@@ -1036,8 +717,6 @@ def main():
 
     install(chosen, detected)
     apply_enabled_modules(chosen)
-    if config_fresh:
-        ask_media_pause(chosen)
     verify_install(chosen)
     write_marker(use_venv)
     next_steps(chosen, use_venv)

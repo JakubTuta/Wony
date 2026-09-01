@@ -1,4 +1,3 @@
-import importlib.util
 import typing
 
 from helpers.registry import ModuleStatus, ServiceRegistry
@@ -27,7 +26,7 @@ def _status_lines() -> typing.Tuple[typing.List[str], typing.List[str]]:
     return ready, problems
 
 
-def print_startup_summary(voice_mode: bool = False) -> None:
+def print_startup_summary() -> None:
     """Print a brief health summary to stdout at startup."""
     from helpers.model import describe_readiness
 
@@ -60,27 +59,5 @@ def print_startup_summary(voice_mode: bool = False) -> None:
         except Exception:
             pass
 
-    if voice_mode:
-        missing_voice = _check_voice_deps()
-        if missing_voice:
-            print(f"  ✗ Voice: missing pip packages: {', '.join(missing_voice)}")
-            print("    Fix: pip install -r requirements/voice.txt")
-            try:
-                from helpers.diagnostics import add as diag
-                diag(
-                    "error",
-                    "Voice",
-                    f"Missing pip packages: {', '.join(missing_voice)}",
-                    hint="Run: pip install -r requirements/voice.txt",
-                )
-            except Exception:
-                pass
-        else:
-            print("  ✓ Voice: dependencies present.")
-
     print("  Type 'help' for commands, 'check setup' for full diagnostics.")
 
-
-def _check_voice_deps() -> typing.List[str]:
-    required = ["kokoro_onnx", "espeakng_loader", "sounddevice", "soundfile", "soxr", "faster_whisper", "pynput"]
-    return [m for m in required if importlib.util.find_spec(m) is None]

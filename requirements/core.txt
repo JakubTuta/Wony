@@ -9,7 +9,6 @@ requests
 apscheduler>=3.10
 dateparser>=1.2
 numpy
-Pillow
 anthropic
 google-genai
 ollama

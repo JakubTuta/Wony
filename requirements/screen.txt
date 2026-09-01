@@ -1,3 +1,0 @@
-# Screen capture and OCR dependencies (screen module).
-mss
-easyocr

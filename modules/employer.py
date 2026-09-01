@@ -1,35 +1,14 @@
 import sys
-import threading
 import typing
 
-from helpers.agent import run_agent
-from helpers.audio import Audio
-from helpers.cache import Cache
 from helpers.conversation import Conversation
-from helpers.decorators import begin_tool_outcomes, capture_response, set_agent_active, turn_is_quiet_success, turn_wants_one_message
+from helpers.decorators import capture_response
 from helpers.events import session_cancel
 from helpers.jobs import BackgroundJobs
 from helpers.logger import logger
-from helpers.recognizer import Recognizer
 from helpers.registry import ServiceRegistry, register_job
-from modules.ai import AI, build_agent_system_prompt
-
-
-
-# Wall-clock backstop for one voice turn (LLM + tool calls). Checked between
-# agent steps and before each tool call — not a hard preempt of a call already
-# in flight, which is what the AI client / helpers.net timeouts are for.
-_TURN_TIMEOUT_SECONDS = 90.0
-
-# How many tool calls the agent may chain before it has to answer. Deep enough
-# for the real chains ("read that email, then put it in my calendar"), shallow
-# enough that a confused model can't spend a minute looping.
-MAX_AGENT_STEPS = 5
-
-# Say "one moment" if no narration has started by this point, so a slow tool
-# call doesn't leave the user in silence wondering if anything happened.
-# 0 disables the cue.
-_THINKING_CUE_SECONDS = 6.0
+from helpers.turn import run_turn
+from modules.ai import AI
 
 
 class Employer:
@@ -40,151 +19,29 @@ class Employer:
     def __init__(self) -> None:
         self.service_instances = {}
         self.ai_model = AI()
-        self._last_paused_sentences: typing.List[str] = []
 
     @staticmethod
     def set_exit_hook(callback: typing.Callable) -> None:
-        """Register a callback invoked by the exit job instead of sys.exit (tray mode)."""
+        """Register a callback invoked by the exit job instead of sys.exit."""
         Employer._exit_hook = callback
-
-    def speak(self) -> None:
-        first_text = str(Recognizer.recognize_speech_from_mic())
-        if not first_text:
-            logger.log_system_event(
-                "speech_recognition_failed", "No speech detected or recognized"
-            )
-            if not session_cancel.is_set():
-                msg = "Sorry, I couldn't process that." if Recognizer.last_call_failed else "I didn't catch that."
-                Audio.play_cached(msg)
-            return
-        self.converse(first_text=first_text)
-
-    def handle_utterance(self, text: str) -> None:
-        """Process a transcribed speech utterance (called by wake word and push-to-talk paths)."""
-        if not text:
-            return
-        self.converse(first_text=text)
-
-    def converse(self, first_text: typing.Optional[str] = None) -> None:
-        """Run a continuous voice conversation until silence or a stop phrase.
-
-        Each turn: log utterance → run job → speak → listen for follow-up.
-        With barge-in enabled: any speech during TTS playback stops playback immediately;
-        the interruption is transcribed and branched: empty/resume-phrase → resume remaining
-        text; stop phrase → end; real command → process as new turn.
-        """
-        from helpers.cache import Cache
-        from helpers.config import Config
-
-        audio = Cache.get_audio()
-        cfg = Config.get("voice.conversation", {}) or {}
-        enabled = bool(cfg.get("enabled", True))
-
-        # Non-audio or conversation disabled: single-turn behaviour
-        if not audio or not enabled:
-            if first_text:
-                logger.log_user_input(first_text, "speech")
-                self.job_on_command(first_text)
-            return
-
-        stt_cfg = Config.get("voice.stt", {}) or {}
-        clarify_timeout = float(stt_cfg.get("start_timeout", 4.0))
-        follow_up_timeout = float(cfg.get("follow_up_timeout", 3.0))
-        stop_phrases = [
-            "thanks",
-            "thank you",
-            "that's all",
-            "thats all",
-            "that's it",
-            "thats it",
-            "never mind",
-            "nevermind",
-            "stop",
-            "done",
-            "goodbye",
-            "shut up",
-        ]
-
-        barge_in_enabled = bool(Config.get("voice.barge_in.enabled", False))
-        resume_phrases = ["continue", "go on", "keep going", "go ahead"]
-
-        text = first_text
-        while text:
-            if self._is_stop_phrase(text, stop_phrases):
-                break
-
-            logger.log_user_input(text, "speech")
-
-            if barge_in_enabled:
-                interrupt_event = threading.Event()
-                from helpers.audio import BargeinListener
-                listener = BargeinListener(interrupt_event)
-                listener.start()
-                try:
-                    response = self.job_on_command(text, interrupt_event=interrupt_event)
-                finally:
-                    listener.stop()
-
-                paused = list(self._last_paused_sentences)
-                self._last_paused_sentences = []
-
-                if interrupt_event.is_set() and paused:
-                    # Transcribe what interrupted
-                    interruption = str(
-                        Recognizer.recognize_speech_from_mic(start_timeout=2.0)
-                    ).strip()
-                    norm = interruption.lower().rstrip(".,!?")
-
-                    if not norm or norm in resume_phrases:
-                        # Resume: speak the remaining sentences
-                        Audio.text_to_speech(" ".join(paused))
-                        # Fall through to normal follow-up listen
-                    elif self._is_stop_phrase(interruption, stop_phrases):
-                        break
-                    else:
-                        # Genuine new command — process as next turn
-                        text = interruption
-                        continue
-            else:
-                response = self.job_on_command(text)
-
-            if session_cancel.is_set():
-                break  # deliberate stop mid-turn — don't keep listening for a follow-up
-
-            if turn_wants_one_message():
-                break  # a one_message job ran (e.g. play a song) — one action, done
-
-            # Choose next listen timeout based on whether assistant asked a question
-            if self._is_question(response):
-                next_timeout = clarify_timeout
-            else:
-                next_timeout = follow_up_timeout
-
-            text = str(Recognizer.recognize_speech_from_mic(start_timeout=next_timeout))
-
-    @staticmethod
-    def _is_question(response: typing.Optional[str]) -> bool:
-        if not response:
-            return False
-        return response.strip().endswith("?")
-
-    @staticmethod
-    def _is_stop_phrase(text: str, stop_phrases: typing.List[str]) -> bool:
-        normalized = text.lower().strip().rstrip(".,!?")
-        return normalized in stop_phrases
 
     def job_on_command(
         self,
         user_input: str,
-        interrupt_event: typing.Optional[threading.Event] = None,
+        on_text: typing.Optional[typing.Callable[[str], None]] = None,
     ) -> typing.Optional[str]:
+        """Run one command and return the answer.
+
+        on_text receives the reply in streamed chunks; the default writes them
+        to stdout for the console REPL. The answer reaches the caller through
+        on_text as it arrives, so this never re-prints it afterwards.
+        """
         if not user_input or not user_input.strip():
             return None
         if session_cancel.is_set():
             return None
 
         self._refresh_available_jobs()
-        self._last_paused_sentences = []
 
         # Fast path: exact command match (e.g. "help", "exit")
         if (function := self._check_if_user_input_is_command(user_input)) is not None:
@@ -202,173 +59,28 @@ class Employer:
             Conversation.record_turn(user_input, result_str)
             return result_str
 
-        from helpers.decorators import agent_lock
-
-        system_prompt = build_agent_system_prompt()
-
-        # Always stream the model's reply. Audio mode pipes deltas into the TTS
-        # pipeline (speech starts on the first sentence); console mode writes
-        # them to stdout as they arrive. Either way the full answer reaches the
-        # user through on_text — job_on_command never re-emits it afterwards.
-        audio = Cache.get_audio()
-
-        tts_queue = None
-        tts_thread = None
-        tts_result: typing.Dict[str, typing.Any] = {}
-        on_text = None
-
-        if audio:
-            import queue as _queue
-
-            from helpers.audio import stream_text_to_speech
-
-            tts_queue = _queue.Queue()
-
-            def _tts_worker() -> None:
-                def _chunks():
-                    while True:
-                        item = tts_queue.get()
-                        if item is None:
-                            return
-                        yield item
-
-                from helpers.events import emit_state
-                emit_state("speaking")
-                try:
-                    tts_result["value"] = stream_text_to_speech(_chunks(), interrupt_event)
-                finally:
-                    emit_state("idle")
-
-            tts_thread = threading.Thread(target=_tts_worker, daemon=True, name="tts-stream")
-            tts_thread.start()
-
-            first_chunk_seen = threading.Event()
-
-            def on_text(chunk: str) -> None:
-                first_chunk_seen.set()
-                # Drop speech (not the narration text itself — that's still
-                # recorded/returned/shown in web) once the turn is a deliberate
-                # cancel or a quiet-on-success tool outcome (e.g. "pause") that
-                # doesn't need a spoken confirmation on top of the audible change.
-                if session_cancel.is_set() or turn_is_quiet_success():
-                    return
-                tts_queue.put(chunk)
-        else:
+        streaming_to_console = on_text is None
+        if streaming_to_console:
             def on_text(chunk: str) -> None:
                 sys.stdout.write(chunk)
                 sys.stdout.flush()
 
-        # agent_lock serializes concurrent agent runs (wake word + web /api/chat)
-        _agent_err: typing.Optional[Exception] = None
-        from helpers.events import emit_state
-        emit_state("thinking")
+        result = run_turn(user_input, on_text=on_text)
 
-        # A long tool call (web search, a slow API) can leave the user in
-        # silence wondering if anything is happening — a one-shot spoken cue
-        # if no narration has started by the deadline reassures them without
-        # interrupting a fast reply.
-        thinking_timer: typing.Optional[threading.Timer] = None
-        if audio and _THINKING_CUE_SECONDS > 0:
-            def _thinking_cue() -> None:
-                if not first_chunk_seen.is_set() and not session_cancel.is_set():
-                    Audio.play_cached("One moment.")
-            thinking_timer = threading.Timer(_THINKING_CUE_SECONDS, _thinking_cue)
-            thinking_timer.daemon = True
-            thinking_timer.start()
+        if result.error is not None:
+            if streaming_to_console:
+                print(result.error)
+            return result.error
 
-        # Wall-clock backstop for the whole turn — checked between agent steps
-        # and before each tool call (helpers/agent.py), not a hard preempt of
-        # an already-in-flight blocking call. That's what the LLM client and
-        # helpers/net.py timeouts are for; this catches the rest (e.g. a slow
-        # multi-page tool loop). A separate event from session_cancel because
-        # session_cancel silently suppresses speech (deliberate "stop"), while
-        # a timeout should still say something.
-        turn_timed_out = threading.Event()
-        turn_timer: typing.Optional[threading.Timer] = None
-        if _TURN_TIMEOUT_SECONDS > 0:
-            turn_timer = threading.Timer(_TURN_TIMEOUT_SECONDS, turn_timed_out.set)
-            turn_timer.daemon = True
-            turn_timer.start()
+        if streaming_to_console:
+            if result.timed_out:
+                # Nothing was streamed — the model never produced an answer.
+                print(result.text)
+            elif result.text:
+                print()  # newline after the streamed console line
 
-        class _TurnCancel:
-            @staticmethod
-            def is_set() -> bool:
-                return session_cancel.is_set() or turn_timed_out.is_set()
-
-        with agent_lock:
-            set_agent_active(True)
-            begin_tool_outcomes()
-            try:
-                agent_result = run_agent(
-                    client=self.ai_model.client,
-                    user_input=user_input,
-                    available_jobs=self.available_jobs,
-                    system_instructions=system_prompt,
-                    history=Conversation.get_messages(),
-                    max_steps=MAX_AGENT_STEPS,
-                    on_text=on_text,
-                    cancel_event=_TurnCancel(),
-                )
-            except Exception as _e:
-                _agent_err = _e
-            finally:
-                set_agent_active(False)
-                if thinking_timer is not None:
-                    thinking_timer.cancel()
-                if turn_timer is not None:
-                    turn_timer.cancel()
-                if tts_queue is not None:
-                    tts_queue.put(None)
-
-        if _agent_err is not None:
-            if tts_thread is not None:
-                tts_thread.join()
-            from helpers.errors import classify_api_error, emit_api_diagnostic
-            import helpers.diagnostics
-            classified = classify_api_error(_agent_err)
-            if classified:
-                err_msg, hint = classified
-                emit_api_diagnostic(err_msg, hint)
-            else:
-                err_msg = f"Something went wrong: {_agent_err}"
-                helpers.diagnostics.add("error", "AI", err_msg)
-            if audio:
-                Audio.text_to_speech(err_msg)
-            else:
-                print(err_msg)
-            return err_msg
-
-        if turn_timed_out.is_set() and not agent_result.text:
-            if tts_thread is not None:
-                tts_thread.join()
-            import helpers.diagnostics
-            helpers.diagnostics.add(
-                "warning", "AI",
-                f"Turn exceeded {_TURN_TIMEOUT_SECONDS:.0f}s — aborted.",
-            )
-            fallback = ""
-            for call in reversed(agent_result.calls):
-                result = (call.get("result") or "").strip()
-                if result:
-                    fallback = result
-                    break
-            timeout_msg = fallback or "Sorry, that took too long — I'm stopping there."
-            if audio:
-                Audio.text_to_speech(timeout_msg)
-            else:
-                print(timeout_msg)
-            Conversation.record_turn(user_input, timeout_msg, calls=agent_result.calls)
-            return timeout_msg
-
-        if tts_thread is not None:
-            tts_thread.join()
-            _, paused = tts_result.get("value", ("", []))
-            self._last_paused_sentences = paused
-        elif agent_result.text:
-            print()  # newline after the streamed console line
-
-        Conversation.record_turn(user_input, agent_result.text, calls=agent_result.calls)
-        return agent_result.text
+        Conversation.record_turn(user_input, result.text, calls=result.calls)
+        return result.text
 
     @register_job
     @capture_response
@@ -487,13 +199,9 @@ class Employer:
         Returns:
             None
         """
-        audio = Cache.get_audio()
-        if audio:
-            Audio.play_cached("Exiting program. o7")
-        else:
-            # SystemExit below bypasses capture_response's normal print path —
-            # without this, a text-mode "exit" closes with zero visible feedback.
-            print("Exiting program. o7")
+        # SystemExit below bypasses capture_response's normal print path —
+        # without this, "exit" closes with zero visible feedback.
+        print("Exiting program. o7")
         logger.log_system_event("exit", "Exiting program.")
 
         if Employer._exit_hook is not None:

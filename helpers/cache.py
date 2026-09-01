@@ -5,10 +5,6 @@ import typing
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# Whether this process speaks. Process state, not persisted state — writing it
-# to cache.json meant `wony.py doctor` could flip the running tray to silent.
-_audio_enabled: bool = False
-
 
 class Cache:
     # Repo-root anchored, not CWD — launching from another directory used to
@@ -54,12 +50,3 @@ class Cache:
             Cache.load_values()
 
         return Cache._values.get(key, default)
-
-    @staticmethod
-    def set_audio(value: bool) -> None:
-        global _audio_enabled
-        _audio_enabled = bool(value)
-
-    @staticmethod
-    def get_audio() -> bool:
-        return _audio_enabled

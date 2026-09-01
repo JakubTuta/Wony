@@ -2,20 +2,18 @@ import os
 import typing
 from datetime import datetime, timedelta
 
-from helpers.accounts import GoogleAccounts
-from helpers.audio import Audio
+from helpers.accounts import CREDENTIALS_FILE, GoogleAccounts
+from helpers.notify import notify
 from helpers.cache import Cache
 from helpers.config import Config
 from helpers.decorators import capture_response
 from helpers.jobs import BackgroundJobs
 from helpers.logger import logger
-from helpers.paths import repo_path
 from helpers.registry import method_job, register_service
 from helpers.requirements import Requirement
 from helpers.timeutil import local_tz, now_local
 
 _SCOPES = ["https://www.googleapis.com/auth/calendar"]
-_CREDENTIALS_FILE = repo_path("credentials", "google_credentials.json")
 
 # Tuning knobs, not settings — nobody asking "what's on today" should have to
 # pick a result cap or a search window, and the right values don't vary by user.
@@ -37,7 +35,7 @@ def _calendar_job_name(account_name: str) -> str:
 @register_service(
     module_name="calendar",
     requires=Requirement(
-        files=[_CREDENTIALS_FILE],
+        files=[CREDENTIALS_FILE],
         pip_modules=["googleapiclient", "google_auth_oauthlib", "google.auth"],
         setup_hint=(
             "Create an OAuth client (Desktop) in Google Cloud Console with Calendar API "
@@ -66,6 +64,11 @@ class Calendar:
             self._services[name] = build("calendar", "v3", credentials=creds)
         return self._services[name]
 
+    def forget_account(self, name: str) -> None:
+        """Drop the cached service for an account whose token changed or went
+        away, so the next call builds one from the token now on disk."""
+        self._services.pop(name, None)
+
     def _accounts(self, account: str) -> typing.List[str]:
         """Accounts to operate on: the named one if given, else every configured
         account (so an unspecified account searches all)."""
@@ -92,7 +95,7 @@ class Calendar:
                 creds.refresh(Request())
             else:
                 flow = InstalledAppFlow.from_client_secrets_file(
-                    _CREDENTIALS_FILE, _SCOPES
+                    CREDENTIALS_FILE, _SCOPES
                 )
                 creds = flow.run_local_server(port=0)
             os.makedirs(os.path.dirname(token_file), exist_ok=True)
@@ -191,6 +194,54 @@ class Calendar:
             seen_ids = announced + [e.get("id") for e in new_events if e.get("id")]
             Cache.set_value(cache_key, seen_ids[-200:])
         return new_events
+
+    def agenda_snapshot(self, days: int = 2) -> typing.Dict[str, typing.Any]:
+        """Upcoming events as data, for the agenda screen.
+
+        Deliberately not a job: find_events writes prose, and a list with a
+        time column and a per-day heading cannot be recovered from prose. Runs
+        the same query, keeping the fields instead of describing them.
+
+        Two days by default — an agenda that empties out at 6pm is useless in
+        the evening, which is exactly when someone checks tomorrow.
+        """
+        tz = local_tz()
+        start = now_local().replace(hour=0, minute=0, second=0, microsecond=0)
+        end = start + timedelta(days=max(1, days))
+
+        events = self._fetch_events_range(
+            time_min=start.isoformat(),
+            time_max=end.isoformat(),
+            max_results=50,
+        )
+
+        out = []
+        for event in events:
+            when = event.get("start", {})
+            until = event.get("end", {})
+            # Google marks an all-day event by sending "date" instead of
+            # "dateTime"; there is no other flag for it.
+            all_day = "date" in when and "dateTime" not in when
+            out.append(
+                {
+                    "id": event.get("id", ""),
+                    "title": event.get("summary", "Untitled event"),
+                    "start": when.get("dateTime") or when.get("date") or "",
+                    "end": until.get("dateTime") or until.get("date") or "",
+                    "all_day": all_day,
+                    "location": event.get("location", ""),
+                    "account": event.get("_account", ""),
+                }
+            )
+
+        return {
+            "events": out,
+            "today": start.date().isoformat(),
+            # The screen groups by day and needs to know which days were asked
+            # about, so an empty day reads as "nothing on" and not "not loaded".
+            "days": [(start + timedelta(days=i)).date().isoformat() for i in range(max(1, days))],
+            "timezone": str(tz),
+        }
 
     def _format_event(self, event: dict, verbose: bool = False) -> str:
         summary = event.get("summary", "Untitled event")
@@ -316,13 +367,12 @@ class Calendar:
         self,
         events: typing.List[dict],
         header: str,
-        audio: bool,
         count_template: str,
         verbose_override: typing.Optional[bool] = None,
     ) -> str:
         lines = [header]
         lines.append(count_template.format(count=len(events)))
-        verbose = (not audio) if verbose_override is None else verbose_override
+        verbose = True if verbose_override is None else verbose_override
         for event in events:
             lines.append("")
             lines.append(self._format_event(event, verbose=verbose))
@@ -379,7 +429,6 @@ class Calendar:
         Returns:
             str: Matching events with time, title and details.
         """
-        audio = Cache.get_audio()
         max_results = self._as_int(limit) or None
 
         calendar_id = "primary"
@@ -403,7 +452,6 @@ class Calendar:
             return self._render_events(
                 events,
                 header=f"Events on {label}:",
-                audio=audio,
                 count_template=f"You have {{count}} event(s) on {label}.",
             )
 
@@ -462,7 +510,6 @@ class Calendar:
         return self._render_events(
             events,
             header=header,
-            audio=audio,
             count_template=f"Found {{count}} event(s){where}.",
         )
 
@@ -508,7 +555,7 @@ class Calendar:
             msg = f"You have {len(events)} new calendar event(s) in {name}."
             logger.log_system_event("calendar_poll", msg)
             messages = [msg] + [self._format_event(e, verbose=False) for e in events]
-            Audio.notify(messages)
+            notify(messages, kind="alert", source="calendar")
 
         BackgroundJobs.start(job_name, _poll, interval=interval_minutes * 60)
         return f"Checking '{name}' calendar every {interval_minutes} minutes."
@@ -573,7 +620,6 @@ class Calendar:
         Returns:
             str: All calendars with their names and IDs.
         """
-        audio = Cache.get_audio()
         service = self._service_for(account)
         cal_list = service.calendarList().list().execute()
         calendars = cal_list.get("items", [])
@@ -581,10 +627,6 @@ class Calendar:
         if not calendars:
             return "No calendars found."
 
-        if audio:
-            return f"You have {len(calendars)} calendar(s): " + ", ".join(
-                c.get("summary", "Unnamed") for c in calendars
-            )
         lines = [f"Calendars ({len(calendars)}):"]
         for cal in calendars:
             name = cal.get("summary", "Unnamed")
@@ -798,14 +840,12 @@ class Calendar:
         Returns:
             str: All events for the next 7 days.
         """
-        audio = Cache.get_audio()
         events = self._fetch_events_range(
             account=account, hours_ahead=168, max_results=_DEFAULT_MAX_RESULTS * 3
         )
         return self._render_events(
             events,
             header="This week's agenda (next 7 days):",
-            audio=audio,
             count_template="This week you have {count} event(s).",
         )
 

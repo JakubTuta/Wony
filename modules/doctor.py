@@ -1,4 +1,6 @@
 import os
+import platform
+import shutil
 
 from helpers.decorators import capture_response
 from helpers.paths import repo_path
@@ -12,38 +14,17 @@ _NON_MODULE_CHECKS = [
             pip_modules=["fastembed"],
             setup_hint="pip install -r requirements/semantic.txt",
         ),
-        False,
-    ),
-    (
-        "Voice (TTS/STT)",
-        Requirement(
-            pip_modules=[
-                "kokoro_onnx",
-                "espeakng_loader",
-                "sounddevice",
-                "soundfile",
-                "soxr",
-                "faster_whisper",
-                "pynput",
-            ],
-            setup_hint="pip install -r requirements/voice.txt",
-        ),
-        True,
-    ),
-    (
-        "Wake word",
-        Requirement(
-            pip_modules=["openwakeword", "onnxruntime", "sounddevice", "soxr", "numpy"],
-            setup_hint="pip install -r requirements/wakeword.txt  "
-            "Enable with voice.wake_word.enabled: true in config.yaml  "
-            'Built-in phrases: "hey jarvis", "alexa", "hey mycroft", "hey rhasspy"',
-        ),
-        True,
     ),
 ]
 
+# Below this, the device is one browser tab away from the OOM killer.
+_MIN_FREE_RAM_MB = 250
 
-def _module_checks(voice_mode: bool) -> list:
+# Enough headroom for logs, the SQLite database, and a pip upgrade.
+_MIN_FREE_DISK_MB = 500
+
+
+def _module_checks() -> list:
     """(label, Requirement) for every module that declared one, plus the
     non-module features. Modules are read from the registry so this never
     drifts from what the modules themselves require."""
@@ -53,15 +34,11 @@ def _module_checks(voice_mode: bool) -> list:
         (name, req)
         for name, req in sorted(ServiceRegistry.get_module_requirements().items())
     ]
-    checks += [
-        (label, req)
-        for label, req, needs_voice in _NON_MODULE_CHECKS
-        if voice_mode or not needs_voice
-    ]
+    checks += list(_NON_MODULE_CHECKS)
     return checks
 
 
-def run_doctor(voice_mode: bool = False) -> str:
+def run_doctor() -> str:
     """Run all setup checks and return a formatted report."""
     from helpers.model import describe_readiness
 
@@ -78,14 +55,14 @@ def run_doctor(voice_mode: bool = False) -> str:
     else:
         lines.append(
             "  ! config.yaml missing — using config.example.yaml defaults.\n"
-            "    Copy it: Copy-Item config.example.yaml config.yaml"
+            "    Copy it: cp config.example.yaml config.yaml"
         )
 
     ai_ok, ai_msg = describe_readiness()
     prefix = "✓" if ai_ok else "✗"
     lines.append(f"  {prefix} AI: {ai_msg}")
 
-    for label, req in _module_checks(voice_mode):
+    for label, req in _module_checks():
         ok, reason = evaluate(req)
         if ok:
             lines.append(f"  ✓ {label}")
@@ -94,281 +71,115 @@ def run_doctor(voice_mode: bool = False) -> str:
             if req.setup_hint:
                 lines.append(f"    Fix: {req.setup_hint}")
 
-    lines.extend(_compute_selftest())
+    lines.append(_screen_line())
 
-    if voice_mode:
-        lines.extend(_audio_selftest())
-        lines.extend(_wakeword_selftest())
+    raspotify = _raspotify_line()
+    if raspotify:
+        lines.append(raspotify)
+
+    lines.extend(_platform_checks())
 
     return "\n".join(lines)
 
 
-def _compute_selftest() -> list:
+def _screen_line() -> str:
+    """The touch UI is a built bundle, and forgetting to build it is silent —
+    the API answers fine and the screen shows a bare 404."""
+    if os.path.isfile(repo_path(os.path.join("kiosk", "dist", "index.html"))):
+        return "  ✓ Screen bundle built."
+    return (
+        "  ✗ Screen bundle missing — the API works but the display will be blank.\n"
+        "    Fix: cd kiosk && npm install && npm run build"
+    )
+
+
+def _raspotify_line() -> str:
+    """Only meaningful once Spotify is on and this device is meant to play the
+    music itself. A dead raspotify looks exactly like 'no active device'."""
+    from helpers.config import Config
+
+    if not Config.is_module_enabled("spotify"):
+        return ""
+    if shutil.which("systemctl") is None:
+        return ""
+
+    import subprocess
+
     try:
-        from helpers.compute import describe_compute
+        state = subprocess.run(
+            ["systemctl", "is-active", "raspotify"],
+            capture_output=True, text=True, timeout=5,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
 
-        return describe_compute()
-    except Exception as e:
-        return [f"\n  Compute devices: unavailable ({e})"]
+    if state == "active":
+        return "  ✓ raspotify running — this device is a Spotify Connect target."
+    if state == "inactive" or state == "failed":
+        return (
+            f"  ! raspotify is {state}. Spotify control still works; this device "
+            "just will not play the music itself.\n"
+            "    Fix: sudo systemctl enable --now raspotify"
+        )
+    # "unknown" — not installed. Not a fault: playing on another speaker is fine.
+    return ""
 
 
-def _audio_selftest() -> list:
-    lines = ["\n  Audio self-test:"]
-    try:
-        import numpy as np
-        import sounddevice as sd
+def _platform_checks() -> list:
+    """What actually goes wrong on a small single-board machine: a 32-bit
+    userland with no wheels for it, and running out of RAM or disk."""
+    lines = ["\n  Device:"]
 
-        from helpers import mic
-    except Exception as e:
-        lines.append(f"  ✗ Audio self-test unavailable: {e}")
-        return lines
+    machine = platform.machine()
+    bits = platform.architecture()[0]
+    lines.append(f"    {platform.system()} {platform.release()} on {machine} ({bits})")
 
-    try:
-        in_idx, out_idx = mic.default_devices()
-        in_info = sd.query_devices(in_idx, "input")
-        out_info = sd.query_devices(out_idx, "output")
+    if machine in ("armv6l", "armv7l") or bits == "32bit":
         lines.append(
-            f"    Default input : [{in_idx}] {in_info['name']}  ({int(in_info['default_samplerate'])} Hz)"
+            "  ✗ 32-bit userland. Semantic memory needs onnxruntime, which "
+            "publishes no 32-bit ARM wheels."
         )
-        resolved_idx = mic.resolve_input_device()
-        if resolved_idx != in_idx:
-            resolved_info = sd.query_devices(resolved_idx, "input")
-            lines.append(
-                f"    Capture input : [{resolved_idx}] {resolved_info['name']}  ({int(resolved_info['default_samplerate'])} Hz)  (virtual default bypassed)"
-            )
-        lines.append(f"    Default output: [{out_idx}] {out_info['name']}")
-    except Exception as e:
-        lines.append(f"  ✗ Could not query devices: {e}")
-        return lines
+        lines.append("    Fix: reinstall with the 64-bit build of Raspberry Pi OS.")
 
-    lines.append("\n    Input device matrix (→ marks the resolved capture device):")
+    lines.append(_ram_line())
+    lines.append(_disk_line())
+
+    return lines
+
+
+def _ram_line() -> str:
+    """Read available memory from /proc/meminfo — no psutil dependency for one number."""
     try:
-        all_devs = list(sd.query_devices())
-        hostapis = list(sd.query_hostapis())
-        for idx, dev in enumerate(all_devs):
-            if dev["max_input_channels"] <= 0:
-                continue
-            ha_name = (
-                hostapis[dev["hostapi"]]["name"]
-                if dev["hostapi"] < len(hostapis)
-                else "?"
-            )
-            marker = "→ " if idx == resolved_idx else "  "
-            if mic.device_is_excluded(dev["name"], all_devs):
-                lines.append(
-                    f"    {marker}[{idx:2d}] EXCLUDED  ({ha_name}) {dev['name']}"
-                )
-                continue
-            ok, detail = mic.probe_input_device(idx, seconds=0.25, deadline=1.0)
-            status = "OK      " if ok else "DEAD    "
-            lines.append(
-                f"    {marker}[{idx:2d}] {status}({ha_name}) {dev['name']}  — {detail}"
-            )
-    except Exception as e:
-        lines.append(f"    ✗ Device matrix failed: {e}")
-
-    try:
-        from helpers.media_pause import pause_media
-
-        with pause_media():
-            mic.play_wav("voice/bot/ready.wav", blocking=True)
-        lines.append("\n    ✓ Output test — did you hear the ready sound?")
-    except Exception as e:
-        lines.append(f"    ✗ Output test failed: {e}")
-
-    try:
-        from helpers import audio as _audio
-
-        out_idx = mic.resolve_output_device()
-        out_name = (
-            "(OS default)"
-            if out_idx is None
-            else sd.query_devices(out_idx, "output")["name"]
-        )
-        endpoint_id = mic._get_default_render_endpoint_id()
-        lane_free = _audio._playback_lane.acquire(blocking=False)
-        if lane_free:
-            _audio._playback_lane.release()
-        lines.append(
-            f"    ✓ Output device — resolved: [{out_idx if out_idx is not None else 'default'}] {out_name}"
-        )
-        lines.append(
-            f"    ✓ Default render endpoint ID: {endpoint_id or '(unavailable)'}"
-        )
-        lines.append(f"    ✓ Playback lane free: {lane_free}")
-    except Exception as e:
-        lines.append(f"    ✗ Output device report failed: {e}")
-
-    try:
-        from helpers import recognizer as _recognizer
-        from helpers.config import Config as _Config
-
-        from helpers.bootstrap import _IDLE_UNLOAD_MINUTES
-
-        preload = bool(_Config.get("models.preload", False))
-        stt_loaded = _recognizer._model is not None
-        tts_loaded = _audio._tts_singleton is not None
-        lines.append(
-            f"    ✓ Models — preload: {preload}, idle unload after {_IDLE_UNLOAD_MINUTES:.0f} min, "
-            f"STT loaded: {stt_loaded}, TTS loaded: {tts_loaded}"
-        )
-    except Exception as e:
-        lines.append(f"    ✗ Models report failed: {e}")
-
-    try:
-        import asyncio
-
-        from helpers.media_pause import _IS_WINDOWS
-
-        if not _IS_WINDOWS:
-            lines.append(
-                "    ! Media-pause — Windows only, skipped (not running on Windows)."
-            )
-        else:
-            try:
-                from winrt.windows.media.control import (
-                    GlobalSystemMediaTransportControlsSessionManager as _SessionManager,
-                )
-
-                backend_available = True
-            except ImportError:
-                backend_available = False
-
-            if not backend_available:
-                lines.append(
-                    "    ✗ Media-pause backend (winrt) not installed — media won't be paused automatically."
-                )
-                lines.append("      pip install -r requirements/voice.txt")
+        with open("/proc/meminfo", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("MemAvailable:"):
+                    free_mb = int(line.split()[1]) // 1024
+                    break
             else:
+                return "    ! Could not read MemAvailable from /proc/meminfo."
+    except OSError:
+        return "    (memory check skipped — no /proc/meminfo on this system)"
 
-                async def _list_sessions():
-                    mgr = await _SessionManager.request_async()
-                    return mgr.get_sessions()
-
-                sessions = asyncio.run(_list_sessions())
-                if not sessions:
-                    lines.append(
-                        "    ✓ Media-pause backend ready — no active media sessions right now."
-                    )
-                else:
-                    lines.append(
-                        f"    ✓ Media-pause backend ready — {len(sessions)} active session(s):"
-                    )
-                    for s in sessions:
-                        try:
-                            info = s.get_playback_info()
-                            pausable = (
-                                info.controls is not None
-                                and info.controls.is_pause_enabled
-                            )
-                            lines.append(
-                                f"        {s.source_app_user_model_id} — status: {info.playback_status}, "
-                                f"pausable: {pausable}"
-                            )
-                        except Exception as e:
-                            lines.append(f"        (session report failed: {e})")
-    except Exception as e:
-        lines.append(f"    ✗ Media-pause self-test failed: {e}")
-
-    try:
-        lines.append("    Recording 2s from mic...")
-        sig = mic.record_16k(2)
-        rms = float(np.sqrt(np.mean(sig**2)))
-        bar = "#" * min(40, int(rms * 400))
-        lines.append(f"    ✓ Input RMS {rms:.4f} |{bar}|")
-        if rms < 0.001:
-            lines.append(
-                "    ! Near-silent — mic may be muted or wrong default input device."
-            )
-    except Exception as e:
-        lines.append(f"    ✗ Input test failed: {e}")
-
-    return lines
-
-
-def _wakeword_selftest() -> list:
-    """Synthesize the configured wake phrase and score it against the live
-    model, independent of mic capture — isolates model/threshold problems
-    from device/lifecycle problems."""
-    lines = ["\n  Wake-word self-test:"]
-    try:
-        from helpers.config import Config
-
-        cfg = Config.get("voice.wake_word", {}) or {}
-        if not cfg.get("enabled", False):
-            lines.append("    (disabled — voice.wake_word.enabled: false)")
-            return lines
-    except Exception as e:
-        lines.append(f"    ✗ Could not read config: {e}")
-        return lines
-
-    try:
-        import numpy as np
-        import soxr
-        from openwakeword.model import Model
-    except Exception as e:
-        lines.append(f"    (skipped — dependency missing: {e})")
-        return lines
-
-    try:
-        from helpers.audio import _get_tts_singleton
-
-        engine = _get_tts_singleton()
-    except Exception as e:
-        lines.append(f"    (skipped — TTS engine unavailable: {e})")
-        return lines
-
-    model_path = cfg.get("model_path") or None
-    phrase = cfg.get("phrase", "hey jarvis")
-    threshold = float(cfg.get("threshold", 0.5))
-    if model_path and not os.path.isabs(model_path):
-        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        model_path = os.path.join(repo_root, model_path)
-    models = [model_path] if model_path else [phrase]
-
-    try:
-        oww = Model(wakeword_models=models, inference_framework="onnx")
-    except Exception as e:
-        lines.append(f"    ✗ Model load failed: {e}")
-        return lines
-
-    try:
-        say = phrase.replace("_", " ")
-        text = say if say.endswith(("!", ".", "?")) else f"{say}!"
-        samples, sr = engine.synthesize(text)
-        s16 = soxr.resample(samples, sr, 16000)
-        lead = np.zeros(16000, dtype=np.float32)
-        sig = np.concatenate([lead, s16, lead])
-        pad = (-len(sig)) % 1280
-        sig = np.pad(sig, (0, pad))
-
-        target = phrase.lower().replace(" ", "_")
-        key = None
-        peak = 0.0
-        for i in range(0, len(sig), 1280):
-            frame = sig[i : i + 1280]
-            pcm16 = np.clip(frame * 32768.0, -32768, 32767).astype(np.int16)
-            scores = oww.predict(pcm16)
-            if key is None and scores:
-                key = next(
-                    (k for k in scores if target in k.lower().replace(" ", "_")),
-                    next(iter(scores)),
-                )
-            if key is not None:
-                peak = max(peak, float(scores.get(key, 0.0)))
-
-        status = "✓" if peak >= threshold else "✗"
-        lines.append(
-            f"    {status} Synthesized '{text}' → peak score {peak:.3f} (threshold {threshold})"
+    if free_mb < _MIN_FREE_RAM_MB:
+        return (
+            f"  ✗ Only {free_mb} MB RAM available (want at least "
+            f"{_MIN_FREE_RAM_MB} MB). Close something, or disable semantic memory."
         )
-        if peak < threshold:
-            lines.append(
-                "      Model/threshold problem — try lowering voice.wake_word.threshold or retraining the model."
-            )
-    except Exception as e:
-        lines.append(f"    ✗ Self-test failed: {e}")
+    return f"    ✓ {free_mb} MB RAM available."
 
-    return lines
+
+def _disk_line() -> str:
+    try:
+        free_mb = shutil.disk_usage(repo_path(".")).free // (1024 * 1024)
+    except OSError as e:
+        return f"    ! Could not check free disk space: {e}"
+
+    if free_mb < _MIN_FREE_DISK_MB:
+        return (
+            f"  ✗ Only {free_mb} MB free on the Wony partition (want at least "
+            f"{_MIN_FREE_DISK_MB} MB)."
+        )
+    return f"    ✓ {free_mb} MB free disk."
 
 
 @register_job
@@ -376,7 +187,8 @@ def _wakeword_selftest() -> list:
 def check_setup() -> str:
     """
     [SYSTEM DIAGNOSTICS JOB] Validates the full assistant setup and prints a ✓/✗ checklist.
-    Checks .env, config.yaml, AI provider, and each integration's requirements.
+    Checks .env, config.yaml, AI provider, each integration's requirements, and
+    whether the device has the architecture, memory and disk space Wony needs.
     Prints exactly what to fix for anything that is missing or broken.
 
     Use this job when the user wants to:
@@ -394,7 +206,4 @@ def check_setup() -> str:
     Returns:
         str: Full diagnostics report with ✓/✗ per component and fix instructions.
     """
-    from helpers.cache import Cache
-
-    voice_mode = Cache.get_audio()
-    return run_doctor(voice_mode=bool(voice_mode))
+    return run_doctor()

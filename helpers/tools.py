@@ -1,11 +1,6 @@
-import base64
 import inspect
-import io
 import re
 import typing
-
-import numpy as np
-from PIL import Image
 
 import helpers.model as helpers_model
 
@@ -248,59 +243,3 @@ def function_to_schema_anthropic(func: typing.Callable) -> typing.Dict[str, typi
             "required": required,
         },
     }
-
-
-# ------------------------------------------------------------------ image helpers
-
-# Screenshots are encoded losslessly: they are mostly text and UI edges, which
-# JPEG smears. Providers are told this exact type — declaring the wrong one
-# (image/jpeg for PNG bytes) is rejected by Anthropic and mis-sniffed by Gemini.
-IMAGE_FORMAT = "PNG"
-IMAGE_MIME_TYPE = "image/png"
-
-
-def numpy_image_to_base64_bytes(
-    image_array: np.ndarray, image_format: str = IMAGE_FORMAT
-) -> typing.Optional[bytes]:
-    """
-    Encodes a NumPy array image into a base64 byte string.
-
-    Args:
-        image_array: A NumPy array representing the image (e.g., shape HxW or HxWx3, dtype=uint8).
-        image_format: The format to save the image in ('PNG', 'JPEG', etc.). Defaults to 'PNG'.
-
-    Returns:
-        A bytes object containing the base64 encoded image data.
-        Returns None if the conversion fails.
-    """
-    import helpers.diagnostics
-
-    if image_array.dtype != np.uint8:
-        helpers.diagnostics.add("warning", "Tools", f"Converting image data from {image_array.dtype} to uint8.")
-        image_array = image_array.astype(np.uint8)
-
-    try:
-        if image_array.ndim == 2:
-            pil_image = Image.fromarray(image_array, "L")
-        elif image_array.ndim == 3 and image_array.shape[2] == 3:
-            pil_image = Image.fromarray(image_array, "RGB")
-        elif image_array.ndim == 3 and image_array.shape[2] == 4:
-            pil_image = Image.fromarray(image_array, "RGBA")
-        else:
-            helpers.diagnostics.add("error", "Tools", f"Unsupported image array shape: {image_array.shape}")
-            return None
-    except Exception as e:
-        helpers.diagnostics.add("error", "Tools", f"Error converting numpy array to Pillow image: {e}")
-        return None
-
-    buffer = io.BytesIO()
-    try:
-        pil_image.save(buffer, format=image_format)
-    except KeyError:
-        helpers.diagnostics.add("error", "Tools", f"Unsupported image format: {image_format}")
-        return None
-    except Exception as e:
-        helpers.diagnostics.add("error", "Tools", f"Error saving Pillow image to buffer: {e}")
-        return None
-
-    return base64.b64encode(buffer.getvalue())

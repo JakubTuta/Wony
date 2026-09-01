@@ -7,10 +7,10 @@ import typing
 T = typing.TypeVar("T")
 
 # Set to True by the agent loop while executing tools so capture_response
-# suppresses per-tool print/TTS output. The final narrated answer is output once.
+# suppresses per-tool print output. The final answer is output once.
 _agent_active: bool = False
 
-# Process-wide lock: serializes agent runs so wake-word and web /api/chat
+# Process-wide lock: serializes agent runs so concurrent /api/chat and tile
 # calls don't interleave on shared Conversation state or _agent_active.
 agent_lock = threading.Lock()
 
@@ -24,120 +24,66 @@ def is_agent_active() -> bool:
     return _agent_active
 
 
-# ── Per-turn tool outcome ledger ────────────────────────────────────────────
-# Gates whether the agent's final narration gets spoken: if every tool call
-# this turn was a quiet-on-success job (mute=True) that actually succeeded,
-# the outcome is already audible/visible on its own (e.g. music started) and
-# narrating it too just wastes time under a duck. Only ever touched while
-# agent_lock is held (agent runs are serialized process-wide), so a plain
-# module-level list is safe without its own lock.
-_tool_outcomes: typing.List[typing.Tuple[str, bool, bool, bool]] = []  # (name, quiet, one_message, ok)
+# capture_response turns a raised exception into an ordinary string so the
+# agent gets a tool result rather than a traceback. That means callers cannot
+# tell success from failure by return type — this prefix is the only signal,
+# so it is written once here and read through is_error_response().
+_ERROR_PREFIX = "Error ("
 
 
-def begin_tool_outcomes() -> None:
-    global _tool_outcomes
-    _tool_outcomes = []
+def is_error_response(text: typing.Optional[str]) -> bool:
+    """True when a job's string came from capture_response's failure path.
 
-
-def record_tool_outcome(name: str, quiet: bool, ok: bool, one_message: bool = False) -> None:
-    _tool_outcomes.append((name, quiet, one_message, ok))
-
-
-def turn_is_quiet_success() -> bool:
-    """True if at least one tool ran this turn and every one was quiet-on-
-    success and actually succeeded. False (speak) for zero tool calls, any
-    non-quiet job, any failure, or any untracked/unwrapped call — the gate
-    must never silence a call it didn't fully account for."""
-    if not _tool_outcomes:
-        return False
-    return all(quiet and ok for _, quiet, _one_message, ok in _tool_outcomes)
-
-
-def turn_wants_one_message() -> bool:
-    """True if any tool called this turn is flagged one_message=True and
-    succeeded — the voice conversation loop ends the session after this turn
-    instead of listening for a follow-up (e.g. "play song X" shouldn't leave
-    the mic open waiting for more)."""
-    return any(one_message and ok for _, _quiet, one_message, ok in _tool_outcomes)
+    Anything that stores or repeats a job's output needs this: an error cached
+    for ten minutes on the idle screen is worse than an empty card.
+    """
+    return bool(text) and str(text).startswith(_ERROR_PREFIX)
 
 
 def capture_response(
-    func: typing.Callable[..., typing.Any] = None,
-    *,
-    mute: bool = False,
-    one_message: bool = False,
+    func: typing.Callable[..., typing.Any],
 ) -> typing.Callable[..., typing.Optional[str]]:
     """
-    Decorator that captures the response, prints it to console, and handles audio output.
-    Always returns a string response.
-
-    Args:
-        mute: When True, suppresses TTS on success but still vocalizes errors.
-              Use for actions with immediate audible feedback (play, pause, volume).
-        one_message: When True and the call succeeds, the voice conversation loop
-                     ends the session after this turn instead of listening for a
-                     follow-up. Use for one-shot actions (play a song, change volume)
-                     where continuing to listen would just be dead air.
+    Decorator that captures a job's response, logs failures, and always returns
+    a string so the agent gets a tool result instead of an exception.
     """
 
-    def decorator(f: typing.Callable[..., typing.Any]) -> typing.Callable[..., typing.Optional[str]]:
-        @functools.wraps(f)
-        def wrapper(*args, **kwargs) -> typing.Optional[str]:
-            # Lazy imports to avoid circular dependencies
-            try:
-                from helpers.audio import Audio
-                from helpers.cache import Cache
-                from helpers.logger import logger
-            except ImportError:
-                logger = None
-                Audio = None
-                Cache = None
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs) -> typing.Optional[str]:
+        # Lazy import to avoid a circular dependency at module import time.
+        try:
+            from helpers.logger import logger
+        except ImportError:
+            logger = None
 
-            function_name = f.__name__ if hasattr(f, "__name__") else "Unknown"
-            class_name = (
-                args[0].__class__.__name__
-                if args and hasattr(args[0], "__class__")
-                else "Unknown"
-            )
+        function_name = func.__name__ if hasattr(func, "__name__") else "Unknown"
+        class_name = (
+            args[0].__class__.__name__
+            if args and hasattr(args[0], "__class__")
+            else "Unknown"
+        )
 
-            try:
-                response = f(*args, **kwargs)
-            except Exception as e:
-                error_msg = f"Error ({class_name}.{function_name}): {e}"
-                print(error_msg)
+        try:
+            response = func(*args, **kwargs)
+        except Exception as e:
+            error_msg = f"{_ERROR_PREFIX}{class_name}.{function_name}): {e}"
+            print(error_msg)
 
-                if logger:
-                    logger.log_error(traceback.format_exc(), f"{class_name}.{function_name}")
+            if logger:
+                logger.log_error(traceback.format_exc(), f"{class_name}.{function_name}")
 
-                if _agent_active:
-                    record_tool_outcome(function_name, mute, False, one_message)
-                # Always vocalize errors so user knows the action failed.
-                elif Cache and Audio and Cache.get_audio():
-                    Audio.text_to_speech(error_msg)
+            return error_msg
 
-                return error_msg
+        str_response = str(response) if response is not None else ""
 
-            str_response = str(response) if response is not None else ""
+        # Suppress per-tool output while the agent loop is running;
+        # the agent reports the final answer once.
+        if not _agent_active:
+            print(str_response)
 
-            # Suppress per-tool output while the agent loop is running;
-            # the agent will narrate the final answer once.
-            if _agent_active:
-                record_tool_outcome(function_name, mute, True, one_message)
-            else:
-                if not mute and Cache and Audio and Cache.get_audio():
-                    Audio.text_to_speech(str_response)
-                print(str_response)
+        return str_response
 
-            return str_response
-
-        wrapper._quiet_success = bool(mute)
-        return wrapper
-
-    if func is not None:
-        # Used as @capture_response (no parentheses)
-        return decorator(func)
-    # Used as @capture_response(...) (with parentheses)
-    return decorator
+    return wrapper
 
 
 def capture_exception(

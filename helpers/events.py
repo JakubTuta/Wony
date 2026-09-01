@@ -38,33 +38,30 @@ def emit_turn(turn: typing.Dict) -> None:
 
 
 def emit_state(state: str) -> None:
-    """Broadcast assistant state change: 'idle' | 'listening' | 'thinking' | 'speaking'."""
+    """Broadcast assistant state change: 'idle' | 'thinking'."""
     emit({"type": "state", "state": state})
 
 
+def emit_notification(notification: typing.Dict) -> None:
+    """Broadcast a proactive message (tags payload with type='notification')."""
+    tagged = dict(notification)
+    tagged.setdefault("type", "notification")
+    emit(tagged)
+
+
 # ── Global session cancel ──────────────────────────────────────────────────
-# A single deliberate "stop everything" signal (tray "Stop" / web `stop`),
-# distinct from barge-in interruption (a new utterance stopping playback so
-# the assistant can listen — that stays a private per-stream Event). Cancel
-# aborts capture, in-flight agent turns, and speech all at once; a prior
-# "stop speaking" only touched playback, which is why a stuck capture/agent
-# turn used to survive it.
+# A single deliberate "stop everything" signal, driven by the UI's Stop
+# button. Aborts the in-flight agent turn between steps.
 session_cancel = threading.Event()
 
 
 def request_cancel() -> None:
-    """Signal a deliberate stop: aborts capture, the agent turn, and speech."""
+    """Signal a deliberate stop: aborts the in-flight agent turn."""
     session_cancel.set()
-    try:
-        from helpers.audio import interrupt_current_speech
-        interrupt_current_speech()
-    except Exception:
-        pass
     emit({"type": "cancel"})
 
 
 def clear_cancel() -> None:
-    """Reset the cancel signal. Call at the start of a new session (wake
-    detection, push-to-talk) — never mid-capture, so a cancel issued during
-    the "Yes?" ack still aborts the capture that follows it."""
+    """Reset the cancel signal. Called at the start of a new turn, inside the
+    agent lock, so a cancel aimed at the previous turn cannot leak into it."""
     session_cancel.clear()

@@ -7,61 +7,8 @@ assistant:
   owner_name: "User"
   # Free-form text injected into AI system prompts.
   personality: "Friendly and concise."
-  # Language for AI responses and TTS. BCP-47 codes, e.g. "en", "pl".
+  # Language for AI responses. BCP-47 codes, e.g. "en", "pl".
   language: "en"
-
-voice:
-  # Run `python -c "from kokoro_onnx import Kokoro; k=Kokoro('models/kokoro-v1.0.onnx','models/voices-v1.0.bin'); print(k.get_voices())"` to list all voices.
-  tts_voice: "af_heart"   # af_heart, af_sarah, am_michael, bf_emma, bm_george …
-  speed: 1.0              # 0.5–2.0 speaking rate
-  volume: 0.6             # 0.0–1.0 how loud Wony speaks
-
-  # Which microphone / speakers to use. null = follow whatever Windows is set to
-  # (recommended). Set to a device name substring only if the wrong one is picked.
-  # Run `python wony.py doctor` to see what was selected.
-  input_device: null
-  output_device: null
-
-  stt:
-    start_timeout: 4   # seconds to wait for you to start speaking before giving up
-    silence_ms: 700    # how long you have to stop talking before Wony answers
-                       # raise if she cuts you off mid-sentence
-
-  # Global push-to-talk key, in pynput syntax. null disables it.
-  # Keep it to three keys and away from common shortcuts: this hook is
-  # system-wide and does not consume the keystroke, and pynput ignores extra
-  # modifiers — so "<ctrl>+l" also fires on ctrl+shift+l and ctrl+alt+l, and
-  # would trigger on the browser address bar, clear-terminal, and VS Code
-  # select-line.
-  hotkeys:
-    push_to_talk: "<ctrl>+<alt>+w"
-
-  # Continuous conversation: mic reopens after each response for chained commands.
-  # Session ends on silence or a stop phrase ("stop", "thanks", "done", …).
-  conversation:
-    enabled: true
-    follow_up_timeout: 3.0  # seconds of silence before closing the session
-
-  # Let you interrupt Wony by talking over her.
-  barge_in:
-    enabled: true
-
-  # Pause other apps' media (Spotify, browser tabs, VLC, ...) while Wony speaks or
-  # listens, resuming after (Windows-only; no-ops elsewhere).
-  media_pause:
-    enabled: true
-    # resume_linger_seconds: 3.0  # uncomment to override how long a pause is held
-    #                             # between back-to-back turns before resuming
-
-  # Hands-free trigger. Requires: pip install -r requirements/wakeword.txt
-  wake_word:
-    enabled: false
-    # Built-in phrase names: "hey jarvis", "alexa", "hey mycroft", "hey rhasspy"
-    phrase: "hey jarvis"
-    # Path to a custom .onnx model (overrides phrase).
-    # Train with training/train_hey_wony.ipynb (Colab) or training/train_hey_wony.sh (WSL).
-    model_path: null
-    threshold: 0.5   # 0.0–1.0 sensitivity; lower = triggers more easily
 
 ai:
   # Options: anthropic | gemini | ollama | null (auto-detect from .env keys).
@@ -71,7 +18,7 @@ ai:
   ollama_model: "llama3.1"  # required when provider is 'ollama'
   # Reasoning policy (all providers):
   #   on (default) — think only on direct knowledge questions; never on
-  #                  tool-using steps, so voice replies stay fast.
+  #                  tool-using steps, so replies stay fast.
   #   off          — never think anywhere (lowest latency).
   thinking: "on"
   history:
@@ -82,22 +29,23 @@ ai:
 enabled_modules:
   - ai             # always-on: conversation, history, AI provider routing
   - status         # always-on: module health and setup diagnostics
-  - basics         # time, date, shutdown, daily briefing
+  - basics         # time, date, power off, daily briefing
   - scheduler      # timers, alarms and reminders; can run another job when they fire
   - weather        # current weather and forecasts
   # - spotify        # playback control (play, pause, skip, search, volume)
-  # - screen         # screenshot capture and OCR text extraction
   # - gmail          # read, search, and monitor Gmail (requires Google OAuth)
   # - calendar       # read Google Calendar events and check availability (requires Google OAuth)
-  # - google_accounts  # manage multiple Google accounts
-  # - league         # League of Legends player stats and match history
+  # - google_accounts  # add and sign in to Google accounts from the screen
   # - home_assistant # Control your whole house through Home Assistant (needs HOME_ASSISTANT_TOKEN)
   # - web            # Web search and URL fetch (pip install -r requirements/web.txt)
-  # - desktop        # Desktop control: open apps, windows, clipboard (pip install -r requirements/desktop.txt)
   # - mcp            # MCP client: connect external tool servers (pip install mcp)
 
 # Per-module non-secret settings.
 modules:
+  basics:
+    # Safety gate — set to true to let Wony power off or restart this device
+    # from the screen.
+    allow_power_off: false
   home_assistant:
     # Address of your Home Assistant, exactly as you open it in a browser.
     base_url: "http://homeassistant.local:8123"
@@ -117,28 +65,46 @@ modules:
     # Safety gate — set to true to allow creating, editing, and deleting events.
     # Note: requires re-authentication after upgrading from the old readonly scope.
     allow_write: false
-  desktop:
-    # Safety gate — set to true to enable type/click/clipboard-write/file-open actions.
-    allow_actions: false
-    file_search_root: "~"     # root dir for find_file searches
 
-tray:
-  notify_on_ready: true
-  open_browser_on_start: false
+# The buttons on the home screen. Leave this out and Wony picks a sensible set
+# based on which modules you enabled above.
+#
+#   kind: job     runs a command straight away — instant, and costs nothing.
+#   kind: screen  opens a page you can read and press: weather, your day,
+#                 your devices.
+#   kind: prompt  asks Wony the sentence you write, same as typing it.
+#
+# tiles:
+#   - id: time
+#     label: "Time"
+#     icon: "🕑"
+#     kind: job
+#     job: get_time
+#   - id: joke
+#     label: "Joke"
+#     icon: "🙂"
+#     kind: prompt
+#     prompt: "Tell me a short joke."
+#   - id: lights
+#     label: "Devices"
+#     icon: "💡"
+#     kind: screen
+#     # screen: weather, agenda, devices, music, accounts,
+#     #         notifications or commands
+#     screen: devices
+
+kiosk:
+  # After this many minutes of nobody touching the screen, it switches to a
+  # clock. Touching it anywhere brings the home screen back.
+  idle_minutes: 15
 
 server:
-  # Keep this at 127.0.0.1. The web API has no password, and it can run every
-  # command Wony has — send email, delete calendar events, control the desktop,
-  # erase her memory. Any other address hands all of that to whoever can reach
-  # the port.
+  # Keep this at 127.0.0.1 unless the screen and Wony run on different machines.
+  # The web API has no password, and it can run every command Wony has — send
+  # email, delete calendar events, power off the device, erase her memory. Any
+  # other address hands all of that to whoever can reach the port.
   host: "127.0.0.1"
   port: 8000
 
 logging:
   keep_days: 14   # log/csv files older than this are deleted at startup
-
-models:
-  # false (recommended): load the speech models on first wake, so an idle tray
-  # stays light. true: load them at startup — instant first response, but holds
-  # GPU/RAM the whole time the app runs.
-  preload: false

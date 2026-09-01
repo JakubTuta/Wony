@@ -1,0 +1,333 @@
+@import "tailwindcss";
+
+/* The theme is an attribute on <html>, not a media query: this screen has no
+   OS-level light/dark preference worth following, and the toggle has to win. */
+@custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
+
+/* Short panels — an 800×480 display with the keyboard up has no room for
+   anything else, so the keyboard takes the screen instead of sharing it. */
+@custom-variant short (@media (max-height: 560px));
+
+/* ── Palettes ──────────────────────────────────────────────────────────────
+   Two complete looks. They share every dimension — spacing, radius, geometry
+   — and differ only in color and display face, so nothing reflows on toggle. */
+
+:root,
+[data-theme="dark"] {
+  --wony-bg: #0b0d10;
+  --wony-surface: #16191f;
+  --wony-surface-2: #1e222a;
+  --wony-line: #262b34;
+  --wony-text: #e8eaed;
+  --wony-muted: #8a929e;
+  --wony-accent: #8b7cf6;
+  --wony-accent-soft: #8b7cf62e;
+  --wony-on-accent: #ffffff;
+  --wony-danger: #f2777a;
+  --wony-warn: #e0b155;
+  --wony-ok: #6cc79a;
+
+  --wony-display: system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --wony-display-weight: 300;
+  --wony-display-spacing: -0.02em;
+  --wony-shadow: 0 1px 2px rgb(0 0 0 / 0.4);
+}
+
+[data-theme="light"] {
+  --wony-bg: #faf7f2;
+  --wony-surface: #ffffff;
+  --wony-surface-2: #f3eee6;
+  --wony-line: #e5ddd1;
+  --wony-text: #221e1a;
+  --wony-muted: #7a7168;
+  --wony-accent: #c4643a;
+  --wony-accent-soft: #c4643a1f;
+  --wony-on-accent: #ffffff;
+  --wony-danger: #b3402f;
+  --wony-warn: #9a6b18;
+  --wony-ok: #3d7a52;
+
+  /* Paper reads as paper because of the face, not just the background. */
+  --wony-display: Georgia, "Iowan Old Style", "Times New Roman", serif;
+  --wony-display-weight: 400;
+  --wony-display-spacing: -0.01em;
+  --wony-shadow: 0 1px 2px rgb(60 40 20 / 0.06), 0 2px 6px rgb(60 40 20 / 0.05);
+}
+
+/* The idle screen is always dark, whatever the theme. It is the surface that
+   stays lit all night, and a full cream panel in a dark room is a lamp. */
+.ambient-scope {
+  --wony-bg: #07080a;
+  --wony-surface: #101318;
+  --wony-surface-2: #171b21;
+  --wony-line: #1e232b;
+  --wony-text: #e8eaed;
+  --wony-muted: #79818d;
+  --wony-accent: #8b7cf6;
+  --wony-accent-soft: #8b7cf62e;
+  --wony-display: system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --wony-display-weight: 200;
+}
+
+@theme inline {
+  --color-bg: var(--wony-bg);
+  --color-surface: var(--wony-surface);
+  --color-surface-2: var(--wony-surface-2);
+  --color-line: var(--wony-line);
+  --color-text: var(--wony-text);
+  --color-muted: var(--wony-muted);
+  --color-accent: var(--wony-accent);
+  --color-accent-soft: var(--wony-accent-soft);
+  --color-on-accent: var(--wony-on-accent);
+  --color-danger: var(--wony-danger);
+  --color-warn: var(--wony-warn);
+  --color-ok: var(--wony-ok);
+
+  --font-display: var(--wony-display);
+  --radius-tile: 18px;
+
+  /* Everything moves on this curve, so the whole UI feels like one object. */
+  --ease-out-soft: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* ── Base ──────────────────────────────────────────────────────────────── */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--wony-bg);
+  color: var(--wony-text);
+  font-family: system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+
+  /* Touch hygiene. manipulation kills the 300ms tap delay and double-tap zoom;
+     without the other two a stray drag rubber-bands the whole kiosk. */
+  touch-action: manipulation;
+  overscroll-behavior: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* One place where selecting text is the point. */
+.selectable {
+  user-select: text;
+}
+
+/* Text fields opt back in too. The body-wide user-select:none is there to stop
+   a dragged finger selecting the UI, but it also breaks shift-arrow and
+   ctrl-A for anyone who has plugged a real keyboard into the Pi. */
+input,
+textarea {
+  user-select: text;
+  -webkit-user-select: text;
+  caret-color: var(--wony-accent);
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+/* Scrollable regions keep their scroll, lose their bar — a finger does not
+   need a 12px target it cannot grab anyway. */
+.scroll-y {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.scroll-y::-webkit-scrollbar {
+  display: none;
+}
+
+.scroll-x {
+  overflow-x: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.scroll-x::-webkit-scrollbar {
+  display: none;
+}
+
+/* ── Motion ────────────────────────────────────────────────────────────────
+   Transform and opacity only. Everything else relayouts on the CPU, and a
+   VideoCore VI has no CPU to spare for that. */
+
+.press {
+  transition: transform 120ms var(--ease-out-soft);
+}
+.press:active {
+  transform: scale(0.96);
+}
+
+@keyframes wony-fade-up {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 8px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.fade-up {
+  animation: wony-fade-up 220ms var(--ease-out-soft) both;
+}
+
+@keyframes wony-sheet-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 24px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.sheet-in {
+  animation: wony-sheet-in 240ms var(--ease-out-soft) both;
+}
+
+@keyframes wony-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.thinking-dot {
+  animation: wony-pulse 1.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ── Fluid type ────────────────────────────────────────────────────────────
+   No breakpoints: the panel could be 800×480 or 1280×800 and both must look
+   deliberate. Everything scales off the viewport instead. */
+
+.t-display {
+  font-family: var(--wony-display);
+  font-weight: var(--wony-display-weight);
+  letter-spacing: var(--wony-display-spacing);
+  font-size: clamp(1.5rem, 3.4vw, 2.25rem);
+  line-height: 1.15;
+}
+
+.t-clock {
+  font-family: var(--wony-display);
+  font-weight: var(--wony-display-weight);
+  letter-spacing: var(--wony-display-spacing);
+  font-size: clamp(4rem, 17vw, 10rem);
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.t-body {
+  font-size: clamp(0.875rem, 1.7vw, 1.05rem);
+  line-height: 1.55;
+}
+
+.t-small {
+  font-size: clamp(0.72rem, 1.3vw, 0.85rem);
+}
+
+/* ── Tile grid ─────────────────────────────────────────────────────────────
+   auto-fill with a clamped minimum: 4 columns on an 800px panel, 6 on 1280,
+   without a single media query. */
+
+.tile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(clamp(104px, 22vw, 176px), 1fr));
+  gap: clamp(8px, 1.6vw, 16px);
+}
+
+/* Long lists skip layout for what is off-screen. */
+.list-row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 84px;
+}
+
+/* ── Virtual keyboard ──────────────────────────────────────────────────────
+   react-simple-keyboard ships its own stylesheet; this replaces it entirely so
+   the keys belong to the same design as everything else. */
+
+.simple-keyboard {
+  background: transparent;
+  padding: 0;
+  font-family: inherit;
+}
+
+.simple-keyboard .hg-row {
+  display: flex;
+  gap: clamp(4px, 0.8vw, 8px);
+}
+
+.simple-keyboard .hg-row:not(:last-child) {
+  margin-bottom: clamp(4px, 0.8vw, 8px);
+}
+
+.simple-keyboard .hg-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  /* 44px is the floor a fingertip needs; it grows with the panel from there. */
+  height: clamp(44px, 8.5vh, 64px);
+  border-radius: 10px;
+  border: 1px solid var(--wony-line);
+  background: var(--wony-surface-2);
+  color: var(--wony-text);
+  font-size: clamp(0.9rem, 2vw, 1.15rem);
+  transition: transform 100ms var(--ease-out-soft);
+}
+
+.simple-keyboard .hg-button:active,
+.simple-keyboard .hg-button.hg-activeButton {
+  transform: scale(0.94);
+  background: var(--wony-accent-soft);
+  border-color: var(--wony-accent);
+}
+
+.simple-keyboard .hg-button.hg-functionBtn {
+  background: var(--wony-surface);
+  color: var(--wony-muted);
+}
+
+.simple-keyboard .hg-button[data-skbtn="{enter}"] {
+  background: var(--wony-accent);
+  border-color: var(--wony-accent);
+  color: var(--wony-on-accent);
+  flex: 1.6;
+}
+
+.simple-keyboard .hg-button[data-skbtn="{space}"] {
+  flex: 5;
+}

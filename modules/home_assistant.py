@@ -24,8 +24,10 @@ _SEP = "\x1f"
 _INDEX_TEMPLATE = (
     "{% for s in states %}{{ s.entity_id }}\x1f{{ s.name }}\x1f"
     "{{ area_name(s.entity_id) or '' }}\x1f{{ s.state }}\x1f"
-    "{{ s.attributes.get('device_class', '') }}\n{% endfor %}"
+    "{{ s.attributes.get('device_class', '') }}\x1f"
+    "{{ s.attributes.get('brightness', '') }}\n{% endfor %}"
 )
+_INDEX_FIELDS = 6
 
 # Service calls block until Home Assistant has run the handler; the default
 # 8s read timeout would report failure for a command that actually landed.
@@ -75,6 +77,9 @@ class _Entity:
     area: str
     state: str
     device_class: str
+    # Home Assistant reports light brightness as 0-255, and only while the
+    # light is on. Empty for everything else.
+    brightness: str = ""
 
     @property
     def domain(self) -> str:
@@ -82,6 +87,12 @@ class _Entity:
 
     def label(self) -> str:
         return f"{self.name} ({self.area})" if self.area else self.name
+
+    def brightness_percent(self) -> typing.Optional[int]:
+        try:
+            return round(int(self.brightness) / 255 * 100)
+        except ValueError:
+            return None
 
 
 # ── config / setup ────────────────────────────────────────────────────────────
@@ -141,7 +152,7 @@ def _fetch_index() -> typing.List[_Entity]:
     entities = []
     for line in response.text.splitlines():
         parts = line.split(_SEP)
-        if len(parts) == 5:
+        if len(parts) == _INDEX_FIELDS:
             entities.append(_Entity(*[part.strip() for part in parts]))
     return entities
 
@@ -284,6 +295,28 @@ def control_home_device(
     if not actionable:
         return _no_target_message(target, area, domain, wanted, found)
 
+    _, text = _apply(
+        actionable,
+        wanted,
+        _service_data(brightness_percent, temperature, position_percent),
+    )
+    return text
+
+
+def _apply(
+    actionable: typing.List[_Entity],
+    action: str,
+    extra: typing.Dict[str, typing.Any],
+) -> typing.Tuple[bool, str]:
+    """Run one action against already-chosen entities and describe the result.
+
+    Both ways of choosing devices — a spoken name, or an entity id tapped on
+    the screen — end up here, so the lock gate, the mass-change ceiling and the
+    per-domain service call exist once.
+
+    Returns (anything actually changed, what to say). The flag is what lets the
+    screen tell a refusal from a success without reading the sentence back.
+    """
     skipped = []
     if not _locks_allowed():
         # Drop guarded devices rather than refusing the whole command — one lock
@@ -291,42 +324,131 @@ def control_home_device(
         skipped = [e for e in actionable if _is_guarded(e)]
         actionable = [e for e in actionable if not _is_guarded(e)]
         if not actionable:
-            return (
+            return False, (
                 f"Not allowed to control {', '.join(e.label() for e in skipped)}. Set "
                 "modules.home_assistant.allow_locks: true in config.yaml to let Wony "
                 "unlock doors, open the garage and disarm alarms."
             )
 
     if len(actionable) > _MAX_CONTROL_TARGETS:
-        return (
+        return False, (
             f"That matches {len(actionable)} devices — too many to change at once. "
             "Name a room or a specific device."
         )
 
-    extra = _service_data(brightness_percent, temperature, position_percent)
     changed, failures = [], []
     for entity_domain, group in _by_domain(actionable).items():
         try:
             _call_service(
                 entity_domain,
-                _resolve_service(entity_domain, wanted, extra),
+                _resolve_service(entity_domain, action, extra),
                 [e.entity_id for e in group],
                 extra,
             )
             changed.extend(group)
         except (requests.exceptions.RequestException, ValueError) as exc:
-            logger.log_error(str(exc), "control_home_device")
+            logger.log_error(str(exc), "home_assistant_apply")
             failures.extend(group)
 
     if not changed:
-        return f"Home Assistant refused the command for {', '.join(e.label() for e in failures)}."
+        return False, (
+            f"Home Assistant refused the command for "
+            f"{', '.join(e.label() for e in failures)}."
+        )
 
-    summary = f"{_verb(wanted, extra)} {', '.join(e.label() for e in changed)}{_value_suffix(extra)}."
+    summary = f"{_verb(action, extra)} {', '.join(e.label() for e in changed)}{_value_suffix(extra)}."
     if failures:
         summary += f" Failed: {', '.join(e.label() for e in failures)}."
     if skipped:
         summary += f" Left {', '.join(e.label() for e in skipped)} alone — locks are off in config."
-    return summary
+    return True, summary
+
+
+# ── panel ─────────────────────────────────────────────────────────────────────
+
+
+def _index_or_fail(where: str) -> typing.List[_Entity]:
+    """The entity index, or a RuntimeError carrying a sentence worth showing.
+
+    The panel puts whatever this raises straight on the screen, and a bare
+    ConnectionError stringifies into a paragraph of urllib3 internals.
+    """
+    try:
+        return _fetch_index()
+    except (requests.exceptions.RequestException, ValueError) as exc:
+        raise RuntimeError(_failure(exc, where)) from exc
+
+
+def snapshot(domain: str = "") -> typing.Dict[str, typing.Any]:
+    """Controllable devices grouped by room, for the devices screen.
+
+    Deliberately not a job: list_home_devices writes 'Name (room): state',
+    which cannot be turned back into a switch. Same index, kept as fields.
+    """
+    entities = _index_or_fail("home_assistant_snapshot")
+    wanted = domain.strip().lower()
+
+    by_area: typing.Dict[str, typing.List[typing.Dict[str, typing.Any]]] = {}
+    for entity in entities:
+        if entity.domain not in _CONTROLLABLE:
+            continue
+        if wanted and entity.domain != wanted:
+            continue
+        by_area.setdefault(entity.area or "", []).append(
+            {
+                "entity_id": entity.entity_id,
+                "name": entity.name,
+                "domain": entity.domain,
+                "state": entity.state,
+                # What the switch should read as. Anything that is not plainly
+                # off — 'playing', 'open', 'unlocked' — shows as on.
+                "on": entity.state not in ("off", "closed", "locked", "unavailable", "unknown"),
+                "available": entity.state not in ("unavailable", "unknown"),
+                "brightness": entity.brightness_percent(),
+                "dimmable": entity.domain == "light",
+                # A guarded device is shown, and refused, so the screen can say
+                # why rather than silently hiding the front door.
+                "guarded": _is_guarded(entity),
+            }
+        )
+
+    areas = [
+        {"name": area, "devices": sorted(devices, key=lambda d: d["name"])}
+        for area, devices in sorted(by_area.items(), key=lambda kv: (kv[0] == "", kv[0]))
+    ]
+    return {"areas": areas, "locks_allowed": _locks_allowed()}
+
+
+def control(
+    entity_id: str,
+    action: str = "toggle",
+    brightness_percent: typing.Optional[int] = None,
+) -> typing.Tuple[bool, str]:
+    """Act on one device by its exact id, for the devices screen.
+
+    Not a job, and not a second control path: the screen already knows which
+    device was tapped, so it skips the name matching control_home_device needs
+    and hands the same entity to the same _apply. Matching by name here would
+    toggle both lamps called 'Lamp'.
+
+    Raises RuntimeError, with a sentence, when Home Assistant is unreachable.
+    """
+    entity = next(
+        (e for e in _index_or_fail("home_assistant_control") if e.entity_id == entity_id),
+        None,
+    )
+    if entity is None:
+        return False, f"No device '{entity_id}' in Home Assistant."
+    if entity.domain not in _CONTROLLABLE:
+        return False, f"{entity.label()} cannot be controlled."
+
+    wanted = (action or "toggle").strip().lower()
+    if not _service_for(entity.domain, wanted):
+        return False, (
+            f"Cannot '{wanted}' {entity.label()} — that device type does not support it."
+        )
+
+    return _apply([entity], wanted, _service_data(brightness_percent, None, None))
 
 
 # ── control helpers ───────────────────────────────────────────────────────────

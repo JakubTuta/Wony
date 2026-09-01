@@ -19,8 +19,8 @@ sys.path.insert(0, _REPO_ROOT)
 
 class TestConfigIsRepoAnchored(unittest.TestCase):
     def test_config_found_from_any_working_directory(self) -> None:
-        """The tray is started by Task Scheduler from an arbitrary directory,
-        and `wony.py text` can be run from anywhere. Resolving config.yaml
+        """systemd starts the kiosk from an arbitrary directory, and
+        `wony.py text` can be run from anywhere. Resolving config.yaml
         against the CWD meant both silently fell through to defaults."""
         from helpers.config import _resolve_yaml_path
 
@@ -114,6 +114,129 @@ class TestMcpToolNaming(unittest.TestCase):
         self.assertEqual(_job_name_for("srv", "read file!", {}), "read_file_")
 
 
+class TestKioskManifests(unittest.TestCase):
+    def test_every_default_entry_names_a_real_job(self) -> None:
+        """Three of the first eight tiles named jobs that did not exist
+        (get_weather, check_emails, pause_song). Nothing caught it until the
+        endpoint was called by hand — a tile that runs nothing looks exactly
+        like a tile whose module is off."""
+        from helpers.kiosk import _AMBIENT_CARDS, _DEFAULT_TILES
+        from helpers.registry import ServiceRegistry
+
+        # Import every module that owns a default entry so its jobs register.
+        # Some will not import (missing optional packages) — those are skipped
+        # rather than failed, which is the same thing CI does.
+        wanted = {t["module"] for t in _DEFAULT_TILES}
+        wanted |= {c["module"] for c in _AMBIENT_CARDS}
+
+        importable = set()
+        for module_name in sorted(wanted):
+            try:
+                __import__(f"modules.{module_name}")
+                importable.add(module_name)
+            except Exception:
+                pass
+
+        registered = ServiceRegistry.get_all_jobs()
+        entries = [(t["module"], t["job"]) for t in _DEFAULT_TILES if t["kind"] == "job"]
+        entries += [(c["module"], c["job"]) for c in _AMBIENT_CARDS]
+
+        checked = 0
+        for module_name, job_name in entries:
+            if module_name not in importable:
+                continue
+            with self.subTest(module=module_name, job=job_name):
+                self.assertIn(
+                    job_name,
+                    registered,
+                    f"{module_name} declares a tile/card for '{job_name}', "
+                    f"which is not a registered job.",
+                )
+            checked += 1
+
+        # If nothing was importable the assertions above all passed vacuously.
+        self.assertGreater(checked, 0, "No default entries could be checked at all.")
+
+    def test_prompt_tiles_carry_a_prompt(self) -> None:
+        """A prompt tile with no prompt sends an empty message to the agent."""
+        from helpers.kiosk import _DEFAULT_TILES
+
+        for tile in _DEFAULT_TILES:
+            if tile["kind"] == "prompt":
+                with self.subTest(tile=tile["id"]):
+                    self.assertTrue((tile.get("prompt") or "").strip())
+
+    def test_screen_tiles_name_a_screen(self) -> None:
+        """A screen tile with no screen is a tile that does nothing at all —
+        there is no job to fall back on, and the failure is silent in the UI."""
+        from helpers.kiosk import _DEFAULT_TILES
+
+        for tile in _DEFAULT_TILES:
+            if tile["kind"] == "screen":
+                with self.subTest(tile=tile["id"]):
+                    self.assertTrue((tile.get("screen") or "").strip())
+
+    def test_screen_tiles_name_a_registered_panel(self) -> None:
+        """A tile opening a screen whose data never loads is a dead end. Every
+        screen tile that reads a panel must name one that exists; the screens
+        with nothing to fetch (notifications, commands) are listed here so
+        adding a third kind cannot pass unnoticed."""
+        from helpers.kiosk import _DEFAULT_TILES
+        from helpers.panels import _PANELS
+
+        self_contained = {"notifications", "commands"}
+        checked = 0
+        for tile in _DEFAULT_TILES:
+            if tile["kind"] != "screen":
+                continue
+            screen = tile["screen"]
+            if screen in self_contained:
+                continue
+            with self.subTest(tile=tile["id"]):
+                self.assertIn(
+                    screen,
+                    _PANELS,
+                    f"tile '{tile['id']}' opens '{screen}', which has no panel.",
+                )
+            checked += 1
+
+        self.assertGreater(checked, 0, "No screen tiles were checked at all.")
+
+    def test_panels_name_the_module_that_gates_them(self) -> None:
+        """A panel gated on the wrong module either 503s while its module is
+        on, or runs while its module is off."""
+        from helpers.panels import _PANELS
+
+        for key, (module_name, _) in _PANELS.items():
+            with self.subTest(panel=key):
+                self.assertTrue(module_name)
+                # modules/<name>.py is the whole contract for a module name.
+                self.assertTrue(
+                    os.path.exists(
+                        os.path.join(_REPO_ROOT, "modules", f"{module_name}.py")
+                    ),
+                    f"panel '{key}' is gated on module '{module_name}', "
+                    "which has no modules/ file.",
+                )
+
+    def test_screen_tiles_are_not_runnable(self) -> None:
+        """POSTing a screen tile used to fall through to _run_job with a null
+        job name, answering "'' isn't available right now." instead of saying
+        the request made no sense."""
+        from helpers import kiosk
+
+        original = kiosk.tiles
+        kiosk.tiles = lambda: [
+            {"id": "accounts", "label": "Accounts", "icon": "", "kind": "screen",
+             "job": None, "prompt": None, "screen": "accounts", "args": {}}
+        ]
+        try:
+            with self.assertRaises(ValueError):
+                kiosk.run_tile("accounts")
+        finally:
+            kiosk.tiles = original
+
+
 class TestWeatherUnits(unittest.TestCase):
     def test_configured_units_reach_the_request(self) -> None:
         """modules.weather.default_units was documented as metric|imperial but
@@ -136,22 +259,6 @@ class TestWeatherUnits(unittest.TestCase):
                     self.assertEqual(weather.temperature_symbol(), expected_symbol)
         finally:
             Config._settings.modules.weather.default_units = original
-
-
-class TestImageMimeMatchesEncoding(unittest.TestCase):
-    def test_declared_mime_matches_the_bytes_we_send(self) -> None:
-        """Screenshots are PNG; declaring image/jpeg is rejected by Anthropic
-        and mis-sniffed by Gemini."""
-        import base64
-
-        import numpy as np
-
-        from helpers.tools import IMAGE_MIME_TYPE, numpy_image_to_base64_bytes
-
-        encoded = numpy_image_to_base64_bytes(np.zeros((4, 4, 3), dtype=np.uint8))
-        self.assertIsNotNone(encoded)
-        self.assertEqual(IMAGE_MIME_TYPE, "image/png")
-        self.assertTrue(base64.b64decode(encoded).startswith(b"\x89PNG\r\n\x1a\n"))
 
 
 if __name__ == "__main__":

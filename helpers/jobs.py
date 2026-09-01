@@ -53,8 +53,8 @@ class BackgroundJobs:
                 if not announce:
                     return
                 try:
-                    from helpers.audio import Audio
-                    Audio.notify(f"Background job {name} failed: {e}")
+                    from helpers.notify import notify
+                    notify(f"Background job {name} failed: {e}", kind="error", source="jobs")
                 except Exception:
                     pass
 

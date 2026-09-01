@@ -11,7 +11,6 @@ import typing
 import uuid
 
 import helpers.model as helpers_model
-from helpers.decorators import record_tool_outcome
 from helpers.logger import logger
 
 
@@ -160,24 +159,15 @@ def run_agent(
             exec_name = _resolve_job_name(name, available_jobs)
             if exec_name is not None:
                 func = available_jobs[exec_name]
-                # capture_response-wrapped jobs record their own outcome (with
-                # the correct quiet/mute flag); anything else must be recorded
-                # here as non-quiet so it can never silence the turn's narration.
-                self_recording = hasattr(func, "_quiet_success")
                 try:
                     result = func(**args)
                     result_str = str(result) if result is not None else ""
-                    if not self_recording:
-                        record_tool_outcome(exec_name, False, True)
                 except Exception as e:
                     result_str = f"Error executing {exec_name}: {e}"
                     logger.log_error(result_str, "agent_loop.execute")
-                    if not self_recording:
-                        record_tool_outcome(exec_name, False, False)
             else:
                 result_str = f"Unknown function: {name}"
                 logger.log_error(result_str, "agent_loop.execute")
-                record_tool_outcome(name, False, False)
 
             logger.log_function_response(name, result_str[:200], user_input)
             calls_made.append({"name": name, "args": args, "result": result_str})

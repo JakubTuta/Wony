@@ -5,20 +5,18 @@ import re
 import typing
 from datetime import datetime
 
-from helpers.accounts import GoogleAccounts
-from helpers.audio import Audio
+from helpers.accounts import CREDENTIALS_FILE, GoogleAccounts
+from helpers.notify import notify
 from helpers.cache import Cache
 from helpers.config import Config
 from helpers.decorators import capture_response
 from helpers.jobs import BackgroundJobs
 from helpers.logger import logger
-from helpers.paths import repo_path
 from helpers.registry import method_job, register_service
 from helpers.requirements import Requirement
 
 
 _METADATA_HEADERS = ["From", "To", "Cc", "Bcc", "Subject", "Date"]
-_CREDENTIALS_FILE = repo_path("credentials", "google_credentials.json")
 
 # Tuning knobs, not settings: a user asking "read my email" has no way to judge
 # any of these numbers, and the right answer doesn't vary by person.
@@ -158,7 +156,7 @@ def _gmail_job_name(account_name: str) -> str:
 @register_service(
     module_name="gmail",
     requires=Requirement(
-        files=[_CREDENTIALS_FILE],
+        files=[CREDENTIALS_FILE],
         pip_modules=["simplegmail"],
         setup_hint=(
             "Follow simplegmail OAuth setup (pypi.org/project/simplegmail), "
@@ -187,7 +185,7 @@ class Gmail:
         if name not in self._clients:
             rec = GoogleAccounts.record(name)
             self._clients[name] = simplegmail.Gmail(
-                client_secret_file=_CREDENTIALS_FILE,
+                client_secret_file=CREDENTIALS_FILE,
                 creds_file=rec["gmail_token"],
             )
         return self._clients[name]
@@ -195,6 +193,16 @@ class Gmail:
     def _svc(self, account: str):
         """Auto-refreshing raw googleapiclient Gmail resource."""
         return self._client(account).service
+
+    def forget_account(self, name: str) -> None:
+        """Drop cached state for an account whose token changed or went away.
+
+        Both caches are keyed by account name, so re-authorizing — or removing
+        an account and adding it back under the same name — would otherwise
+        keep using the client built from the old token.
+        """
+        self._clients.pop(name, None)
+        self._label_maps.pop(name, None)
 
     # ------------------------------------------------------------------
     # Config
@@ -453,18 +461,16 @@ class Gmail:
         self,
         messages: typing.List[Msg],
         header: str,
-        audio: bool,
         count_template: str,
         verbose_override: typing.Optional[bool] = None,
     ) -> str:
         lines = [header]
         count_msg = count_template.format(count=len(messages))
         lines.append(count_msg)
-        verbose = (not audio) if verbose_override is None else verbose_override
-        max_body = self._max_body_chars() if audio else 0
+        verbose = True if verbose_override is None else verbose_override
         for msg in messages:
             lines.append("")
-            lines.append(self._format_message(msg, verbose=verbose, max_body=max_body))
+            lines.append(self._format_message(msg, verbose=verbose))
         raw = "\n".join(lines)
 
         if not self._use_ai() or not messages:
@@ -485,7 +491,7 @@ class Gmail:
             f"Highlight key senders, main topics, and anything that looks like it needs a reply or action. "
             f"Context: {header}"
         )
-        result = summarize(payload, instruction, audio)
+        result = summarize(payload, instruction)
         if result is None:
             return raw
         return f"{header}\n{count_msg}\n\n{result}"
@@ -648,7 +654,6 @@ class Gmail:
         return self._render_messages(
             messages,
             header=f"Emails{criteria}{folder_label}:",
-            audio=Cache.get_audio(),
             count_template="Found {count} email(s).",
         )
 
@@ -680,8 +685,6 @@ class Gmail:
         Returns:
             str: Full email body and headers.
         """
-        audio = Cache.get_audio()
-
         if query:
             scoped = self._scope(query, folder=folder)
         else:
@@ -696,8 +699,7 @@ class Gmail:
         if not messages:
             return "No matching email found."
 
-        max_body = self._max_body_chars() if audio else 0
-        return self._format_message(messages[0], verbose=True, max_body=max_body)
+        return self._format_message(messages[0], verbose=True)
 
     @capture_response
     @method_job
@@ -750,7 +752,6 @@ class Gmail:
         Returns:
             str: All label names.
         """
-        audio = Cache.get_audio()
         all_names: typing.List[str] = []
         for name in self._accounts(account):
             all_names.extend(self._label_map(name).values())
@@ -768,11 +769,6 @@ class Gmail:
             if n in ("INBOX", "SENT", "TRASH", "SPAM", "STARRED", "IMPORTANT", "DRAFT")
         ]
 
-        if audio:
-            return (
-                f"You have {len(user_labels)} custom label(s): "
-                + (", ".join(user_labels) if user_labels else "none") + "."
-            )
         lines = [f"System labels: {', '.join(system_labels)}"]
         if user_labels:
             lines.append(f"Custom labels ({len(user_labels)}):")
@@ -811,7 +807,6 @@ class Gmail:
         if not query and not subject:
             return "Please provide a query or subject to find the thread."
 
-        audio = Cache.get_audio()
         search_q = self._scope(query if query else f"subject:{subject}")
 
         svc = None
@@ -840,11 +835,10 @@ class Gmail:
         thread_msgs.sort(key=Gmail._parse_date)
 
         seed_subject = thread_msgs[0].subject if thread_msgs else (subject or "")
-        max_body = self._max_body_chars() if audio else 0
         lines = [f"Thread: '{seed_subject}' — {len(thread_msgs)} message(s)"]
         for i, message in enumerate(thread_msgs, 1):
             lines.append(f"\n--- Message {i} ---")
-            lines.append(self._format_message(message, verbose=True, max_body=max_body))
+            lines.append(self._format_message(message, verbose=True))
         return "\n".join(lines)
 
     @capture_response
@@ -932,7 +926,7 @@ class Gmail:
             msg = f"You have {len(messages)} new email(s) in {name}."
             logger.log_system_event("gmail_poll", msg)
             notifications = [msg] + [self._format_message(m, verbose=False) for m in messages]
-            Audio.notify(notifications)
+            notify(notifications, kind="alert", source="gmail")
 
         BackgroundJobs.start(job_name, _poll, interval=interval_minutes * 60)
         return f"Checking '{name}' emails every {interval_minutes} minutes."

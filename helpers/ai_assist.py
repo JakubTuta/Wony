@@ -1,7 +1,7 @@
 import typing
 
 
-def summarize(content: str, instruction: str, audio: bool) -> typing.Optional[str]:
+def summarize(content: str, instruction: str) -> typing.Optional[str]:
     """Pass `content` through the configured AI with `instruction`.
 
     Returns the AI text on success, or None on any failure so the caller
@@ -16,15 +16,10 @@ def summarize(content: str, instruction: str, audio: bool) -> typing.Optional[st
         if ai is None or getattr(ai, "client", None) is None:
             return None
 
-        length_hint = (
-            "Reply in 2-3 spoken sentences — no lists, no markdown."
-            if audio
-            else "Reply in concise prose or a tight bullet list. No markdown headers."
-        )
         system_prompt = (
             f"{_persona()}\n\n"
             f"{instruction}\n\n"
-            f"{length_hint}"
+            "Reply in concise prose or a tight bullet list. No markdown headers."
         )
 
         response = helpers_model.send_message(

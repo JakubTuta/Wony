@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, raspberry-pi]
   pull_request:
 
 jobs:
@@ -23,9 +23,29 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements/core.txt
           pip install -r requirements/web.txt
+          pip install -r requirements/server.txt
 
       - name: Byte-compile
-        run: python -m compileall -q helpers modules scripts tests wony.py tray_app.py setup.py
+        run: python -m compileall -q helpers modules tests wony.py setup.py
 
       - name: Test
         run: python -m unittest discover -s tests -t . -v
+
+  screen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: kiosk/package-lock.json
+
+      # The touch UI is a built artifact the server hands out. A type error here
+      # is a blank screen on the device, which is the hardest place to notice it.
+      - name: Build the touch UI
+        working-directory: kiosk
+        run: |
+          npm ci
+          npm run build

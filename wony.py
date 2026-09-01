@@ -2,15 +2,13 @@
 Wony unified entry point.
 
 Usage:
-  python wony.py              # default: tray (always-on background mode)
-  python wony.py tray         # always-on tray with system tray icon
-  python wony.py text         # console text REPL
-  python wony.py voice        # console voice mode (push-to-talk hotkey + optional wake word)
-  python wony.py web          # web server only (FastAPI on configured host:port)
+  python wony.py              # default: kiosk (web API + touch UI on the display)
+  python wony.py kiosk        # same, explicitly
+  python wony.py text         # console text REPL — the way to debug over SSH
   python wony.py doctor       # validate setup and exit
-  python wony.py autostart install    # add Windows logon task
-  python wony.py autostart uninstall  # remove Windows logon task
-  python wony.py autostart status     # show task status
+  python wony.py autostart install    # start Wony + the browser at boot (systemd)
+  python wony.py autostart uninstall  # remove both units
+  python wony.py autostart status     # show unit status
 
 All subcommands that start the assistant brain load Config before importing
 modules, preserving the invariant that Config.load() precedes Employer import.
@@ -19,7 +17,8 @@ modules, preserving the invariant that Config.load() precedes Employer import.
 import argparse
 import sys
 
-# Force UTF-8 stdout/stderr on Windows so non-ASCII chars in responses don't crash.
+# systemd starts services with no locale set, so stdout defaults to ASCII and
+# the first ✓ in the health summary kills the process with UnicodeEncodeError.
 if sys.stdout and hasattr(sys.stdout, "reconfigure"):
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -39,7 +38,7 @@ def _require_setup() -> None:
 
     setup.py writes .wony_setup on success, recording the interpreter it set up.
     We refuse to start if that marker is missing, or if the app is being launched
-    with a different interpreter than the one set up (e.g. global python when the
+    with a different interpreter than the one set up (e.g. system python when the
     packages live in the project venv) — which would otherwise fail with cryptic
     ImportErrors.
     """
@@ -59,7 +58,7 @@ def _require_setup() -> None:
         sys.exit(1)
 
     try:
-        # utf-8-sig: tolerate a BOM (PowerShell may write one).
+        # utf-8-sig: tolerate a BOM (some editors write one).
         with open(marker, "r", encoding="utf-8-sig") as fh:
             data = json.load(fh)
     except Exception:
@@ -70,7 +69,7 @@ def _require_setup() -> None:
     if want_dir and os.path.normcase(os.path.abspath(want_dir)) != os.path.normcase(
         have_dir
     ):
-        want_py = data.get("python", os.path.join(want_dir, "python.exe"))
+        want_py = data.get("python", os.path.join(want_dir, "python"))
         print(
             "\nWrong Python interpreter for Wony.\n"
             f"Setup installed everything for:\n    {want_py}\n"
@@ -85,58 +84,32 @@ def _require_setup() -> None:
 # ── Subcommand handlers ───────────────────────────────────────────────────────
 
 
-def _get_tray_launcher(pythonw: str) -> str:
-    """Return path to Wony.exe — a copy of pythonw.exe placed in the same
-    Python directory so the tray process shows as 'Wony' in Task Manager.
-    Re-copies if pythonw.exe is newer (e.g. after a Python update).
-    Falls back to pythonw.exe on any error."""
-    import os
-    import shutil
+def cmd_kiosk(args: argparse.Namespace) -> None:
+    """Serve the API and the touch UI. This is what runs on the device."""
+    from helpers.config import Config
 
-    launcher = os.path.join(os.path.dirname(pythonw), "Wony.exe")
+    Config.load()
+
+    from helpers.bootstrap import BootstrapError, bootstrap
+
     try:
-        src_mtime = os.path.getmtime(pythonw)
-        dst_mtime = os.path.getmtime(launcher) if os.path.isfile(launcher) else 0
-        if dst_mtime < src_mtime:
-            shutil.copy2(pythonw, launcher)
-    except Exception:
-        pass
-    return launcher if os.path.isfile(launcher) else pythonw
+        bootstrap(seed_conversation=True)
+    except BootstrapError as e:
+        print(f"\nCannot start: {e}\n")
+        sys.exit(1)
 
+    from helpers.web_app import build_app
 
-def cmd_tray(args: argparse.Namespace) -> None:
-    import os
-    import subprocess
+    app = build_app()
 
-    exe = sys.executable
-    # If running under python.exe (console), re-spawn under Wony.exe (a copy of
-    # pythonw.exe) so the process shows as "Wony" in Task Manager and survives
-    # terminal close.
-    if os.path.basename(exe).lower() == "python.exe":
-        pythonw = os.path.join(os.path.dirname(exe), "pythonw.exe")
-        if not os.path.isfile(pythonw):
-            pythonw = exe.replace("python.exe", "pythonw.exe")
-        if os.path.isfile(pythonw):
-            launcher = _get_tray_launcher(pythonw)
-            script = os.path.abspath(__file__)
-            subprocess.Popen(
-                [launcher, script, "tray"],
-                cwd=os.path.dirname(script),
-                close_fds=True,
-                creationflags=subprocess.DETACHED_PROCESS
-                | subprocess.CREATE_NEW_PROCESS_GROUP,
-            )
-            print(
-                "Wony is starting in the background (tray icon + web UI).\n"
-                "This console window has no further output — check the system "
-                "tray for the icon. Safe to close this window."
-            )
-            return
+    import uvicorn
 
-    print("Starting Wony tray app — look for the icon in the system tray...")
-    from tray_app import run_tray
-
-    run_tray()
+    host = str(Config.get("server.host", "127.0.0.1"))
+    port = int(Config.get("server.port", 8000))
+    print(f"\nWony → http://{host}:{port}\n")
+    # Only one Wony may hold the port. On the device systemd enforces that;
+    # everywhere else uvicorn's own bind failure is the check.
+    uvicorn.run(app, host=host, port=port)
 
 
 def cmd_text(args: argparse.Namespace) -> None:
@@ -147,7 +120,7 @@ def cmd_text(args: argparse.Namespace) -> None:
     from helpers.bootstrap import BootstrapError, bootstrap
 
     try:
-        employer = bootstrap(audio=False)
+        employer = bootstrap()
     except BootstrapError as e:
         print(f"\nCannot start: {e}\n")
         sys.exit(1)
@@ -166,88 +139,6 @@ def cmd_text(args: argparse.Namespace) -> None:
             break
 
 
-def cmd_voice(args: argparse.Namespace) -> None:
-    from helpers.config import Config
-
-    Config.load()
-
-    from helpers.bootstrap import BootstrapError, bootstrap
-
-    try:
-        employer = bootstrap(audio=True)
-    except BootstrapError as e:
-        print(f"\nCannot start: {e}\n")
-        sys.exit(1)
-
-    if Config.get("models.preload", False):
-        from helpers.audio import preload_tts
-        from helpers.recognizer import preload_model
-
-        preload_model()
-        preload_tts()
-
-    from helpers.audio import Audio
-
-    from helpers.push_to_talk import hotkey_label
-
-    Audio.play_cached("I'm ready!")
-    print(f"\nListening for key combination ({hotkey_label()})...")
-
-    import threading
-
-    _stop = threading.Event()
-
-    # Start openWakeWord wake-word listener (no-op if disabled/missing)
-    from helpers.wakeword import WakeWordListener
-
-    ww = WakeWordListener(employer, exit_event=_stop)
-    ww.start()
-
-    from helpers.push_to_talk import do_speak, start_hotkey, stop_hotkey
-
-    def _do_speak() -> None:
-        print(f"[voice] {hotkey_label()} — listening")
-        do_speak(employer, ww, lambda: _stop.set(), "hotkey")
-
-    hotkey_listener = start_hotkey(_do_speak)
-
-    try:
-        while not _stop.wait(timeout=1):
-            pass
-    except KeyboardInterrupt:
-        print("\nExiting program...")
-    finally:
-        stop_hotkey(hotkey_listener)
-        ww.stop()
-        from helpers.media_pause import resume_all
-        resume_all()
-
-
-def cmd_web(args: argparse.Namespace) -> None:
-    from helpers.config import Config
-
-    Config.load()
-
-    from helpers.bootstrap import BootstrapError, bootstrap
-
-    try:
-        bootstrap(audio=False, seed_conversation=True)
-    except BootstrapError as e:
-        print(f"\nCannot start: {e}\n")
-        sys.exit(1)
-
-    from helpers.web_app import build_app
-
-    app = build_app()
-
-    import uvicorn
-
-    host = str(Config.get("server.host", "127.0.0.1"))
-    port = int(Config.get("server.port", 8000))
-    print(f"\nWony Web Server → http://{host}:{port}\n")
-    uvicorn.run(app, host=host, port=port)
-
-
 def cmd_doctor(args: argparse.Namespace) -> None:
     from helpers.config import Config
 
@@ -257,22 +148,25 @@ def cmd_doctor(args: argparse.Namespace) -> None:
 
     Cache.load_values()
 
-    Cache.set_audio(False)
-
     import dotenv
 
     dotenv.load_dotenv()
 
     from modules.doctor import run_doctor
 
-    print(run_doctor(voice_mode=True))
+    print(run_doctor())
 
 
 def cmd_autostart(args: argparse.Namespace) -> None:
+    from helpers.config import Config
+
+    # The browser unit embeds server.port in the URL it opens.
+    Config.load()
+
     from helpers.autostart import install, status, uninstall
 
     if args.action == "install":
-        install()
+        install(browser=not args.no_browser)
     elif args.action == "uninstall":
         uninstall()
     elif args.action == "status":
@@ -288,44 +182,35 @@ def main() -> None:
         description="Wony personal AI assistant",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
-            "Run with no subcommand to start the always-on tray mode.\n"
+            "Run with no subcommand to start the kiosk.\n"
             "Examples:\n"
-            "  python wony.py              # tray (default)\n"
+            "  python wony.py              # kiosk (default)\n"
             "  python wony.py text         # console text REPL\n"
-            "  python wony.py voice        # voice mode (push-to-talk + wake word)\n"
-            "  python wony.py web          # web server only\n"
             "  python wony.py autostart install"
         ),
     )
 
     subparsers = parser.add_subparsers(dest="subcommand")
 
-    # tray
-    p_tray = subparsers.add_parser("tray", help="Always-on tray mode (default)")
-    p_tray.set_defaults(func=cmd_tray)
+    p_kiosk = subparsers.add_parser("kiosk", help="Serve the API and touch UI (default)")
+    p_kiosk.set_defaults(func=cmd_kiosk)
 
-    # text
     p_text = subparsers.add_parser("text", help="Console text REPL")
     p_text.set_defaults(func=cmd_text)
 
-    # voice
-    p_voice = subparsers.add_parser("voice", help="Console voice mode")
-    p_voice.set_defaults(func=cmd_voice)
-
-    # web
-    p_web = subparsers.add_parser("web", help="Web server only")
-    p_web.set_defaults(func=cmd_web)
-
-    # doctor
     p_doctor = subparsers.add_parser("doctor", help="Validate setup and exit")
     p_doctor.set_defaults(func=cmd_doctor)
 
-    # autostart
-    p_auto = subparsers.add_parser("autostart", help="Windows autostart management")
+    p_auto = subparsers.add_parser("autostart", help="Start Wony at boot")
     p_auto.add_argument(
         "action",
         choices=["install", "uninstall", "status"],
-        help="install: add logon task; uninstall: remove it; status: show task info",
+        help="install: enable the systemd user units; uninstall: remove them; status: show them",
+    )
+    p_auto.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Install only the API unit, not the fullscreen browser (headless device)",
     )
     p_auto.set_defaults(func=cmd_autostart)
 
@@ -337,7 +222,7 @@ def main() -> None:
         _require_setup()
 
     if args.subcommand is None:
-        cmd_tray(args)
+        cmd_kiosk(args)
         return
 
     args.func(args)

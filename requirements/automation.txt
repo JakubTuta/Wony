@@ -1,3 +1,0 @@
-# Mouse/keyboard automation dependencies (league module).
-PyAutoGUI
-pynput

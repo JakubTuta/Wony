@@ -96,7 +96,7 @@ class Spotify:
         if not self.device_id:
             raise Exception("No active Spotify device found")
 
-    @capture_response(mute=True, one_message=True)
+    @capture_response
     @retry_on_unauthorized("_refresh_access_token")
     @method_job
     def play_songs(self, title: str, artist: str, content_type: str = "") -> typing.Optional[str]:
@@ -133,10 +133,7 @@ class Spotify:
         search_response = self._search(query=title, artist=artist, content_type=content_type)
 
         if not search_response:
-            # This job is mute=True (music starting IS the feedback) — a soft
-            # "not found" return would be silently swallowed just like a real
-            # success. Raise instead so the always-spoken error path fires.
-            raise Exception(f"Could not find '{title}'" + (f" by {artist}" if artist else "") + ".")
+            return f"Could not find '{title}'" + (f" by {artist}" if artist else "") + "."
 
         songs = self._get_songs_from_search(search_response)
         url = self._build_url_with_device("https://api.spotify.com/v1/me/player/play")
@@ -220,8 +217,8 @@ class Spotify:
     def _current_volume(self) -> int:
         state = self._get_playback_state()
         if not state:
-            # mute=True job — raise so the always-spoken error path fires
-            # instead of a soft-fail string being swallowed like a success.
+            # A helper returning an int has no way to report "no device"
+            # other than raising; capture_response turns it into a message.
             raise Exception("No active Spotify device.")
         return int(state.get("device", {}).get("volume_percent", 50))
 
@@ -238,7 +235,7 @@ class Spotify:
         name = state["item"]["name"] if state and state.get("item") else "Track"
         return f"Liked {name}." if liked else f"Removed {name} from liked songs."
 
-    @capture_response(mute=True, one_message=True)
+    @capture_response
     @method_job
     def control_playback(self, action: str = "toggle") -> str:
         """
@@ -291,7 +288,7 @@ class Spotify:
             "previous, restart or shuffle."
         )
 
-    @capture_response(mute=True, one_message=True)
+    @capture_response
     @method_job
     def set_volume(self, level: int = -1, direction: str = "") -> str:
         """
@@ -392,6 +389,39 @@ class Spotify:
 
         return result
 
+    @retry_on_unauthorized("_refresh_access_token")
+    def playback_snapshot(self) -> typing.Dict[str, typing.Any]:
+        """Playback state as data, for the screen's now-playing view.
+
+        Deliberately not a job: the model already has get_current_track, which
+        says the same thing in a sentence. A progress bar needs numbers, and
+        numbers cannot be parsed back out of a sentence.
+        """
+        state = self._get_playback_state()
+        item = (state or {}).get("item")
+        if not state or not item:
+            return {"active": False}
+
+        images = item.get("album", {}).get("images", [])
+        # Spotify returns 640/300/64 px. The middle one is the right size for a
+        # small panel and a third of the bytes.
+        art = images[1] if len(images) > 1 else (images[0] if images else None)
+
+        device = state.get("device") or {}
+        return {
+            "active": True,
+            "is_playing": bool(state.get("is_playing")),
+            "title": item.get("name", ""),
+            "artist": ", ".join(a["name"] for a in item.get("artists", [])),
+            "album": item.get("album", {}).get("name", ""),
+            "art_url": art.get("url") if art else None,
+            "progress_ms": state.get("progress_ms") or 0,
+            "duration_ms": item.get("duration_ms") or 0,
+            "shuffle": bool(state.get("shuffle_state")),
+            "device": device.get("name", ""),
+            "volume": device.get("volume_percent"),
+        }
+
 
 
 
@@ -420,7 +450,7 @@ class Spotify:
             return "No playlists found."
         return "Your playlists:\n" + "\n".join(f"  {p['name']}" for p in playlists)
 
-    @capture_response(mute=True, one_message=True)
+    @capture_response
     @retry_on_unauthorized("_refresh_access_token")
     @method_job
     def play_playlist(self, name: str) -> typing.Optional[str]:
@@ -449,9 +479,7 @@ class Spotify:
         )
 
         if not match:
-            # mute=True job — raise so the always-spoken error path fires
-            # instead of a soft-fail string being swallowed like a success.
-            raise Exception(f"Playlist '{name}' not found.")
+            return f"Playlist '{name}' not found."
 
         url = self._build_url_with_device("https://api.spotify.com/v1/me/player/play")
         self._make_spotify_request("put", url, json={"context_uri": match["uri"]})
@@ -636,15 +664,16 @@ class Spotify:
         return False
 
     def _get_playback_state(self) -> typing.Optional[typing.Dict[str, typing.Any]]:
-        try:
-            response = self._make_spotify_request(
-                "get", "https://api.spotify.com/v1/me/player"
-            )
-            return response.json()
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 204:
-                return {"error": "No active device found"}
-            raise
+        response = self._make_spotify_request(
+            "get", "https://api.spotify.com/v1/me/player"
+        )
+        # Nothing playing is a 204 with an empty body, which is a success, not
+        # an HTTPError — so it never raised, and .json() blew up on the empty
+        # string instead. "Nothing is playing" is the most ordinary state
+        # Spotify has; it must not come back as an error.
+        if response.status_code == 204 or not response.content:
+            return None
+        return response.json()
 
     @retry_on_unauthorized("_refresh_access_token")
     def _get_active_devices(self) -> typing.Optional[str]:

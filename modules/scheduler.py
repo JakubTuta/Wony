@@ -4,7 +4,7 @@ import typing
 import uuid
 from datetime import datetime
 
-from helpers.audio import Audio
+from helpers.notify import notify
 from helpers.decorators import capture_response
 from helpers.logger import logger
 from helpers.registry import ServiceRegistry, method_job, register_service
@@ -479,12 +479,12 @@ class Scheduler:
         if missed_at:
             # text here is already a _label() built at restore time.
             msg = f"Reminder (missed, was due {missed_at}): {text}"
-            Audio.notify(msg)
+            notify(msg, kind="reminder", source="scheduler")
             logger.log_system_event("reminder_fired_missed", msg)
         else:
             if text:
                 msg = f"Reminder: {text}"
-                Audio.notify(msg)
+                notify(msg, kind="reminder", source="scheduler")
                 logger.log_system_event("reminder_fired", msg)
             if action:
                 self._run_action(action)
@@ -505,17 +505,17 @@ class Scheduler:
         if resolved is None:
             err = f"unknown job '{action.get('job')}'"
             logger.log_error(err, "scheduler.run_action")
-            Audio.notify(f"Could not run scheduled action: {err}.")
+            notify(f"Could not run scheduled action: {err}.", kind="error", source="scheduler")
             return
-        # A timer firing mid-turn would otherwise write into the running agent's
-        # tool-outcome ledger and be silenced by its _agent_active suppression.
-        # Waiting for the turn to end costs a few seconds and keeps both honest.
+        # A timer firing mid-turn would otherwise run its job under the running
+        # agent's _agent_active suppression, and interleave with it on shared
+        # Conversation state. Waiting for the turn to end costs a few seconds.
         with agent_lock:
             try:
                 jobs[resolved](**(action.get("args") or {}))
             except Exception as e:
                 logger.log_error(str(e), f"scheduler.run_action.{resolved}")
-                Audio.notify(f"Scheduled action failed: {e}")
+                notify(f"Scheduled action failed: {e}", kind="error", source="scheduler")
 
     def _load_and_restore(self) -> None:
         try:

@@ -1,8 +1,8 @@
 """Data files must resolve against the repo, not the process CWD.
 
-The tray is launched by Task Scheduler and `wony.py text` can be started from
-anywhere; a CWD-relative default silently creates a second wony.db / cache.json
-next to wherever the process happened to start.
+systemd starts the kiosk from whatever directory it likes, and `wony.py text`
+can be run from anywhere; a CWD-relative default silently creates a second
+wony.db / cache.json next to wherever the process happened to start.
 
 Run directly: python tests/test_paths.py
 """
@@ -54,23 +54,6 @@ class TestPaths(unittest.TestCase):
             ),
             f"accounts.json escapes the repo: {accounts._ACCOUNTS_FILE}",
         )
-
-    def test_audio_flag_is_process_state(self) -> None:
-        """Muting must not be written to disk — `wony.py doctor` used to flip a
-        running tray to silent through the shared cache file."""
-        from helpers.cache import Cache
-
-        before = Cache.get_audio()
-        persisted = dict(Cache.get_values())
-        try:
-            Cache.set_audio(True)
-            self.assertTrue(Cache.get_audio())
-            Cache.set_audio(False)
-            self.assertFalse(Cache.get_audio())
-            # Toggling must not touch the persisted store at all.
-            self.assertEqual(Cache.get_values(), persisted)
-        finally:
-            Cache.set_audio(before)
 
 
 if __name__ == "__main__":

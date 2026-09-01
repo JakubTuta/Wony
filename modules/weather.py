@@ -42,32 +42,93 @@ def weather(city: str) -> str:
     Returns:
         str: Complete weather report with city, conditions, and temperature information.
     """
-    import geocoder
+    data = snapshot(city)
+    if data["error"]:
+        return f"Error: {data['error']}"
+
+    return (
+        f"The weather for {data['city']} is {data['description']} "
+        f"with {data['temperature']}{data['unit']}."
+    )
+
+
+def snapshot(city: str = "") -> typing.Dict[str, typing.Any]:
+    """Current conditions as data, for the weather screen.
+
+    Deliberately not a job: weather() describes this in a sentence, which is
+    the right answer for chat and the wrong one for a panel — a sentence has
+    no place to put a humidity readout or an icon. Both go through the same
+    request; this one just doesn't throw the structure away.
+
+    Errors come back in the "error" key rather than as an exception, because
+    every caller wants to show them rather than handle them.
+    """
+    empty = {
+        "city": city or "your location",
+        "description": "",
+        "temperature": None,
+        "feels_like": None,
+        "unit": temperature_symbol(),
+        "humidity": None,
+        "wind": None,
+        "wind_unit": _wind_unit(),
+        "icon": "",
+        "condition": 0,
+        "sunrise": None,
+        "sunset": None,
+        "error": None,
+    }
 
     api_key = os.environ.get("WEATHER_API_KEY")
     if not api_key:
-        return "Error: Weather API key not configured."
+        return {**empty, "error": "Weather API key not configured."}
 
     if city == "":
-        my_geolocation = geocoder.ip("me")
-        latlng = my_geolocation.latlng or (None, None)
-        city = my_geolocation.city or "your location"
-        lat, lon = latlng
+        lat, lon, city = _here()
+        if lat is None:
+            return {**empty, "error": "Could not work out where this device is."}
     else:
         lat, lon = _get_coordinates_for_city_name(city, api_key)
 
     if lat is None or lon is None:
-        return "Error: Could not retrieve coordinates for the given city."
+        return {**empty, "error": "Could not retrieve coordinates for the given city."}
 
-    weather_data = _get_weather_for_coordinates(lat, lon, api_key)
+    data = _get_weather_for_coordinates(lat, lon, api_key)
+    if data is None:
+        return {**empty, "error": "Could not retrieve weather information."}
 
-    if weather_data is None:
-        return "Error: Could not retrieve weather information."
+    conditions = (data.get("weather") or [{}])[0]
+    main = data.get("main") or {}
+    return {
+        **empty,
+        # OpenWeatherMap names the station's own town, which beats whatever the
+        # caller typed or the IP lookup guessed.
+        "city": data.get("name") or city,
+        "description": conditions.get("description", ""),
+        "temperature": main.get("temp"),
+        "feels_like": main.get("feels_like"),
+        "humidity": main.get("humidity"),
+        "wind": (data.get("wind") or {}).get("speed"),
+        "icon": conditions.get("icon", ""),
+        "condition": conditions.get("id", 0),
+        "sunrise": (data.get("sys") or {}).get("sunrise"),
+        "sunset": (data.get("sys") or {}).get("sunset"),
+    }
 
-    return (
-        f"The weather for {city} is {weather_data['weather'][0]['description']} "
-        f"with {weather_data['main']['temp']}{temperature_symbol()}."
-    )
+
+def _here() -> typing.Tuple[
+    typing.Optional[float], typing.Optional[float], str
+]:
+    """Where this device is, by IP. Rough, but it needs no setup from the user."""
+    import geocoder
+
+    try:
+        located = geocoder.ip("me")
+        lat, lon = located.latlng or (None, None)
+        return lat, lon, located.city or "your location"
+    except Exception as e:
+        logger.log_error(str(e), "weather_geolocate")
+        return None, None, "your location"
 
 
 def units() -> str:
@@ -80,6 +141,11 @@ def units() -> str:
 
 def temperature_symbol() -> str:
     return {"metric": "°C", "imperial": "°F", "standard": "K"}[units()]
+
+
+def _wind_unit() -> str:
+    """OpenWeatherMap reports mph only for imperial; metric and standard are m/s."""
+    return "mph" if units() == "imperial" else "m/s"
 
 
 def _get_coordinates_for_city_name(
