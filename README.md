@@ -182,6 +182,10 @@ pip install -r requirements/tray.txt       # system tray icon
 2. Place `google_credentials.json` in `credentials/`
 3. `pip install -r requirements/gmail.txt` and/or `pip install -r requirements/calendar.txt`
 4. Enable `gmail` and/or `calendar` in `config.yaml`
+5. Say "add google account work" — a browser opens for consent
+
+Google expires tokens on its own, and a password change expires all of them. Say
+"authorize work" to sign in again.
 
 ### Voice input/output
 

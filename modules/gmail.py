@@ -5,20 +5,18 @@ import re
 import typing
 from datetime import datetime
 
-from helpers.accounts import GoogleAccounts
+from helpers.accounts import CREDENTIALS_FILE, GoogleAccounts
 from helpers.audio import Audio
 from helpers.cache import Cache
 from helpers.config import Config
 from helpers.decorators import capture_response
 from helpers.jobs import BackgroundJobs
 from helpers.logger import logger
-from helpers.paths import repo_path
 from helpers.registry import method_job, register_service
 from helpers.requirements import Requirement
 
 
 _METADATA_HEADERS = ["From", "To", "Cc", "Bcc", "Subject", "Date"]
-_CREDENTIALS_FILE = repo_path("credentials", "google_credentials.json")
 
 # Tuning knobs, not settings: a user asking "read my email" has no way to judge
 # any of these numbers, and the right answer doesn't vary by person.
@@ -158,7 +156,7 @@ def _gmail_job_name(account_name: str) -> str:
 @register_service(
     module_name="gmail",
     requires=Requirement(
-        files=[_CREDENTIALS_FILE],
+        files=[CREDENTIALS_FILE],
         pip_modules=["simplegmail"],
         setup_hint=(
             "Follow simplegmail OAuth setup (pypi.org/project/simplegmail), "
@@ -187,7 +185,7 @@ class Gmail:
         if name not in self._clients:
             rec = GoogleAccounts.record(name)
             self._clients[name] = simplegmail.Gmail(
-                client_secret_file=_CREDENTIALS_FILE,
+                client_secret_file=CREDENTIALS_FILE,
                 creds_file=rec["gmail_token"],
             )
         return self._clients[name]
@@ -195,6 +193,12 @@ class Gmail:
     def _svc(self, account: str):
         """Auto-refreshing raw googleapiclient Gmail resource."""
         return self._client(account).service
+
+    def forget_account(self, name: str) -> None:
+        """Drop cached state for an account whose token changed or went away —
+        both caches are keyed by name, so a re-auth would reuse the old client."""
+        self._clients.pop(name, None)
+        self._label_maps.pop(name, None)
 
     # ------------------------------------------------------------------
     # Config

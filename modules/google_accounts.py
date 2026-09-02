@@ -1,19 +1,29 @@
-from helpers.accounts import GoogleAccounts
+import os
+import threading
+import typing
+
+from helpers.accounts import CREDENTIALS_FILE, GoogleAccounts
 from helpers.decorators import capture_response
 from helpers.logger import logger
-from helpers.registry import method_job, register_service
+from helpers.registry import ServiceRegistry, method_job, register_service
+
+# Services holding their own OAuth token per account. All are authorized
+# together — an account signed in for mail but not calendar is half configured.
+_GOOGLE_SERVICES = ("gmail", "calendar")
+
+# Consent happens in a browser at human speed. Long enough for a password and a
+# phone code, short enough that an abandoned sign-in doesn't wedge the turn.
+_AUTH_TIMEOUT_SECONDS = 180
 
 
 @register_service(module_name="google_accounts")
 class GoogleAccountsService:
-    """Google account management — add, remove, list, set primary."""
+    """Google account management — add, remove, list, authorize, set primary."""
 
     def __init__(self):
         pass
 
     def _email_from_gmail(self, gmail_svc, account: str) -> str:
-        if not gmail_svc:
-            return ""
         try:
             profile = gmail_svc._svc(account).users().getProfile(userId="me").execute()
             return (profile or {}).get("emailAddress", "")
@@ -22,8 +32,6 @@ class GoogleAccountsService:
             return ""
 
     def _email_from_calendar(self, cal_svc, account: str) -> str:
-        if not cal_svc:
-            return ""
         try:
             primary = (
                 cal_svc._service_for(account)
@@ -37,19 +45,74 @@ class GoogleAccountsService:
             logger.log_error(str(e), f"google_account_email.calendar_primary.{account}")
             return ""
 
-    def _ensure_account_email(self, account: str, gmail_svc=None, cal_svc=None) -> str:
-        rec = GoogleAccounts.record(account)
-        email = (rec.get("email", "") or "").strip()
-        if email:
-            return email
+    def _sign_in(self, module: str, service: typing.Any, name: str) -> str:
+        """Build the client — which is what triggers consent, since both
+        libraries run the flow on first use — and report the email it belongs to."""
+        if module == "gmail":
+            service._client(name)
+            return self._email_from_gmail(service, name)
 
-        email = self._email_from_gmail(gmail_svc, account)
-        if not email:
-            email = self._email_from_calendar(cal_svc, account)
+        service._service_for(name)
+        return self._email_from_calendar(service, name)
 
-        if email:
-            GoogleAccounts.set_email(account, email)
-        return email
+    def _forget_cached(self, name: str) -> None:
+        """Tell each Google service to drop what it cached for this account —
+        its token is about to change or has just been deleted."""
+        for module in _GOOGLE_SERVICES:
+            service = ServiceRegistry.get_service_instance(module)
+            if service is not None:
+                service.forget_account(name)
+
+    def _authorize(self, name: str) -> typing.Tuple[typing.List[str], typing.List[str]]:
+        """Run OAuth consent for every enabled Google service.
+
+        Returns (authorized, problems). The flow runs on a worker thread
+        because it blocks on a person, and the caller is an agent turn.
+        """
+        services = {
+            module: service
+            for module in _GOOGLE_SERVICES
+            if (service := ServiceRegistry.get_service_instance(module)) is not None
+        }
+        if not services:
+            return [], [
+                "Neither gmail nor calendar is enabled, so there is nothing to sign in to."
+            ]
+        if not os.path.exists(CREDENTIALS_FILE):
+            return [], [
+                "credentials/google_credentials.json is missing — download the OAuth "
+                "client from Google Cloud Console and put it there first."
+            ]
+
+        authorized: typing.List[str] = []
+        problems: typing.List[str] = []
+
+        def work() -> None:
+            for module, service in services.items():
+                try:
+                    logger.log_system_event(
+                        "google_account_auth", f"Authorizing {module} for '{name}'..."
+                    )
+                    email = self._sign_in(module, service, name)
+                    if email:
+                        GoogleAccounts.set_email(name, email)
+                    authorized.append(module)
+                except Exception as e:
+                    problems.append(f"{module.capitalize()}: {e}")
+                    logger.log_error(str(e), f"google_account_auth.{module}.{name}")
+
+        worker = threading.Thread(target=work, name=f"google-oauth-{name}", daemon=True)
+        worker.start()
+        worker.join(_AUTH_TIMEOUT_SECONDS)
+
+        if worker.is_alive():
+            problems.append(
+                "Sign-in wasn't finished in time. The browser window is still open — "
+                "finishing there completes it."
+            )
+
+        # Copied: an abandoned worker may still append to these.
+        return list(authorized), list(problems)
 
     @capture_response
     @method_job
@@ -127,54 +190,61 @@ class GoogleAccountsService:
             f"Account '{safe_name}' registered. Triggering OAuth authorization...",
         )
 
-        from helpers.registry import ServiceRegistry
+        authorized, problems = self._authorize(safe_name)
+        if not problems:
+            return f"Account '{safe_name}' added successfully."
 
-        gmail_svc = ServiceRegistry.get_service_instance("gmail")
-        cal_svc = ServiceRegistry.get_service_instance("calendar")
-        auth_errors = []
-        gmail_ok = False
-        calendar_ok = False
-
-        if gmail_svc:
-            try:
-                logger.log_system_event("google_account_add", "Authorizing Gmail...")
-                gmail_svc._client(safe_name)
-                email = self._email_from_gmail(gmail_svc, safe_name)
-                if email:
-                    GoogleAccounts.set_email(safe_name, email)
-                logger.log_system_event("google_account_add", "Gmail authorized.")
-                gmail_ok = True
-            except Exception as e:
-                auth_errors.append(f"Gmail auth failed: {e}")
-                logger.log_error(str(e), f"google_account_add.gmail_auth.{safe_name}")
-        if cal_svc:
-            try:
-                logger.log_system_event("google_account_add", "Authorizing Calendar...")
-                cal_svc._service_for(safe_name)
-                if not GoogleAccounts.record(safe_name).get("email", ""):
-                    email = self._email_from_calendar(cal_svc, safe_name)
-                    if email:
-                        GoogleAccounts.set_email(safe_name, email)
-                logger.log_system_event("google_account_add", "Calendar authorized.")
-                calendar_ok = True
-            except Exception as e:
-                auth_errors.append(f"Calendar auth failed: {e}")
-                logger.log_error(
-                    str(e), f"google_account_add.calendar_auth.{safe_name}"
-                )
-        if auth_errors:
-            details = "; ".join(auth_errors)
-            if gmail_ok or calendar_ok:
-                return (
-                    f"Account '{safe_name}' was added, but authorization only partially "
-                    f"completed. {details}"
-                )
+        details = " ".join(problems)
+        if authorized:
             return (
-                f"Account '{safe_name}' was registered, but authorization failed. "
-                f"{details}"
+                f"Account '{safe_name}' was added and signed in to "
+                f"{', '.join(authorized)}, but not the rest. {details}"
             )
+        return (
+            f"Account '{safe_name}' was registered, but sign-in didn't complete. "
+            f"{details} Say 'authorize {safe_name}' to try again."
+        )
 
-        return f"Account '{safe_name}' added successfully."
+    @capture_response
+    @method_job
+    def authorize_google_account(self, name: str) -> str:
+        """
+        [GOOGLE ACCOUNTS JOB] Signs in to an already-added Google account again.
+        Opens a browser for consent. Use this when an account has stopped working.
+
+        Use this job when the user wants to:
+        - Fix an account that says its access expired or was revoked
+        - Sign in again after changing their Google password
+        - Finish authorizing an account that was added but never signed in
+
+        Keywords: authorize account, reauthorize, re-authorize, sign in again,
+                 reconnect account, fix account, account expired, invalid grant,
+                 access revoked, login again, refresh account access, grant access
+
+        Args:
+            name (str): The account name to authorize (e.g. 'work'). (required)
+
+        Returns:
+            str: Which services were signed in, or what went wrong.
+        """
+        if not name:
+            return "Please specify which account to authorize."
+
+        try:
+            GoogleAccounts.clear_tokens(name)
+        except ValueError as e:
+            return str(e)
+        self._forget_cached(name)
+
+        authorized, problems = self._authorize(name)
+        if authorized and not problems:
+            return f"Account '{name}' is signed in to {', '.join(authorized)}."
+        if authorized:
+            return (
+                f"Account '{name}' is signed in to {', '.join(authorized)}, "
+                f"but not the rest. {' '.join(problems)}"
+            )
+        return f"Couldn't sign in to '{name}'. {' '.join(problems)}"
 
     @capture_response
     @method_job
@@ -202,9 +272,11 @@ class GoogleAccountsService:
 
         try:
             GoogleAccounts.remove_account(name)
-            return f"Account '{name}' removed."
         except ValueError as e:
             return str(e)
+
+        self._forget_cached(name)
+        return f"Account '{name}' removed."
 
     @capture_response
     @method_job
@@ -238,10 +310,14 @@ class GoogleAccountsService:
         if new_name and new_name.strip() != name:
             try:
                 safe = GoogleAccounts.rename_account(name, new_name)
-                messages.append(f"Account renamed: '{name}' → '{safe}'.")
-                name = safe  # use new name for subsequent set_primary
             except ValueError as e:
                 return str(e)
+            # Token files moved with the account, so anything cached under
+            # either name now points at a path that no longer exists.
+            self._forget_cached(name)
+            self._forget_cached(safe)
+            messages.append(f"Account renamed: '{name}' → '{safe}'.")
+            name = safe  # use new name for subsequent set_primary
 
         if set_primary:
             try:

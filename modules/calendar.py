@@ -2,20 +2,18 @@ import os
 import typing
 from datetime import datetime, timedelta
 
-from helpers.accounts import GoogleAccounts
+from helpers.accounts import CREDENTIALS_FILE, GoogleAccounts
 from helpers.audio import Audio
 from helpers.cache import Cache
 from helpers.config import Config
 from helpers.decorators import capture_response
 from helpers.jobs import BackgroundJobs
 from helpers.logger import logger
-from helpers.paths import repo_path
 from helpers.registry import method_job, register_service
 from helpers.requirements import Requirement
 from helpers.timeutil import local_tz, now_local
 
 _SCOPES = ["https://www.googleapis.com/auth/calendar"]
-_CREDENTIALS_FILE = repo_path("credentials", "google_credentials.json")
 
 # Tuning knobs, not settings — nobody asking "what's on today" should have to
 # pick a result cap or a search window, and the right values don't vary by user.
@@ -37,7 +35,7 @@ def _calendar_job_name(account_name: str) -> str:
 @register_service(
     module_name="calendar",
     requires=Requirement(
-        files=[_CREDENTIALS_FILE],
+        files=[CREDENTIALS_FILE],
         pip_modules=["googleapiclient", "google_auth_oauthlib", "google.auth"],
         setup_hint=(
             "Create an OAuth client (Desktop) in Google Cloud Console with Calendar API "
@@ -66,6 +64,11 @@ class Calendar:
             self._services[name] = build("calendar", "v3", credentials=creds)
         return self._services[name]
 
+    def forget_account(self, name: str) -> None:
+        """Drop the cached service for an account whose token changed or went
+        away, so the next call builds one from the token now on disk."""
+        self._services.pop(name, None)
+
     def _accounts(self, account: str) -> typing.List[str]:
         """Accounts to operate on: the named one if given, else every configured
         account (so an unspecified account searches all)."""
@@ -92,7 +95,7 @@ class Calendar:
                 creds.refresh(Request())
             else:
                 flow = InstalledAppFlow.from_client_secrets_file(
-                    _CREDENTIALS_FILE, _SCOPES
+                    CREDENTIALS_FILE, _SCOPES
                 )
                 creds = flow.run_local_server(port=0)
             os.makedirs(os.path.dirname(token_file), exist_ok=True)

@@ -39,6 +39,9 @@ _DESTRUCTIVE_JOBS: typing.Set[str] = {
     # accounts
     "remove_google_account",
     "edit_google_account",
+    # Discards the stored token before re-running consent: an interrupted
+    # sign-in leaves the account worse off than it started.
+    "authorize_google_account",
 }
 
 

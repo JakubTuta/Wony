@@ -636,15 +636,14 @@ class Spotify:
         return False
 
     def _get_playback_state(self) -> typing.Optional[typing.Dict[str, typing.Any]]:
-        try:
-            response = self._make_spotify_request(
-                "get", "https://api.spotify.com/v1/me/player"
-            )
-            return response.json()
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 204:
-                return {"error": "No active device found"}
-            raise
+        response = self._make_spotify_request(
+            "get", "https://api.spotify.com/v1/me/player"
+        )
+        # Nothing playing is a 204 with an empty body — a success, so it never
+        # raised HTTPError, and .json() blew up on the empty string instead.
+        if response.status_code == 204 or not response.content:
+            return None
+        return response.json()
 
     @retry_on_unauthorized("_refresh_access_token")
     def _get_active_devices(self) -> typing.Optional[str]:
