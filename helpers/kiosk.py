@@ -39,17 +39,17 @@ from helpers.registry import ServiceRegistry
 # screen instead. The same modules are still there to talk to.
 _DEFAULT_TILES: typing.List[typing.Dict[str, typing.Any]] = [
     {"id": "time", "label": "Time", "icon": "🕑", "kind": "job",
-     "job": "get_time", "module": "basics"},
+     "job": "get_datetime", "module": "basics"},
     {"id": "briefing", "label": "Briefing", "icon": "👋", "kind": "job",
      "job": "greeting", "module": "basics"},
     {"id": "weather", "label": "Weather", "icon": "🌤️", "kind": "screen",
      "screen": "weather", "module": "weather"},
-    {"id": "reminders", "label": "Reminders", "icon": "⏰", "kind": "job",
-     "job": "list_reminders", "module": "scheduler"},
+    {"id": "reminders", "label": "Reminders", "icon": "⏰", "kind": "screen",
+     "screen": "reminders", "module": "scheduler"},
     {"id": "agenda", "label": "Today", "icon": "📅", "kind": "screen",
      "screen": "agenda", "module": "calendar"},
     {"id": "inbox", "label": "Inbox", "icon": "✉️", "kind": "job",
-     "job": "get_unread_count", "module": "gmail"},
+     "job": "inbox_overview", "module": "gmail"},
     {"id": "lights", "label": "Devices", "icon": "💡", "kind": "screen",
      "screen": "devices", "module": "home_assistant"},
     {"id": "playpause", "label": "Play / Pause", "icon": "⏯️", "kind": "job",
@@ -140,7 +140,10 @@ def ambient() -> typing.List[typing.Dict[str, typing.Any]]:
         if cached is not None and now - cached[0] < _AMBIENT_TTL_SECONDS:
             text = cached[1]
         else:
-            result = _run_job(card["job"], card["args"], source=f"ambient:{card['key']}")
+            result = _run_job(
+                card["job"], card["args"],
+                source=f"ambient:{card['key']}", wait=False,
+            )
             # A failed lookup is not cached, and not shown: the network may be
             # back in a second, and a stale "invalid_grant" would sit on the
             # idle screen for the full TTL. An empty card is better.
@@ -195,8 +198,18 @@ def _run_job(
     job_name: str,
     args: typing.Dict[str, typing.Any],
     source: str,
+    wait: bool = True,
 ) -> KioskTurn:
-    """Invoke a registered job directly, with no model in the loop."""
+    """Invoke a registered job directly, with no model in the loop.
+
+    Runs under agent_lock: a tapped tile reaches the same jobs and the same
+    _agent_active flag as a typed sentence, and clearing that flag underneath a
+    running turn would make it narrate every tool call it makes.
+
+    wait=False gives up rather than queueing behind a turn in progress — for
+    the idle screen, whose refresh is a cache top-up nobody is waiting on.
+    """
+    from helpers.decorators import agent_lock, set_agent_active
     from helpers.logger import logger
     from helpers.web_app import _coerce_args
 
@@ -205,12 +218,19 @@ def _run_job(
         return KioskTurn(text=f"'{job_name}' isn't available right now.",
                          source=source, ok=False)
 
+    if not agent_lock.acquire(blocking=wait):
+        return KioskTurn(text="", source=source, ok=False)
+
     logger.log_function_call(job_name, f"[{source}]", args)
     try:
+        set_agent_active(True)
         result = func(**_coerce_args(func, args))
     except Exception as e:
         logger.log_error(str(e), f"kiosk.{job_name}")
         return KioskTurn(text=f"That didn't work: {e}", source=source, ok=False)
+    finally:
+        set_agent_active(False)
+        agent_lock.release()
 
     text = str(result) if result is not None else ""
     logger.log_function_response(job_name, text[:200], f"[{source}]")

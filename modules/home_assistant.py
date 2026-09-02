@@ -1,4 +1,4 @@
-"""Home Assistant control over its REST API.
+﻿"""Home Assistant control over its REST API.
 
 Entity resolution lives here rather than in the prompt: one /api/template
 render returns the whole entity/name/area/state index, which /api/states
@@ -77,8 +77,7 @@ class _Entity:
     area: str
     state: str
     device_class: str
-    # Home Assistant reports light brightness as 0-255, and only while the
-    # light is on. Empty for everything else.
+    # Home Assistant reports light brightness as 0-255, and only while lit.
     brightness: str = ""
 
     @property
@@ -209,12 +208,6 @@ def list_home_devices(query: str = "", area: str = "", domain: str = "") -> str:
     and for reading state ("is the garage door open", "what's the bedroom temperature",
     "did I leave a light on"). With no arguments it lists the whole house.
 
-    Use this job when the user wants to:
-    - Know what smart-home devices exist, or what is in a given room
-    - Check whether something is on, off, open, closed or locked
-    - Read a sensor: temperature, humidity, power, battery
-    - Find the right device name before controlling it
-
     Args:
         query (str): Name to look for, e.g. 'garage door', 'bedroom lamp'.
         area (str): Restrict to one room, e.g. 'kitchen', 'living room'.
@@ -256,14 +249,6 @@ def control_home_device(
     switches, blinds, thermostats, locks, media players, scenes and scripts. Device
     names are resolved here, so pass what the user said ('the bedroom lamp') rather
     than an entity id. Give target, or area/domain, or both.
-
-    Use this job when the user wants to:
-    - Turn something on, off or toggle it
-    - Dim a light or change its brightness
-    - Open, close or stop blinds, curtains, or the garage
-    - Set the thermostat temperature
-    - Lock or unlock a door, arm or disarm the alarm
-    - Run a scene or script, e.g. 'movie night'
 
     Args:
         target (str): What to control, as the user named it, e.g. 'bedroom lamp'.
@@ -310,12 +295,12 @@ def _apply(
 ) -> typing.Tuple[bool, str]:
     """Run one action against already-chosen entities and describe the result.
 
-    Both ways of choosing devices — a spoken name, or an entity id tapped on
-    the screen — end up here, so the lock gate, the mass-change ceiling and the
+    Both ways of choosing devices — a spoken name, or an entity id clicked in
+    the UI — end up here, so the lock gate, the mass-change ceiling and the
     per-domain service call exist once.
 
     Returns (anything actually changed, what to say). The flag is what lets the
-    screen tell a refusal from a success without reading the sentence back.
+    UI tell a refusal from a success without reading the sentence back.
     """
     skipped = []
     if not _locks_allowed():
@@ -370,8 +355,8 @@ def _apply(
 def _index_or_fail(where: str) -> typing.List[_Entity]:
     """The entity index, or a RuntimeError carrying a sentence worth showing.
 
-    The panel puts whatever this raises straight on the screen, and a bare
-    ConnectionError stringifies into a paragraph of urllib3 internals.
+    The panel puts whatever this raises on screen, and a bare ConnectionError
+    stringifies into a paragraph of urllib3 internals.
     """
     try:
         return _fetch_index()
@@ -380,10 +365,10 @@ def _index_or_fail(where: str) -> typing.List[_Entity]:
 
 
 def snapshot(domain: str = "") -> typing.Dict[str, typing.Any]:
-    """Controllable devices grouped by room, for the devices screen.
+    """Controllable devices grouped by room, for the devices panel.
 
-    Deliberately not a job: list_home_devices writes 'Name (room): state',
-    which cannot be turned back into a switch. Same index, kept as fields.
+    Not a job: list_home_devices writes 'Name (room): state', which cannot be
+    turned back into a switch. Same index, kept as fields.
     """
     entities = _index_or_fail("home_assistant_snapshot")
     wanted = domain.strip().lower()
@@ -400,14 +385,14 @@ def snapshot(domain: str = "") -> typing.Dict[str, typing.Any]:
                 "name": entity.name,
                 "domain": entity.domain,
                 "state": entity.state,
-                # What the switch should read as. Anything that is not plainly
-                # off — 'playing', 'open', 'unlocked' — shows as on.
+                # Anything not plainly off — 'playing', 'open', 'unlocked' —
+                # shows as on.
                 "on": entity.state not in ("off", "closed", "locked", "unavailable", "unknown"),
                 "available": entity.state not in ("unavailable", "unknown"),
                 "brightness": entity.brightness_percent(),
                 "dimmable": entity.domain == "light",
-                # A guarded device is shown, and refused, so the screen can say
-                # why rather than silently hiding the front door.
+                # Guarded devices are shown and refused, so the UI can say why
+                # rather than silently hiding the front door.
                 "guarded": _is_guarded(entity),
             }
         )
@@ -424,12 +409,12 @@ def control(
     action: str = "toggle",
     brightness_percent: typing.Optional[int] = None,
 ) -> typing.Tuple[bool, str]:
-    """Act on one device by its exact id, for the devices screen.
+    """Act on one device by its exact id, for the devices panel.
 
-    Not a job, and not a second control path: the screen already knows which
-    device was tapped, so it skips the name matching control_home_device needs
-    and hands the same entity to the same _apply. Matching by name here would
-    toggle both lamps called 'Lamp'.
+    Not a second control path: the UI already knows which device was clicked,
+    so it skips the name matching control_home_device needs and hands the same
+    entity to the same _apply. Matching by name here would toggle both lamps
+    called 'Lamp'.
 
     Raises RuntimeError, with a sentence, when Home Assistant is unreachable.
     """

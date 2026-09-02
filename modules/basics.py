@@ -13,60 +13,35 @@ from helpers.timeutil import now_local
 # --- clock ---
 
 
-@register_job(module_name="basics", summary="Tell the current time")
+@register_job(module_name="basics", summary="Tell the current time and date")
 @capture_response
-def get_time() -> str:
+def get_datetime(part: str = "both") -> str:
     """
-    [CLOCK JOB] Tells the current local time.
-
-    Use this job when the user wants to:
-    - Know what time it is
-    - Check the current time
-
-    Keywords: time, what time, current time, what's the time, tell me the time, clock
+    [CLOCK JOB] Tells the current local time, today's date, or both.
 
     Args:
-        None
+        part (str): "time" for the clock, "date" for the day, "both" (the default)
+            for one sentence carrying each.
 
     Returns:
-        str: Current time as a human-readable string.
+        str: The current time and/or date.
     """
     now = datetime.now()
-    return f"It's {now.strftime('%H:%M')}."
-
-
-@register_job(module_name="basics", summary="Tell today's date")
-@capture_response
-def get_date() -> str:
-    """
-    [CLOCK JOB] Tells today's date.
-
-    Use this job when the user wants to:
-    - Know today's date
-    - Check the current date
-
-    Keywords: date, today, what's today, what day is it, current date, today's date
-
-    Args:
-        None
-
-    Returns:
-        str: Today's date as a human-readable string.
-    """
-    now = datetime.now()
-    return f"Today is {now.strftime('%A, %B %d, %Y')}."
+    wanted = (part or "both").strip().lower()
+    if wanted == "time":
+        return f"It's {now.strftime('%H:%M')}."
+    if wanted == "date":
+        return f"Today is {now.strftime('%A, %B %d, %Y')}."
+    return f"It's {now.strftime('%H:%M')} on {now.strftime('%A, %B %d, %Y')}."
 
 
 # --- system ---
 
 
 def _run_power_command(verb: str, systemctl_action: str) -> str:
-    """Shared body of power_off and reboot.
-
-    The gate is a config key rather than a typed confirmation: there is no
+    """The gate is a config key rather than a typed confirmation: there is no
     console on this device, and a touch screen cannot answer input(). The UI
-    is expected to confirm before it ever gets here.
-    """
+    confirms before it ever gets here."""
     if not bool(Config.get("modules.basics.allow_power_off", False)):
         logger.log_system_event(f"{systemctl_action}_refused", "Power control is disabled.")
         return (
@@ -96,46 +71,24 @@ def _run_power_command(verb: str, systemctl_action: str) -> str:
     return f"{verb.capitalize()}ing now. o7"
 
 
-@register_job(module_name="basics", summary="Power off this device")
+@register_job(module_name="basics", summary="Power off or restart this device")
 @capture_response
-def power_off() -> str:
+def power_device(action: str = "off") -> str:
     """
-    [SYSTEM CONTROL JOB] Shuts down this device.
-
-    Use this job when the user wants to:
-    - Power down the device
-    - Turn the machine off completely
-
-    Keywords: shut down, power off, turn off, shutdown, power down, switch off
+    [SYSTEM CONTROL JOB] Shuts down or restarts this device.
 
     Args:
-        None
+        action (str): "off" to shut down (the default), or "restart".
 
     Returns:
-        str: Confirmation, or why the shutdown did not happen.
+        str: Confirmation, or why it did not happen.
     """
-    return _run_power_command("shut down", "poweroff")
-
-
-@register_job(module_name="basics", summary="Restart this device")
-@capture_response
-def reboot() -> str:
-    """
-    [SYSTEM CONTROL JOB] Restarts this device.
-
-    Use this job when the user wants to:
-    - Reboot or restart the machine
-    - Power-cycle the device to clear a problem
-
-    Keywords: reboot, restart, restart the device, reboot the system, power cycle
-
-    Args:
-        None
-
-    Returns:
-        str: Confirmation, or why the restart did not happen.
-    """
-    return _run_power_command("restart", "reboot")
+    wanted = (action or "off").strip().lower()
+    if wanted in ("restart", "reboot"):
+        return _run_power_command("restart", "reboot")
+    if wanted in ("off", "shutdown", "shut down", "power off"):
+        return _run_power_command("shut down", "poweroff")
+    return f"Unknown action '{action}'. Use off or restart."
 
 
 # --- greeting ---
@@ -150,18 +103,6 @@ def greeting() -> str:
     Includes owner name, full date and time, and conditionally appends current weather,
     unread email summary with deduplicated senders, and today's calendar meetings depending
     on which modules are enabled.
-
-    Use this job when the user wants to:
-    - Start a conversation with a greeting
-    - Get a daily morning or evening briefing
-    - Hear the current time, date, weather, emails, and meetings at once
-
-    Keywords: hello, hi, hey, hey there, good morning, good afternoon, good evening,
-             greet, greeting, morning, what's up, daily briefing, morning briefing,
-             status update, how are you, what do I have today
-
-    Args:
-        None
 
     Returns:
         str: Personalized greeting with time, date, and optional contextual info.

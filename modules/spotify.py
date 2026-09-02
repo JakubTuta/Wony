@@ -1,4 +1,4 @@
-import base64
+﻿import base64
 import datetime
 import http.server
 import os
@@ -18,6 +18,10 @@ from helpers.registry import method_job, register_service
 from helpers.requirements import Requirement
 
 auth_code = None
+
+
+class DeviceGone(Exception):
+    """Spotify answered 404: the device we aimed at is not there any more."""
 
 
 class AuthHandler(http.server.SimpleHTTPRequestHandler):
@@ -92,9 +96,10 @@ class Spotify:
             if not self.access_token or not self.refresh_token:
                 raise Exception("Failed to get access token and refresh token")
 
-        self.device_id = self._get_active_devices()
-        if not self.device_id:
-            raise Exception("No active Spotify device found")
+        # Resolved on first use, not here: Spotify being closed at startup must
+        # not stop the module registering, or every music command stays missing
+        # until the app is restarted.
+        self.device_id: typing.Optional[str] = None
 
     @capture_response
     @retry_on_unauthorized("_refresh_access_token")
@@ -104,15 +109,6 @@ class Spotify:
         [SPOTIFY SERVICE METHOD] Searches and plays music on Spotify by title and/or artist.
         This service method integrates with Spotify API to find and start playbook of songs,
         albums, or artist catalogs based on user search criteria.
-
-        Use this method when the user wants to:
-        - Play specific songs or albums on Spotify
-        - Start music playback with search terms
-        - Listen to music by particular artists
-        - Stream audio content through Spotify
-
-        Keywords: play, song, track, music, spotify, search, listen, stream, music playback,
-                 start music, play spotify, listen to, put on music
 
         Args:
             title (str): Title of the song or an album to play, or name of the artist if no album/song is specified. (required)
@@ -136,10 +132,11 @@ class Spotify:
             return f"Could not find '{title}'" + (f" by {artist}" if artist else "") + "."
 
         songs = self._get_songs_from_search(search_response)
-        url = self._build_url_with_device("https://api.spotify.com/v1/me/player/play")
 
         self._set_shuffle(False)
-        self._make_spotify_request("put", url, json={"uris": songs})
+        self._device_call(
+            "put", "https://api.spotify.com/v1/me/player/play", json={"uris": songs}
+        )
         if search_response.get("type") == "artists":
             return f"Playing {search_response['name']}."
         return f"Playing {search_response['name']} by {search_response['artist']}."
@@ -152,15 +149,6 @@ class Spotify:
         [SPOTIFY SERVICE METHOD] Adds songs or albums to the Spotify playback queue for later listening.
         This service method searches for music content and adds it to the current playback queue
         without interrupting the currently playing track.
-
-        Use this method when the user wants to:
-        - Add songs to play later
-        - Queue up music for continuous listening
-        - Build a listening sequence
-        - Add tracks without stopping current playback
-
-        Keywords: add, queue, song, track, music, spotify, add to queue, queue up,
-                 add song, queue music, add track, queue this, add to playlist
 
         Args:
             title (str): Title of the song or an album to add, or name of the artist if no album/song is specified. (required)
@@ -175,15 +163,14 @@ class Spotify:
         if not search_response:
             return f"Could not find '{title}'" + (f" by {artist}" if artist else "") + "."
 
-        base_url = "https://api.spotify.com/v1/me/player/queue"
-        url = self._build_url_with_device(base_url)
-
         songs = self._get_songs_from_search(search_response)
 
         for song in songs:
-            separator = "&" if self.device_id else "?"
-            request_url = f"{url}{separator}uri={song}"
-            self._make_spotify_request("post", request_url)
+            self._device_call(
+                "post",
+                f"https://api.spotify.com/v1/me/player/queue?uri={urllib.parse.quote(song)}",
+                "&",
+            )
 
         return f"Added {search_response['name']} by {search_response['artist']} to the queue."
 
@@ -199,27 +186,27 @@ class Spotify:
 
     @retry_on_unauthorized("_refresh_access_token")
     def _transport(self, verb: str, path: str, sep: str = "?") -> None:
-        self._make_spotify_request(verb, self._build_url_with_device(path, sep))
+        self._device_call(verb, path, sep)
 
     @retry_on_unauthorized("_refresh_access_token")
     def _apply_volume(self, volume: int) -> str:
         if not 0 <= volume <= 100:
             raise Exception("Volume must be between 0 and 100.")
-        self._make_spotify_request(
+        self._device_call(
             "put",
-            self._build_url_with_device(
-                f"https://api.spotify.com/v1/me/player/volume?volume_percent={volume}",
-                "&",
-            ),
+            f"https://api.spotify.com/v1/me/player/volume?volume_percent={volume}",
+            "&",
         )
         return f"Volume set to {volume}%."
 
     def _current_volume(self) -> int:
         state = self._get_playback_state()
         if not state:
-            # A helper returning an int has no way to report "no device"
-            # other than raising; capture_response turns it into a message.
-            raise Exception("No active Spotify device.")
+            # A helper returning an int has no way to say "no device" other
+            # than raising; capture_response turns it into a message.
+            raise Exception(
+                "Nothing is playing — open Spotify on your phone or computer and try again."
+            )
         return int(state.get("device", {}).get("volume_percent", 50))
 
     @retry_on_unauthorized("_refresh_access_token")
@@ -241,12 +228,6 @@ class Spotify:
         """
         [SPOTIFY JOB] Controls Spotify transport: play, pause, skip, go back, restart the
         current track, or toggle shuffle. This is the single tool for all of those.
-
-        Use this job when the user wants to:
-        - Play, pause, resume or stop the music
-        - Skip to the next song or go back to the previous one
-        - Restart the current song from the beginning
-        - Turn shuffle on or off
 
         Args:
             action (str): One of: toggle (play/pause depending on current state,
@@ -294,11 +275,6 @@ class Spotify:
         """
         [SPOTIFY JOB] Sets or adjusts the Spotify playback volume.
 
-        Use this job when the user wants to:
-        - Set the volume to a specific percentage
-        - Make the music louder or quieter
-        - Turn the volume all the way up, or all the way down
-
         Args:
             level (int): Target volume 0-100. Use this for "set volume to 40".
             direction (str): Relative change instead of a level: up or down (10%
@@ -332,10 +308,6 @@ class Spotify:
         [SPOTIFY JOB] Likes, unlikes, or toggles the like state of the currently
         playing track in the user's Liked Songs.
 
-        Use this job when the user wants to:
-        - Like / save / favourite the current song
-        - Unlike or remove the current song from liked songs
-
         Args:
             action (str): One of: toggle (the default), like, unlike.
 
@@ -364,17 +336,6 @@ class Spotify:
         """
         [SPOTIFY SERVICE METHOD] Announces the currently playing track and artist on Spotify.
 
-        Use this method when the user wants to:
-        - Know what song is currently playing
-        - Find out the artist of the current track
-        - Check what's on
-
-        Keywords: what's playing, now playing, current song, current track, what song,
-                 playing now, what music, song name, track name, who's playing
-
-        Args:
-            None
-
         Returns:
             str: Track and artist name, or a message if nothing is playing.
         """
@@ -391,11 +352,10 @@ class Spotify:
 
     @retry_on_unauthorized("_refresh_access_token")
     def playback_snapshot(self) -> typing.Dict[str, typing.Any]:
-        """Playback state as data, for the screen's now-playing view.
+        """Playback state as data, for the now-playing panel.
 
-        Deliberately not a job: the model already has get_current_track, which
-        says the same thing in a sentence. A progress bar needs numbers, and
-        numbers cannot be parsed back out of a sentence.
+        Not a job: get_current_track says the same thing in a sentence, and a
+        progress bar needs numbers a sentence cannot carry.
         """
         state = self._get_playback_state()
         item = (state or {}).get("item")
@@ -404,7 +364,7 @@ class Spotify:
 
         images = item.get("album", {}).get("images", [])
         # Spotify returns 640/300/64 px. The middle one is the right size for a
-        # small panel and a third of the bytes.
+        # panel and a third of the bytes.
         art = images[1] if len(images) > 1 else (images[0] if images else None)
 
         device = state.get("device") or {}
@@ -422,25 +382,12 @@ class Spotify:
             "volume": device.get("volume_percent"),
         }
 
-
-
-
     @capture_response
     @retry_on_unauthorized("_refresh_access_token")
     @method_job
     def get_playlists(self) -> str:
         """
         [SPOTIFY SERVICE METHOD] Lists all playlists owned or followed by the current user.
-
-        Use this method when the user wants to:
-        - See their playlists
-        - Browse available playlists
-        - List Spotify playlists
-
-        Keywords: list playlists, show playlists, my playlists, what playlists, browse playlists
-
-        Args:
-            None
 
         Returns:
             str: Names of all playlists.
@@ -456,13 +403,6 @@ class Spotify:
     def play_playlist(self, name: str) -> typing.Optional[str]:
         """
         [SPOTIFY SERVICE METHOD] Finds a user playlist by name and starts playback.
-
-        Use this method when the user wants to:
-        - Play a specific playlist by name
-        - Start a named playlist
-        - Listen to one of their playlists
-
-        Keywords: play playlist, start playlist, listen to playlist, put on playlist
 
         Args:
             name (str): Full or partial name of the playlist to play. (required)
@@ -481,8 +421,11 @@ class Spotify:
         if not match:
             return f"Playlist '{name}' not found."
 
-        url = self._build_url_with_device("https://api.spotify.com/v1/me/player/play")
-        self._make_spotify_request("put", url, json={"context_uri": match["uri"]})
+        self._device_call(
+            "put",
+            "https://api.spotify.com/v1/me/player/play",
+            json={"context_uri": match["uri"]},
+        )
         return f"Playing playlist {match['name']}."
 
     @capture_response
@@ -492,15 +435,6 @@ class Spotify:
         """
         [SPOTIFY SERVICE METHOD] Adds a song to a user playlist by name.
         If no song is specified, adds the currently playing track.
-
-        Use this method when the user wants to:
-        - Add a song to a playlist
-        - Save a track to a specific playlist
-        - Add current song to a playlist
-        - Add a song by artist to a playlist
-
-        Keywords: add to playlist, save to playlist, put in playlist, add song to playlist,
-                 add this to playlist, add current to playlist, add track to playlist
 
         Args:
             playlist_name (str): Full or partial name of the target playlist. (required)
@@ -546,15 +480,6 @@ class Spotify:
         [SPOTIFY SERVICE METHOD] Removes a song from a user playlist by name.
         If no song is specified, removes the currently playing track.
 
-        Use this method when the user wants to:
-        - Remove a song from a playlist
-        - Delete a track from a specific playlist
-        - Remove current song from a playlist
-        - Take a song out of a playlist
-
-        Keywords: remove from playlist, delete from playlist, take out of playlist,
-                 remove song from playlist, remove current from playlist, remove track from playlist
-
         Args:
             playlist_name (str): Full or partial name of the target playlist. (required)
             title (str): Title of the song to remove. If empty, removes currently playing track.
@@ -596,8 +521,7 @@ class Spotify:
         base_url = (
             f"https://api.spotify.com/v1/me/player/shuffle?state={str(state).lower()}"
         )
-        url = self._build_url_with_device(base_url, "&")
-        self._make_spotify_request("put", url)
+        self._device_call("put", base_url, "&")
         return f"Shuffle {'enabled' if state else 'disabled'}."
 
     def _get_current_track_id(self) -> typing.Optional[str]:
@@ -629,9 +553,36 @@ class Spotify:
 
     def _build_url_with_device(self, base_url: str, separator: str = "?") -> str:
         """Build URL with device_id parameter if available"""
+        if not self.device_id:
+            self.device_id = self._get_active_devices()
         if self.device_id:
             return f"{base_url}{separator}device_id={self.device_id}"
         return base_url
+
+    def _device_call(
+        self, method: str, base_url: str, separator: str = "?", **kwargs
+    ) -> typing.Optional[requests.Response]:
+        """A player request aimed at the active device.
+
+        Spotify forgets a device as soon as its app closes, and the id is then
+        dead for the rest of the session. Re-resolving once on 404 is what makes
+        "play something" work again after reopening Spotify, instead of failing
+        until Wony itself is restarted.
+        """
+        try:
+            return self._make_spotify_request(
+                method, self._build_url_with_device(base_url, separator), **kwargs
+            )
+        except DeviceGone:
+            self.device_id = self._get_active_devices()
+            if not self.device_id:
+                raise Exception(
+                    "No Spotify device is available — open Spotify on your phone "
+                    "or computer and try again."
+                ) from None
+            return self._make_spotify_request(
+                method, self._build_url_with_device(base_url, separator), **kwargs
+            )
 
     def _make_spotify_request(
         self, method: str, url: str, **kwargs
@@ -642,14 +593,14 @@ class Spotify:
         try:
             response.raise_for_status()
         except requests.exceptions.HTTPError as e:
-            # Bare "404 Client Error: Not Found for url: ..." is meaningless when
-            # spoken aloud — translate the common cases so capture_response's
-            # always-vocalized error path actually tells the user something.
-            # 401/403 are left as HTTPError so retry_on_unauthorized can still
-            # catch them and attempt a token refresh.
+            # Bare "404 Client Error: Not Found for url: ..." tells the user
+            # nothing — translate the common cases. 401/403 stay HTTPError so
+            # retry_on_unauthorized can still catch them and refresh the token.
             status = response.status_code
             if status == 404:
-                raise Exception("Spotify device is no longer available — open Spotify and try again.") from e
+                raise DeviceGone(
+                    "Spotify device is no longer available — open Spotify and try again."
+                ) from e
             if status == 429:
                 raise Exception("Spotify is rate-limiting requests — try again in a moment.") from e
             raise
@@ -667,10 +618,8 @@ class Spotify:
         response = self._make_spotify_request(
             "get", "https://api.spotify.com/v1/me/player"
         )
-        # Nothing playing is a 204 with an empty body, which is a success, not
-        # an HTTPError — so it never raised, and .json() blew up on the empty
-        # string instead. "Nothing is playing" is the most ordinary state
-        # Spotify has; it must not come back as an error.
+        # Nothing playing is a 204 with an empty body — a success, so it never
+        # raised HTTPError, and .json() blew up on the empty string instead.
         if response.status_code == 204 or not response.content:
             return None
         return response.json()

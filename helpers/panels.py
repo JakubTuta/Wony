@@ -1,17 +1,12 @@
-"""Structured data for the screens that are not a conversation.
+﻿"""Structured data for the parts of the UI that are not a conversation.
 
-A job returns a sentence. That is the right answer in chat and the wrong one on
-a screen: you cannot put a switch on a sentence, or a temperature into a gauge,
-or tap the third line of a paragraph. A panel is the same information the job
-would have described, handed over before it was turned into words.
+A job returns a sentence. That is the right answer in chat and the wrong one in
+a panel: you cannot put a switch on a sentence, or a temperature into a gauge.
+A panel is the same information the job would have described, handed over
+before it was turned into words.
 
-Every panel is read-only, runs no model, and goes to the same API the job would
-have. Tapping a tile is not a shortcut for typing the question — it is the same
-work with the prose step skipped.
-
-Adding one: write a `snapshot()` on the module (or a method on its service),
-then add a line to _PANELS. The module gate and the error handling are here, so
-the panel itself only has to fetch.
+Every panel is read-only and runs no model. Adding one: write a `snapshot()` on
+the module (or a method on its service), then add a line to _PANELS.
 """
 
 import typing
@@ -27,7 +22,13 @@ class PanelUnavailable(Exception):
 def _service(module: str) -> typing.Any:
     instance = ServiceRegistry.get_service_instance(module)
     if instance is None:
-        raise PanelUnavailable(f"{module} is enabled but did not start.")
+        # The registry already knows why it did not start ("No active Spotify
+        # device found"), which beats making the reader go and look.
+        _status, reason = ServiceRegistry.get_module_status().get(module, ("", ""))
+        raise PanelUnavailable(
+            f"{module} did not start: {reason}" if reason
+            else f"{module} is enabled but did not start."
+        )
     return instance
 
 
@@ -55,28 +56,52 @@ def _accounts() -> typing.Dict[str, typing.Any]:
     return _service("google_accounts").accounts_snapshot()
 
 
-# key -> (module that must be enabled, what to call)
-_PANELS: typing.Dict[str, typing.Tuple[str, typing.Callable[[], dict]]] = {
-    "weather": ("weather", _weather),
-    "agenda": ("calendar", _agenda),
-    "devices": ("home_assistant", _devices),
-    "music": ("spotify", _music),
-    "accounts": ("google_accounts", _accounts),
+def _reminders() -> typing.Dict[str, typing.Any]:
+    return _service("scheduler").reminders_snapshot()
+
+
+class _Panel(typing.NamedTuple):
+    module: str  # must be enabled for this panel to exist
+    label: str
+    load: typing.Callable[[], dict]
+
+
+_PANELS: typing.Dict[str, _Panel] = {
+    "weather": _Panel("weather", "Weather", _weather),
+    "agenda": _Panel("calendar", "Today", _agenda),
+    "reminders": _Panel("scheduler", "Timers", _reminders),
+    "devices": _Panel("home_assistant", "Devices", _devices),
+    "music": _Panel("spotify", "Music", _music),
+    "accounts": _Panel("google_accounts", "Accounts", _accounts),
 }
+
+
+def available() -> typing.List[typing.Dict[str, str]]:
+    """Panels whose module is switched on, in declaration order."""
+    enabled = Config.enabled_modules()
+    return [
+        {"key": key, "label": spec.label, "module": spec.module}
+        for key, spec in _PANELS.items()
+        if spec.module in enabled
+    ]
 
 
 def panel(key: str) -> typing.Dict[str, typing.Any]:
     """Read one panel.
 
     Raises KeyError for an unknown key and PanelUnavailable when the module
-    behind it is off — the two mean different things to the caller, and to the
-    screen.
+    behind it is off — those mean different things to the caller.
     """
     spec = _PANELS.get(key)
     if spec is None:
         raise KeyError(key)
 
-    module_name, load = spec
-    if module_name not in Config.enabled_modules():
-        raise PanelUnavailable(f"{module_name} is not enabled.")
-    return load()
+    if spec.module not in Config.enabled_modules():
+        raise PanelUnavailable(f"{spec.module} is not enabled.")
+
+    try:
+        return spec.load()
+    except (KeyError, IndexError) as exc:
+        # A loader indexing something missing must not reach the caller as the
+        # KeyError above, which means "no such panel" and answers 404.
+        raise RuntimeError(f"The {key} panel got an unexpected response: {exc}") from exc

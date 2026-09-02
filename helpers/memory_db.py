@@ -1,4 +1,4 @@
-import atexit
+﻿import atexit
 import json as _json
 import sqlite3
 import threading
@@ -70,8 +70,7 @@ def _init_schema(conn: sqlite3.Connection) -> None:
     except sqlite3.OperationalError:
         pass
     # Proactive messages (a timer firing, a poller finding something). Persisted
-    # rather than fire-and-forget because nobody is necessarily standing at the
-    # screen when one arrives — it has to still be there when they walk up.
+    # because nobody is necessarily at the machine when one arrives.
     conn.execute("""
         CREATE TABLE IF NOT EXISTS notifications (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,

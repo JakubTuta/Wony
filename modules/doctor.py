@@ -191,18 +191,6 @@ def check_setup() -> str:
     whether the device has the architecture, memory and disk space Wony needs.
     Prints exactly what to fix for anything that is missing or broken.
 
-    Use this job when the user wants to:
-    - Diagnose setup problems
-    - See what integrations need configuration
-    - Get step-by-step fix instructions
-    - Validate the assistant is fully configured
-
-    Keywords: check setup, diagnose, setup, doctor, validate, configuration check,
-             what's broken, fix setup, setup status, configuration status
-
-    Args:
-        None
-
     Returns:
         str: Full diagnostics report with ✓/✗ per component and fix instructions.
     """

@@ -1,12 +1,10 @@
-"""
+﻿"""
 MCP server management jobs.
 
-All CRUD operations are callable from chat — no config editing needed.
 State is persisted in the mcp_servers table in wony.db; tool wrappers are
-registered/unregistered in ServiceRegistry dynamically without restart.
+registered/unregistered in ServiceRegistry dynamically without a restart.
 """
 import json
-import typing
 
 from helpers.decorators import capture_response
 from helpers.registry import register_job
@@ -20,31 +18,36 @@ _MCP_REQUIREMENT = Requirement(
 
 def _client():
     from helpers import mcp_client
+
     return mcp_client
+
+
+def _tool_summary(name: str) -> str:
+    tools = _client().get_session(name).list_tools()
+    listed = ", ".join(t["name"] for t in tools[:5])
+    return f"{len(tools)} tool(s): {listed}{'…' if len(tools) > 5 else ''}"
+
+
+def _valid_json(value: str, shape: type) -> bool:
+    try:
+        return isinstance(json.loads(value), shape)
+    except (json.JSONDecodeError, ValueError):
+        return False
 
 
 @register_job(
     module_name="mcp",
     requires=_MCP_REQUIREMENT,
-    summary="List all MCP server connections and their status",
+    summary="List MCP server connections and their status",
 )
 @capture_response
 def list_mcp_servers() -> str:
     """
-    [MCP JOB] Lists all configured MCP server connections and their current status.
-
-    Use this job when the user wants to:
-    - See all configured MCP servers
-    - Check which servers are connected
-    - View connection status of integrations
-
-    Keywords: list mcp servers, mcp status, show connections, mcp connections, integrations
-
-    Args:
-        None
+    [MCP JOB] Lists every configured MCP server connection and whether it is
+    currently connected.
 
     Returns:
-        str: Table of servers with name, transport, address, and status.
+        str: Each server with its transport, address, and status.
     """
     from helpers.memory_db import all_mcp_servers
 
@@ -52,176 +55,32 @@ def list_mcp_servers() -> str:
     connected = set(_client().all_connected())
 
     if not records:
-        return "No MCP servers configured. Use add_mcp_server to add one."
+        return "No MCP servers configured. Use manage_mcp_server to add one."
 
     lines = [f"{len(records)} MCP server(s) configured:"]
-    for r in records:
-        name = r["name"]
-        transport = r["transport"]
-        enabled = bool(r["enabled"])
+    for record in records:
+        name = record["name"]
         if name in connected:
             status = "connected"
-        elif not enabled:
+        elif not bool(record["enabled"]):
             status = "disabled"
         else:
             status = "disconnected"
-        addr = r.get("url") or r.get("command") or ""
-        lines.append(f"  [{name}] {transport} {addr!r} — {status}")
+        address = record.get("url") or record.get("command") or ""
+        lines.append(f"  [{name}] {record['transport']} {address!r} — {status}")
     return "\n".join(lines)
 
 
-@register_job(module_name="mcp", summary="Add a new MCP server connection")
+@register_job(
+    module_name="mcp",
+    requires=_MCP_REQUIREMENT,
+    summary="Add, edit, remove, connect or disconnect an MCP server",
+)
 @capture_response
-def add_mcp_server(
-    name: str,
+def manage_mcp_server(
+    action: str = "add",
+    name: str = "",
     transport: str = "stdio",
-    command: str = "",
-    url: str = "",
-    args: str = "[]",
-    env: str = "{}",
-    auto_connect: bool = True,
-) -> str:
-    """
-    [MCP JOB] Adds a new MCP server configuration and optionally connects to it.
-
-    Use this job when the user wants to:
-    - Add a new MCP server integration
-    - Register a new tool provider
-    - Connect to an external service via MCP
-
-    Keywords: add mcp server, new mcp, add integration, register mcp, add tool server
-
-    Args:
-        name (str): Unique server name (e.g. "notion", "github"). (required)
-        transport (str): Connection type: "stdio" (default) or "sse"/"http".
-        command (str): Executable command for stdio transport (e.g. "npx @notionhq/mcp").
-        url (str): Base URL for sse/http transport.
-        args (str): JSON array of command arguments for stdio (e.g. '["--token", "xyz"]').
-        env (str): JSON object of extra environment variables (e.g. '{"API_KEY": "xyz"}').
-        auto_connect (bool): Connect immediately after adding (default true).
-
-    Returns:
-        str: Confirmation with number of available tools, or error message.
-    """
-    from helpers.memory_db import get_mcp_server, upsert_mcp_server
-
-    if not name:
-        return "Error: name is required."
-
-    if get_mcp_server(name):
-        return f"Server '{name}' already exists. Use edit_mcp_server to modify it."
-
-    # Validate JSON fields
-    try:
-        json.loads(args)
-    except json.JSONDecodeError:
-        return f"Error: 'args' must be a valid JSON array (e.g. '[\"--flag\"]'). Got: {args!r}"
-    try:
-        json.loads(env)
-    except json.JSONDecodeError:
-        return f"Error: 'env' must be a valid JSON object (e.g. '{{\"KEY\": \"val\"}}')."
-
-    record: typing.Dict = {
-        "name": name,
-        "transport": transport,
-        "command": command or None,
-        "args": args,
-        "env": env,
-        "url": url or None,
-        "oauth_tokens": None,
-        "enabled": 1,
-    }
-    upsert_mcp_server(record)
-
-    if auto_connect:
-        try:
-            _client().connect_server(record)
-            tools = _client().get_session(name).list_tools()
-            tool_names = ", ".join(t["name"] for t in tools[:5])
-            suffix = "…" if len(tools) > 5 else ""
-            return (
-                f"Added and connected '{name}'. "
-                f"{len(tools)} tool(s) available: {tool_names}{suffix}."
-            )
-        except Exception as exc:
-            return f"Added '{name}' but connection failed: {exc}"
-
-    return f"Added MCP server '{name}' (not connected — use connect_mcp_server to connect)."
-
-
-@register_job(module_name="mcp", summary="Connect to a configured MCP server")
-@capture_response
-def connect_mcp_server(name: str) -> str:
-    """
-    [MCP JOB] Connects to a previously configured MCP server and registers its tools.
-
-    Use this job when the user wants to:
-    - Connect to an MCP server that was added but not yet connected
-    - Reconnect to a disconnected server
-
-    Keywords: connect mcp, connect server, reconnect mcp, start mcp connection
-
-    Args:
-        name (str): The server name to connect to. (required)
-
-    Returns:
-        str: Confirmation with available tool count, or error.
-    """
-    from helpers.memory_db import get_mcp_server
-
-    if not name:
-        return "Error: server name is required."
-
-    record = get_mcp_server(name)
-    if not record:
-        return f"No server named '{name}'. Use add_mcp_server first."
-
-    if name in _client().all_connected():
-        return f"Server '{name}' is already connected."
-
-    try:
-        _client().connect_server(record)
-        tools = _client().get_session(name).list_tools()
-        tool_names = ", ".join(t["name"] for t in tools[:5])
-        suffix = "…" if len(tools) > 5 else ""
-        return f"Connected to '{name}'. {len(tools)} tool(s): {tool_names}{suffix}."
-    except Exception as exc:
-        return f"Failed to connect to '{name}': {exc}"
-
-
-@register_job(module_name="mcp", summary="Disconnect from an MCP server")
-@capture_response
-def disconnect_mcp_server(name: str) -> str:
-    """
-    [MCP JOB] Disconnects from an active MCP server session and unregisters its tools.
-
-    Use this job when the user wants to:
-    - Disconnect from an MCP server
-    - Remove an active tool provider session (without deleting the config)
-
-    Keywords: disconnect mcp, stop mcp, pause mcp server
-
-    Args:
-        name (str): The server name to disconnect. (required)
-
-    Returns:
-        str: Confirmation or error.
-    """
-    if not name:
-        return "Error: server name is required."
-
-    if name not in _client().all_connected():
-        return f"Server '{name}' is not currently connected."
-
-    _client().disconnect_server(name)
-    return f"Disconnected from '{name}'."
-
-
-@register_job(module_name="mcp", summary="Edit an existing MCP server configuration")
-@capture_response
-def edit_mcp_server(
-    name: str,
-    transport: str = "",
     command: str = "",
     url: str = "",
     args: str = "",
@@ -229,95 +88,95 @@ def edit_mcp_server(
     enabled: str = "",
 ) -> str:
     """
-    [MCP JOB] Edits an existing MCP server's configuration (transport, command, URL, env, etc.).
-    Reconnect manually after editing if the server was already connected.
-
-    Use this job when the user wants to:
-    - Change the URL or command of an MCP server
-    - Update auth credentials or environment variables
-    - Enable or disable a server
-
-    Keywords: edit mcp server, update mcp, change mcp config, modify mcp server
+    [MCP JOB] Adds, edits, removes, connects or disconnects one MCP server — an
+    external tool server that gives Wony extra abilities. Adding connects straight
+    away. Editing keeps any field left empty as it was.
 
     Args:
-        name (str): The server name to edit. (required)
-        transport (str): New transport type (leave empty to keep current).
-        command (str): New command for stdio transport.
-        url (str): New URL for sse/http transport.
-        args (str): New JSON array of command arguments.
-        env (str): New JSON object of environment variables.
-        enabled (str): "true" or "false" to enable/disable.
+        action (str): "add" (the default), "edit", "remove", "connect" or "disconnect".
+        name (str): The server name, e.g. "notion", "github". (required)
+        transport (str): "stdio" (the default) or "sse"/"http".
+        command (str): Executable command for stdio transport, e.g. "npx @notionhq/mcp".
+        args (str): JSON array of command arguments, e.g. '["--token", "xyz"]'.
+        url (str): Base URL for sse/http transport.
+        env (str): JSON object of extra environment variables, e.g. '{"API_KEY": "xyz"}'.
+        enabled (str): "true" or "false" to switch a server on or off when editing.
 
     Returns:
-        str: Confirmation or error.
+        str: Confirmation of what changed, or the reason it could not be done.
     """
-    from helpers.memory_db import get_mcp_server, upsert_mcp_server
+    from helpers.memory_db import delete_mcp_server, get_mcp_server, upsert_mcp_server
 
+    wanted = (action or "add").strip().lower()
     if not name:
         return "Error: server name is required."
 
     record = get_mcp_server(name)
+    connected = _client().all_connected()
+
+    for field, value, shape in (("args", args, list), ("env", env, dict)):
+        if value and not _valid_json(value, shape):
+            kind = "array" if shape is list else "object"
+            return f"Error: '{field}' must be a JSON {kind}. Got: {value!r}"
+
+    if wanted == "add":
+        if record:
+            return f"Server '{name}' already exists. Use action 'edit' to change it."
+        upsert_mcp_server({
+            "name": name,
+            "transport": transport,
+            "command": command or None,
+            "args": args or "[]",
+            "env": env or "{}",
+            "url": url or None,
+            "oauth_tokens": None,
+            "enabled": 1,
+        })
+        try:
+            _client().connect_server(get_mcp_server(name))
+        except Exception as exc:
+            return f"Added '{name}' but connecting failed: {exc}"
+        return f"Added and connected '{name}'. {_tool_summary(name)}."
+
     if not record:
-        return f"No server named '{name}'."
+        return f"No server named '{name}'. Use action 'add' to create it."
 
-    if transport:
-        record["transport"] = transport
-    if command:
-        record["command"] = command
-    if url:
-        record["url"] = url
-    if args:
+    if wanted == "edit":
+        if transport and transport != "stdio":
+            record["transport"] = transport
+        if command:
+            record["command"] = command
+        if url:
+            record["url"] = url
+        if args:
+            record["args"] = args
+        if env:
+            record["env"] = env
+        if enabled:
+            record["enabled"] = 1 if enabled.strip().lower() in ("true", "1", "yes") else 0
+        upsert_mcp_server(record)
+        note = " Connect again to apply the change." if name in connected else ""
+        return f"Updated server '{name}'.{note}"
+
+    if wanted in ("remove", "delete"):
+        if name in connected:
+            _client().disconnect_server(name)
+        delete_mcp_server(name)
+        return f"Removed MCP server '{name}'."
+
+    if wanted == "connect":
+        if name in connected:
+            return f"Server '{name}' is already connected."
         try:
-            json.loads(args)
-        except json.JSONDecodeError:
-            return f"Error: 'args' must be a valid JSON array."
-        record["args"] = args
-    if env:
-        try:
-            json.loads(env)
-        except json.JSONDecodeError:
-            return f"Error: 'env' must be a valid JSON object."
-        record["env"] = env
-    if enabled:
-        record["enabled"] = 1 if enabled.lower() in ("true", "1", "yes") else 0
+            _client().connect_server(record)
+        except Exception as exc:
+            return f"Failed to connect to '{name}': {exc}"
+        return f"Connected to '{name}'. {_tool_summary(name)}."
 
-    upsert_mcp_server(record)
-
-    was_connected = name in _client().all_connected()
-    note = " Reconnect with connect_mcp_server to apply changes." if was_connected else ""
-    return f"Updated server '{name}'.{note}"
-
-
-@register_job(module_name="mcp", summary="Remove an MCP server and its stored credentials")
-@capture_response
-def remove_mcp_server(name: str) -> str:
-    """
-    [MCP JOB] Permanently removes an MCP server configuration and its stored tokens.
-    Disconnects first if currently active.
-
-    Use this job when the user wants to:
-    - Remove an MCP server integration
-    - Delete a connection and its credentials
-    - Clean up an unused server
-
-    Keywords: remove mcp server, delete mcp, unregister mcp, remove integration
-
-    Args:
-        name (str): The server name to remove. (required)
-
-    Returns:
-        str: Confirmation or error.
-    """
-    from helpers.memory_db import get_mcp_server, delete_mcp_server
-
-    if not name:
-        return "Error: server name is required."
-
-    if not get_mcp_server(name):
-        return f"No server named '{name}'."
-
-    if name in _client().all_connected():
+    if wanted == "disconnect":
+        if name not in connected:
+            return f"Server '{name}' is not connected."
         _client().disconnect_server(name)
+        return f"Disconnected from '{name}'."
 
-    delete_mcp_server(name)
-    return f"Removed MCP server '{name}'."
+    return f"Unknown action '{action}'. Use add, edit, remove, connect or disconnect."

@@ -29,7 +29,7 @@ ai:
 enabled_modules:
   - ai             # always-on: conversation, history, AI provider routing
   - status         # always-on: module health and setup diagnostics
-  - basics         # time, date, power off, daily briefing
+  - basics         # time, date, power off/restart, daily briefing
   - scheduler      # timers, alarms and reminders; can run another job when they fire
   - weather        # current weather and forecasts
   # - spotify        # playback control (play, pause, skip, search, volume)
@@ -55,8 +55,9 @@ modules:
   weather:
     default_units: "metric"   # metric | imperial
   gmail:
-    # Safety gate — set to true to allow sending/replying to emails.
-    allow_send: false
+    # Safety gate — set to true to allow sending, replying, and deleting mail.
+    # Off, Wony saves a draft in Gmail for you to send yourself.
+    allow_write: false
     # Set to true to have AI summarize email lists (sends content to your AI provider).
     use_ai: false
   calendar:
@@ -79,7 +80,7 @@ modules:
 #     label: "Time"
 #     icon: "🕑"
 #     kind: job
-#     job: get_time
+#     job: get_datetime
 #   - id: joke
 #     label: "Joke"
 #     icon: "🙂"
@@ -89,8 +90,8 @@ modules:
 #     label: "Devices"
 #     icon: "💡"
 #     kind: screen
-#     # screen: weather, agenda, devices, music, accounts,
-#     #         notifications or commands
+#     # screen: weather, agenda, reminders, devices, music, accounts,
+#     #         notifications, settings or commands
 #     screen: devices
 
 kiosk:

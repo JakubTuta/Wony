@@ -11,6 +11,8 @@ import { Devices } from './screens/Devices'
 import { Home } from './screens/Home'
 import { Music } from './screens/Music'
 import { Notifications } from './screens/Notifications'
+import { Reminders } from './screens/Reminders'
+import { Settings } from './screens/Settings'
 import { Weather } from './screens/Weather'
 import { useIdle } from './state/useIdle'
 import { useTheme } from './state/useTheme'
@@ -29,6 +31,8 @@ type Screen =
   | 'weather'
   | 'agenda'
   | 'devices'
+  | 'reminders'
+  | 'settings'
 
 const TITLES: Record<Screen, string> = {
   home: '',
@@ -40,6 +44,8 @@ const TITLES: Record<Screen, string> = {
   weather: 'Weather',
   agenda: 'Today',
   devices: 'Devices',
+  reminders: 'Timers',
+  settings: 'Settings',
 }
 
 /** Screens a tile is allowed to open. A tile naming anything else is ignored
@@ -52,6 +58,8 @@ const TILE_SCREENS = new Set<Screen>([
   'devices',
   'music',
   'notifications',
+  'reminders',
+  'settings',
   'weather',
 ])
 
@@ -116,6 +124,7 @@ function Shell() {
         onNotifications={() => go('notifications')}
         onCommands={() => go('commands')}
         onMusic={hasSpotify ? () => go('music') : undefined}
+        onSettings={() => go('settings')}
         theme={theme}
         onToggleTheme={toggle}
       />
@@ -148,6 +157,8 @@ function Shell() {
       {screen === 'weather' && <Weather />}
       {screen === 'agenda' && <Agenda />}
       {screen === 'devices' && <Devices />}
+      {screen === 'reminders' && <Reminders />}
+      {screen === 'settings' && <Settings />}
 
       {/* Nothing to interrupt with if the list is already what you are reading. */}
       {arrival && screen !== 'notifications' && (

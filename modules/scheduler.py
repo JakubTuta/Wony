@@ -1,4 +1,4 @@
-import json
+﻿import json
 import re
 import typing
 import uuid
@@ -140,6 +140,28 @@ class Scheduler:
                     self._fire_reminder(reminder_id, text, missed_at=due_str)
             threading.Thread(target=_fire_missed, daemon=True, name="scheduler-missed").start()
 
+    def reminders_snapshot(self) -> typing.Dict[str, typing.Any]:
+        """Scheduled timers as data, for the reminders panel.
+
+        Not a job: list_reminders writes a sentence per timer, and a countdown
+        that ticks needs the fire time as a number.
+        """
+        rows = []
+        for job in self._sched.get_jobs():
+            meta = self._reminders.get(job.id, {})
+            next_run = job.next_run_time
+            action = meta.get("action") or {}
+            rows.append({
+                "id": job.id,
+                "text": meta.get("text", ""),
+                "action_job": action.get("job", ""),
+                "when_str": meta.get("when_str", ""),
+                "repeating": meta.get("trigger_type") in ("cron", "interval"),
+                "next_run": next_run.isoformat() if next_run else None,
+            })
+        rows.sort(key=lambda row: row["next_run"] or "")
+        return {"reminders": rows}
+
     # ------------------------------------------------------------------ jobs
 
     @capture_response
@@ -148,25 +170,16 @@ class Scheduler:
         """
         [TIMER JOB] Sets a timer, alarm, reminder or recurring notification. This is the
         only timer in Wony — use it for every "in N seconds/minutes/hours", every alarm,
-        and every "do X later" request. Timers survive restarts and fire out loud.
+        and every "do X later" request. Timers survive a restart.
 
         A timer can announce a message, run another job, or both.
 
-        Use this job when the user wants to:
-        - Set a plain timer or alarm ("set a timer for 5 minutes", "wake me at 7am")
-        - Be reminded of something ("remind me at 3pm to call mom", "in 2 hours remind me to stretch")
-        - Run an action later ("turn the light on after 10 seconds", "play jazz in 1 hour",
           "in 30 minutes pause the music") — put the job in action_job and its arguments
           in action_args
         - Set a recurring alarm ("every weekday at 9am say good morning")
 
         Examples for 'when': "in 10 seconds", "in 30 minutes", "at 3pm", "tomorrow at 9am",
         "every day at 8am", "every weekday at 9am", "every Monday at 10am", "every 2 hours"
-
-        Keywords: timer, set timer, countdown, alarm, set alarm, wake me, remind me,
-                 set reminder, schedule, notify, alert, in N seconds/minutes/hours,
-                 at H:MM, tomorrow at, every day, recurring, after N seconds, later,
-                 then play, when the timer ends
 
         Args:
             when (str): When to fire. Natural language accepted. (required)
@@ -263,16 +276,6 @@ class Scheduler:
         """
         [TIMER JOB] Lists every running timer, alarm and reminder.
 
-        Use this job when the user wants to:
-        - See what timers are running ("how long left on my timer")
-        - Check what reminders or alarms are scheduled
-
-        Keywords: list timers, show timers, active timers, running timers, how long left,
-                 list reminders, show reminders, what reminders, active alarms, upcoming
-
-        Args:
-            None
-
         Returns:
             str: All active timers with their schedule, or a message if none.
         """
@@ -301,14 +304,6 @@ class Scheduler:
                       new_action_job: str = "", new_action_args: typing.Optional[dict] = None) -> str:
         """
         [TIMER JOB] Edits a timer, alarm or reminder — its time, message, action, or any combination.
-
-        Use this job when the user wants to:
-        - Change when a timer or alarm fires ("make it 10 minutes instead")
-        - Update the message of a scheduled reminder
-        - Change or add a job that runs when it fires
-
-        Keywords: edit timer, change timer, make it, edit reminder, update reminder,
-                 change reminder, reschedule, modify reminder, change alarm, change action
 
         Args:
             id_or_text (str): The reminder id (8-char code) or part of the reminder text. (required)
@@ -422,14 +417,6 @@ class Scheduler:
         """
         [TIMER JOB] Cancels a timer, alarm or reminder by id, partial text, or all at once.
 
-        Use this job when the user wants to:
-        - Cancel a timer ("cancel the timer", "stop the 3pm reminder")
-        - Cancel everything scheduled ("cancel all timers")
-        - Stop a recurring alarm
-
-        Keywords: cancel timer, stop timer, cancel all timers, clear timers, cancel alarm,
-                 cancel reminder, remove reminder, delete reminder, stop reminder, unschedule
-
         Args:
             id_or_text (str): The id (8-char code), part of the text, or "all" to cancel
                               everything. (required)
@@ -507,9 +494,9 @@ class Scheduler:
             logger.log_error(err, "scheduler.run_action")
             notify(f"Could not run scheduled action: {err}.", kind="error", source="scheduler")
             return
-        # A timer firing mid-turn would otherwise run its job under the running
-        # agent's _agent_active suppression, and interleave with it on shared
-        # Conversation state. Waiting for the turn to end costs a few seconds.
+        # A timer firing mid-turn would otherwise write into the running agent's
+        # tool-outcome ledger and be silenced by its _agent_active suppression.
+        # Waiting for the turn to end costs a few seconds and keeps both honest.
         with agent_lock:
             try:
                 jobs[resolved](**(action.get("args") or {}))

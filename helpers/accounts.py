@@ -1,4 +1,4 @@
-import json
+﻿import json
 import os
 import typing
 
@@ -6,8 +6,7 @@ from helpers.paths import repo_path
 
 _ACCOUNTS_FILE = repo_path("credentials", "accounts.json")
 
-# The OAuth client downloaded from Google Cloud Console. One file covers every
-# account — accounts differ by their token, not by the client that issued it.
+# One OAuth client covers every account; accounts differ by token, not client.
 CREDENTIALS_FILE = repo_path("credentials", "google_credentials.json")
 
 _TOKEN_KEYS = ("gmail_token", "calendar_token")
@@ -138,9 +137,8 @@ class GoogleAccounts:
     def clear_tokens(cls, name: str) -> None:
         """Delete an account's stored tokens so the next use re-runs OAuth.
 
-        Re-authorizing is a no-op without this: both Google libraries load
-        whatever token file is already on disk, and a revoked token loads as
-        happily as a good one.
+        Without this, re-authorizing is a no-op: both Google libraries load
+        whatever token file is on disk, revoked or not.
         """
         data = cls._load()
         if name not in data["accounts"]:
@@ -151,9 +149,8 @@ class GoogleAccounts:
     def token_status(cls, name: str) -> typing.Dict[str, bool]:
         """Which services this account has a stored token for.
 
-        A file on disk is not proof the token still works — Google can revoke
-        it at any time — but it is the only answer available without a network
-        call, and this is read on every screen open.
+        A file on disk is not proof the token still works, but it is the only
+        answer available without a network call.
         """
         rec = cls.record(name)
         return {

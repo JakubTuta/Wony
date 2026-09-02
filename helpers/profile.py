@@ -1,10 +1,10 @@
-import typing
+﻿import typing
 
 _seeded: bool = False
 
 # as_text() lands in every system prompt, so it cannot grow without bound.
 # Oldest-by-key facts past this are still stored and still reachable through
-# list_memory / semantic_recall — they just stop riding along on every request.
+# the memory and recall jobs — they just stop riding along on every request.
 _MAX_PROMPT_FACTS = 40
 _MAX_PROMPT_FACT_CHARS = 200
 
@@ -86,5 +86,5 @@ class Profile:
         ]
         text = "Known user facts: " + "; ".join(lines) + "."
         if len(data) > _MAX_PROMPT_FACTS:
-            text += f" ({len(data) - _MAX_PROMPT_FACTS} more — use semantic_recall.)"
+            text += f" ({len(data) - _MAX_PROMPT_FACTS} more — use the memory job.)"
         return text

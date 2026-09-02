@@ -1,4 +1,4 @@
-import os
+﻿import os
 import threading
 import typing
 
@@ -8,16 +8,12 @@ from helpers.decorators import capture_response
 from helpers.logger import logger
 from helpers.registry import ServiceRegistry, method_job, register_service
 
-# Services that hold their own OAuth token per account. Every one of them gets
-# authorized together, because an account signed in for mail but not calendar
-# is a half-configured account nobody asked for.
+# Services holding their own OAuth token per account. All are authorized
+# together — an account signed in for mail but not calendar is half configured.
 _GOOGLE_SERVICES = ("gmail", "calendar")
 
-# Signing in happens in a browser, at human speed: a password, then usually a
-# code from a phone. Long enough for that, short enough that walking away from
-# a half-finished sign-in doesn't wedge the screen — or an agent turn — for
-# good. The browser window stays open past the cutoff, and finishing there
-# still writes the token; the accounts list picks it up on its next read.
+# Consent happens in a browser at human speed. Long enough for a password and a
+# phone code, short enough that an abandoned sign-in doesn't wedge the turn.
 _AUTH_TIMEOUT_SECONDS = 180
 
 
@@ -51,14 +47,8 @@ class GoogleAccountsService:
             return ""
 
     def _sign_in(self, module: str, service: typing.Any, name: str) -> str:
-        """Get a working client for one service, signing in if needed, and
-        report the email address it turned out to belong to.
-
-        Building the client is what triggers consent: both libraries run the
-        OAuth flow on their first call and cache the result. Which call that
-        is, and how the address comes back, is the only thing that differs
-        between the two.
-        """
+        """Build the client — which is what triggers consent, since both
+        libraries run the flow on first use — and report the email it belongs to."""
         if module == "gmail":
             service._client(name)
             return self._email_from_gmail(service, name)
@@ -67,25 +57,18 @@ class GoogleAccountsService:
         return self._email_from_calendar(service, name)
 
     def _forget_cached(self, name: str) -> None:
-        """Tell each Google service to drop what it cached for this account.
-
-        Its token is about to change or has just been deleted, and both
-        services cache a client per account name for the life of the process.
-        """
+        """Tell each Google service to drop what it cached for this account —
+        its token is about to change or has just been deleted."""
         for module in _GOOGLE_SERVICES:
             service = ServiceRegistry.get_service_instance(module)
             if service is not None:
                 service.forget_account(name)
 
     def _authorize(self, name: str) -> typing.Tuple[typing.List[str], typing.List[str]]:
-        """Run the OAuth consent flow for every enabled Google service.
+        """Run OAuth consent for every enabled Google service.
 
-        Returns (authorized, problems) — the service names that completed, and
-        one sentence per service that did not.
-
-        The flow runs on a worker thread because it blocks on a person: it
-        opens a browser and waits for them to finish. Whoever called this is
-        a web request or an agent turn, and neither can wait forever.
+        Returns (authorized, problems). The flow runs on a worker thread
+        because it blocks on a person, and the caller is an agent turn.
         """
         services = {
             module: service
@@ -129,17 +112,15 @@ class GoogleAccountsService:
                 "finishing there completes it."
             )
 
-        # Copied, not returned directly: an abandoned worker is still running
-        # and may append to these after this returns.
+        # Copied: an abandoned worker may still append to these.
         return list(authorized), list(problems)
 
     def accounts_snapshot(self) -> typing.Dict[str, typing.Any]:
-        """Accounts as data, for the screen's account manager.
+        """Accounts as data, for the accounts panel.
 
-        Deliberately not a job: list_google_accounts returns a sentence, and a
-        row with a primary marker and a per-service sign-in state cannot be
-        parsed back out of one. Reads nothing but local files, so it never
-        triggers a consent prompt and is safe to call on every screen open.
+        Not a job: list_google_accounts returns a sentence, and a row with a
+        primary marker and per-service sign-in state cannot be parsed out of
+        one. Reads only local files, so it never triggers a consent prompt.
         """
         primary = GoogleAccounts.get_primary()
 
@@ -161,8 +142,6 @@ class GoogleAccountsService:
             "primary": primary,
             "services": {module: module in enabled for module in _GOOGLE_SERVICES},
             # Without the OAuth client file nothing can be authorized at all.
-            # The screen says so up front rather than letting every attempt
-            # fail with the same unhelpful error.
             "credentials_ready": os.path.exists(CREDENTIALS_FILE),
         }
 
@@ -171,19 +150,6 @@ class GoogleAccountsService:
     def list_google_accounts(self) -> str:
         """
         [GOOGLE ACCOUNTS JOB] Lists all configured Google accounts with their status.
-
-        Use this job when the user wants to:
-        - See which Google accounts are set up
-        - Check which account is the primary/default
-        - View all available email or calendar accounts
-
-        Keywords: google accounts, list accounts, my accounts, which accounts,
-                 show accounts, configured accounts, email accounts, account list,
-                 available accounts, list all accounts, all accounts, all google accounts,
-                 show all accounts, get accounts, fetch accounts, display accounts
-
-        Args:
-            None
 
         Returns:
             str: All configured accounts, marking the primary.
@@ -212,16 +178,6 @@ class GoogleAccountsService:
         """
         [GOOGLE ACCOUNTS JOB] Adds a new Google account for Gmail and Calendar access.
         Opens browser for OAuth consent. The first account added becomes the primary.
-
-        Use this job when the user wants to:
-        - Add a new Google or Gmail account
-        - Connect another email or calendar
-        - Set up a work or secondary account
-        - Link a new Google account
-
-        Keywords: add google account, connect account, new account, add email account,
-                 link account, setup google account, add work account, add second account,
-                 new google account
 
         Args:
             name (str): A short label for the account (e.g. 'work', 'personal'). (required)
@@ -264,15 +220,6 @@ class GoogleAccountsService:
         [GOOGLE ACCOUNTS JOB] Signs in to an already-added Google account again.
         Opens a browser for consent. Use this when an account has stopped working.
 
-        Use this job when the user wants to:
-        - Fix an account that says its access expired or was revoked
-        - Sign in again after changing their Google password
-        - Finish authorizing an account that was added but never signed in
-
-        Keywords: authorize account, reauthorize, re-authorize, sign in again,
-                 reconnect account, fix account, account expired, invalid grant,
-                 access revoked, login again, refresh account access, grant access
-
         Args:
             name (str): The account name to authorize (e.g. 'work'). (required)
 
@@ -283,9 +230,6 @@ class GoogleAccountsService:
             return "Please specify which account to authorize."
 
         try:
-            # Both Google libraries load whatever token file is on disk without
-            # checking it first, so a revoked token has to go before the
-            # consent flow will run at all.
             GoogleAccounts.clear_tokens(name)
         except ValueError as e:
             return str(e)
@@ -306,15 +250,6 @@ class GoogleAccountsService:
     def remove_google_account(self, name: str) -> str:
         """
         [GOOGLE ACCOUNTS JOB] Removes a configured Google account and deletes its tokens.
-
-        Use this job when the user wants to:
-        - Remove a Google account
-        - Delete an account configuration
-        - Disconnect an email or calendar account
-
-        Keywords: remove google account, delete account, disconnect account,
-                 remove email account, unlink account, remove work account,
-                 delete google account
 
         Args:
             name (str): The account name to remove (e.g. 'work'). (required)
@@ -339,14 +274,6 @@ class GoogleAccountsService:
         """
         [GOOGLE ACCOUNTS JOB] Edits a Google account — rename it or make it the primary.
 
-        Use this job when the user wants to:
-        - Rename a Google account label
-        - Change the default account to a specific one
-        - Update account settings
-
-        Keywords: rename account, edit account, update account, change account name,
-                 make primary, set primary, rename google account
-
         Args:
             name (str): The account name to edit. (required)
             new_name (str): New label for the account (leave empty to keep current).
@@ -367,8 +294,8 @@ class GoogleAccountsService:
                 safe = GoogleAccounts.rename_account(name, new_name)
             except ValueError as e:
                 return str(e)
-            # The token files moved with the account, so anything cached under
-            # either name is now pointing at a path that no longer exists.
+            # Token files moved with the account, so anything cached under
+            # either name now points at a path that no longer exists.
             self._forget_cached(name)
             self._forget_cached(safe)
             messages.append(f"Account renamed: '{name}' → '{safe}'.")
@@ -382,34 +309,3 @@ class GoogleAccountsService:
                 return str(e)
 
         return " ".join(messages) if messages else "No changes made."
-
-    @capture_response
-    @method_job
-    def set_primary_account(self, name: str) -> str:
-        """
-        [GOOGLE ACCOUNTS JOB] Sets the primary (default) Google account used when
-        no specific account is mentioned.
-
-        Use this job when the user wants to:
-        - Change the default Google account
-        - Switch primary email or calendar
-        - Set a specific account as the default
-
-        Keywords: set primary account, change default account, switch primary,
-                 use account as default, make default account, primary google account,
-                 set default account
-
-        Args:
-            name (str): The account name to make primary. (required)
-
-        Returns:
-            str: Confirmation that the primary account was updated.
-        """
-        if not name:
-            return "Please specify which account to set as primary."
-
-        try:
-            GoogleAccounts.set_primary(name)
-            return f"Primary account set to '{name}'."
-        except ValueError as e:
-            return str(e)

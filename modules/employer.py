@@ -87,19 +87,8 @@ class Employer:
     @staticmethod
     def help() -> str:
         """
-        [SYSTEM INFORMATION JOB] Lists all currently available commands grouped by module.
-        Shows only commands that are actually registered and working right now.
-
-        Use this job when the user wants to:
-        - See all available commands
-        - Learn about system capabilities
-        - Discover what the assistant can do
-
-        Keywords: help, commands, list commands, show commands, available commands, what can you do,
-                 options, functionality, capabilities, show help, list functions, available features
-
-        Args:
-            None
+        [SYSTEM INFORMATION JOB] Lists every command available right now, grouped by
+        module. Only shows what is actually registered and working.
 
         Returns:
             str: Commands grouped by module with descriptions.
@@ -130,50 +119,29 @@ class Employer:
     @register_job
     @capture_response
     @staticmethod
-    def stop_active_jobs() -> str:
+    def background_jobs(action: str = "list") -> str:
         """
-        [SYSTEM CONTROL JOB] Terminates all currently running background jobs.
-
-        Use this job when the user wants to:
-        - Stop all background activities
-        - End all running automated tasks
-        - Cancel continuous monitoring processes
-
-        Keywords: stop jobs, cancel tasks, terminate processes, end running jobs, abort, halt,
-                 stop all, cancel everything, stop background, terminate all
+        [SYSTEM CONTROL JOB] Lists what is running in the background — inbox and
+        calendar watchers and the like — or stops all of it. This is not about timers
+        and reminders: those are list_reminders and cancel_reminder.
 
         Args:
-            None
+            action (str): "list" (the default) or "stop".
 
         Returns:
-            str: Confirmation message.
+            str: The running jobs, or confirmation that they were stopped.
         """
-        stopped = BackgroundJobs.stop_all()
-        if stopped:
-            return f"Stopped {len(stopped)} background job(s): {', '.join(stopped)}."
-        return "No background jobs were running."
+        wanted = (action or "list").strip().lower()
 
-    @register_job
-    @capture_response
-    @staticmethod
-    def list_active_jobs() -> str:
-        """
-        [SYSTEM INFORMATION JOB] Lists all currently running background jobs.
+        if wanted in ("stop", "cancel", "stop all"):
+            stopped = BackgroundJobs.stop_all()
+            if stopped:
+                return f"Stopped {len(stopped)} background job(s): {', '.join(stopped)}."
+            return "No background jobs were running."
 
-        Use this job when the user wants to:
-        - See what's running in the background
-        - Check active background tasks
-        - Monitor running processes
+        if wanted not in ("list", "show"):
+            return f"Unknown action '{action}'. Use list or stop."
 
-        Keywords: list jobs, active jobs, running jobs, background tasks, what's running,
-                 show jobs, current tasks, running tasks
-
-        Args:
-            None
-
-        Returns:
-            str: Names of active background jobs.
-        """
         running = BackgroundJobs.list_jobs()
         if running:
             return f"Active background jobs: {', '.join(running)}."
@@ -183,18 +151,7 @@ class Employer:
     @staticmethod
     def exit() -> None:
         """
-        [APPLICATION TERMINATION JOB] Exits the AI assistant application.
-
-        Use this job when the user wants to:
-        - Exit the AI assistant completely
-        - End the application session
-        - Quit the program
-
-        Keywords: exit, quit, close app, shutdown, terminate program, end application, goodbye, bye,
-                 close assistant, end program, terminate app, stop everything
-
-        Args:
-            None
+        [APPLICATION TERMINATION JOB] Shuts Wony down completely.
 
         Returns:
             None

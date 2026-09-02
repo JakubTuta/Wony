@@ -122,7 +122,7 @@ FEATURES = [
         "module": "gmail",
         "default": False,
         "desc": "Read, search and watch your inbox.",
-        "needs": "Google OAuth: credentials/google_credentials.json. Sending off until modules.gmail.allow_send: true.",
+        "needs": "Google OAuth: credentials/google_credentials.json. Sending stays off until you allow it on the settings screen.",
     },
     {
         "key": "calendar",
@@ -476,34 +476,17 @@ def ensure_config():
     return True, True
 
 
-def _line_key(line):
-    """(indent, key) for a `key: value` / `key:` line, else None (blank/comment)."""
-    stripped = line.rstrip("\n").strip()
-    if not stripped or stripped.startswith("#") or ":" not in stripped:
-        return None
-    indent = len(line) - len(line.lstrip(" "))
-    return indent, stripped.split(":", 1)[0].strip()
+def write_config(updates):
+    """Set dotted keys in config.yaml, keeping its comments.
 
+    helpers/config_writer.py is the one implementation of this, shared with the
+    settings screen; it is stdlib-only so it works here too, before any
+    dependency has been installed.
+    """
+    sys.path.insert(0, ROOT)
+    from helpers.config_writer import update as _update
 
-def _block_end(lines, header_idx, indent):
-    """First line index after header_idx whose indent is <= `indent` (children
-    end there), skipping blank/comment lines. len(lines) if the block runs to EOF."""
-    j = header_idx + 1
-    while j < len(lines):
-        info = _line_key(lines[j])
-        if info is not None and info[0] <= indent:
-            break
-        j += 1
-    return j
-
-
-def _find_key(lines, key, indent, start, end):
-    for i in range(start, end):
-        info = _line_key(lines[i])
-        if info == (indent, key):
-            return i
-    return None
-
+    return _update(CONFIG, updates)
 
 
 def apply_enabled_modules(chosen):
@@ -512,32 +495,10 @@ def apply_enabled_modules(chosen):
         return
     wanted = list(ALWAYS_ON) + [f["module"] for f in chosen if f["module"]]
     with open(CONFIG, "r", encoding="utf-8") as fh:
-        lines = fh.readlines()
+        backup = fh.read()
     with open(CONFIG + ".bak", "w", encoding="utf-8") as bk:
-        bk.writelines(lines)
-
-    out, i, replaced = [], 0, False
-    while i < len(lines):
-        line = lines[i]
-        if line.rstrip("\n").startswith("enabled_modules:") and not replaced:
-            out.append("enabled_modules:\n")
-            out.extend(f"  - {m}\n" for m in wanted)
-            replaced = True
-            i += 1
-            while i < len(lines):
-                s = lines[i]
-                if s.strip() == "" or s.startswith(("  ", "\t", "#")):
-                    i += 1
-                    continue
-                break
-            continue
-        out.append(line)
-        i += 1
-    if not replaced:
-        out.append("\nenabled_modules:\n")
-        out.extend(f"  - {m}\n" for m in wanted)
-    with open(CONFIG, "w", encoding="utf-8") as fh:
-        fh.writelines(out)
+        bk.write(backup)
+    write_config({"enabled_modules": wanted})
     print(c(f"  ✓ enabled_modules = {', '.join(wanted)}", "32"))
 
 

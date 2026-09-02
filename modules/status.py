@@ -1,4 +1,4 @@
-from helpers.decorators import capture_response
+﻿from helpers.decorators import capture_response
 from helpers.registry import ServiceRegistry, register_job
 
 
@@ -9,18 +9,6 @@ def module_status() -> str:
     [SYSTEM INFORMATION JOB] Shows the status of all available modules, including fix hints.
     Displays whether each module is enabled, disabled, misconfigured, or unavailable,
     and tells you exactly what to do to fix each issue.
-
-    Use this job when the user wants to:
-    - See which modules are active
-    - Diagnose why a module is not working
-    - Check what integrations are configured
-    - Get fix instructions for broken modules
-
-    Keywords: module status, status, modules, what modules, which modules, available modules,
-             check modules, module health, enabled modules, module list, what's working
-
-    Args:
-        None
 
     Returns:
         str: Formatted table of module names, states, reasons, and fix hints.

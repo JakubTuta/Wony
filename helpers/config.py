@@ -70,8 +70,8 @@ class HomeAssistantSettings(BaseModel):
 
 
 class BasicsSettings(BaseModel):
-    # Safety gate for power_off / reboot. There is no console on this device to
-    # type a confirmation into, so the gate lives here instead.
+    # Safety gate for power_device. There is no console on this device to type a
+    # confirmation into, so the gate lives here instead.
     allow_power_off: bool = False
 
 
@@ -80,7 +80,7 @@ class WeatherSettings(BaseModel):
 
 
 class GmailSettings(BaseModel):
-    allow_send: bool = False
+    allow_write: bool = False
     use_ai: bool = False
 
 

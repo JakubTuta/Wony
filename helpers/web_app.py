@@ -22,28 +22,25 @@ from helpers.registry import ServiceRegistry
 # list is a code change, not a setting.
 _DESTRUCTIVE_JOBS: typing.Set[str] = {
     "exit",
-    "power_off",
-    "reboot",
-    "stop_active_jobs",
+    "power_device",
+    "background_jobs",
     "send_email",
     "reply_to_email",
     "mark_as_read",
+    "delete_email",
+    "manage_drafts",
     "create_event",
     "edit_event",
     "delete_event",
-    # scheduler
     "cancel_reminder",
     "edit_reminder",
-    # gmail write
-    "delete_email",
-    "delete_draft",
-    "edit_draft",
-    # accounts
     "remove_google_account",
     "edit_google_account",
     # Discards the stored token before re-running consent: an interrupted
     # sign-in leaves the account worse off than it started.
     "authorize_google_account",
+    "manage_mcp_server",
+    "wipe_data",
 }
 
 
@@ -125,6 +122,12 @@ class DeviceControlRequest(BaseModel):
     entity_id: str
     action: str = "toggle"
     brightness_percent: typing.Optional[int] = None
+
+
+class SettingsRequest(BaseModel):
+    updates: typing.Dict[str, typing.Any] = {}
+    # None leaves the enabled modules alone; a list replaces them.
+    modules: typing.Optional[typing.List[str]] = None
 
 
 def build_app() -> FastAPI:
@@ -282,7 +285,16 @@ def build_app() -> FastAPI:
 
         logger.log_function_call(req.name, "[web]", coerced)
         try:
-            result = func(**coerced)
+            # Same lock every agent turn takes — a button press reaches the same
+            # jobs and the same Conversation state as a typed sentence.
+            from helpers.decorators import agent_lock, set_agent_active
+
+            with agent_lock:
+                set_agent_active(True)
+                try:
+                    result = func(**coerced)
+                finally:
+                    set_agent_active(False)
             result_str = str(result) if result is not None else ""
             logger.log_function_response(req.name, result_str[:200], "[web]")
             return {"ok": True, "result": result_str}
@@ -334,11 +346,18 @@ def build_app() -> FastAPI:
 
         return {"cards": ambient()}
 
+    @app.get("/api/panels")
+    def list_panels() -> typing.Dict[str, typing.Any]:
+        """Which panels this install has, given the modules that are on."""
+        from helpers.panels import available
+
+        return {"panels": available()}
+
     @app.get("/api/panel/{key}")
     def get_panel(key: str) -> typing.Dict[str, typing.Any]:
-        """Structured data for one screen — weather, agenda, devices, music,
-        accounts. The write side of every panel goes through /api/invoke like
-        any other job; only reading needs a shape."""
+        """Structured data for one screen — weather, agenda, timers, devices,
+        music, accounts. The write side of every panel goes through /api/invoke
+        like any other job; only reading needs a shape."""
         from helpers.panels import PanelUnavailable, panel
 
         try:
@@ -411,6 +430,36 @@ def build_app() -> FastAPI:
         from helpers.memory_db import acknowledge_all_notifications
 
         return {"cleared": acknowledge_all_notifications()}
+
+    @app.get("/api/settings")
+    def get_settings() -> typing.Dict[str, typing.Any]:
+        from helpers.settings import describe
+
+        return describe()
+
+    @app.post("/api/settings")
+    def save_settings(req: SettingsRequest) -> typing.Dict[str, typing.Any]:
+        from helpers.logger import logger
+        from helpers.settings import SettingsError, apply
+
+        try:
+            result = apply(req.updates, req.modules)
+        except SettingsError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        except Exception as e:
+            logger.log_error(str(e), "web_settings")
+            raise HTTPException(status_code=500, detail=f"Could not save settings: {e}")
+
+        if result["written"]:
+            logger.log_system_event("settings_changed", ", ".join(result["written"]))
+        return result
+
+    @app.get("/api/updates")
+    def check_updates() -> typing.Dict[str, str]:
+        """Whether a newer Wony is waiting. Never pulls — see helpers/updates.py."""
+        from helpers.updates import check
+
+        return {"message": check()}
 
     @app.post("/api/chat/clear")
     def clear_chat() -> typing.Dict[str, str]:

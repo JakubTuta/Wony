@@ -66,6 +66,7 @@ below. Some answer on the spot; others open a page:
 | --- | --- |
 | Weather | Temperature, conditions, wind, humidity, sunrise and sunset |
 | Today | Today's and tomorrow's calendar, as a list |
+| Timers | Everything counting down, with a button to call one off |
 | Devices | Every smart device you have, by room, with switches and dimmers |
 | Music | Cover art, play controls and volume |
 | Accounts | Add, sign in to and switch Google accounts |
@@ -88,6 +89,8 @@ for you. Touch anywhere to go back.
 **Two looks**, light and dark. Tap the sun or moon in the top bar to switch. The
 screen remembers your choice.
 
+**Settings** are behind the cog in the top bar — see below.
+
 ## Start at boot
 
 ```bash
@@ -106,8 +109,15 @@ On a device with no display, add `--no-browser`.
 
 ## Settings
 
-Your choices live in `config.yaml`. Your passwords and keys live in `.env`, and
-never go anywhere else.
+Tap the **cog** in the top bar. Everything there is also in `config.yaml`, which
+you can still edit by hand; the screen just means you do not have to find a
+keyboard. Your passwords and keys live in `.env`, and never go anywhere else.
+
+The settings screen changes the assistant's name and personality, which AI
+provider answers, which features are switched on, what Wony may do on its own,
+and how long the screen waits before showing the clock. It also tells you
+whether a newer Wony is waiting — it never installs one; that is `git pull` and
+`python setup.py`, run by you.
 
 ```yaml
 assistant:
@@ -147,12 +157,12 @@ kiosk:
 ```
 
 A few things are switched off until you say otherwise, so nothing surprising can
-happen by accident:
+happen by accident. All four are on the settings screen too:
 
 | Setting | Allows |
 | --- | --- |
 | `modules.basics.allow_power_off` | Switching the device off or restarting it from the screen |
-| `modules.gmail.allow_send` | Sending and replying to email |
+| `modules.gmail.allow_write` | Sending, replying to and deleting email. Off, Wony saves a draft instead |
 | `modules.calendar.allow_write` | Creating, changing and deleting events |
 | `modules.home_assistant.allow_locks` | Unlocking doors, opening the garage, disarming alarms |
 

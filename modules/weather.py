@@ -1,4 +1,4 @@
-import os
+﻿import os
 import typing
 
 from helpers.decorators import capture_response
@@ -25,15 +25,6 @@ def weather(city: str) -> str:
     This is an independent task that fetches weather data from external APIs and provides
     complete weather reports including temperature, conditions, and location details.
 
-    Use this job when the user wants to:
-    - Get current weather conditions for any location
-    - Check temperature and weather descriptions
-    - Obtain weather information using geolocation if no city is specified
-    - Access meteorological data for planning activities
-
-    Keywords: weather, forecast, current weather, get weather, check weather, city weather, location weather,
-             temperature, conditions, meteorology, climate, outside weather
-
     Args:
         city (str): The name of the city for which to retrieve the weather.
                    If no city is specified by user the variable is set to empty string ("")
@@ -53,15 +44,11 @@ def weather(city: str) -> str:
 
 
 def snapshot(city: str = "") -> typing.Dict[str, typing.Any]:
-    """Current conditions as data, for the weather screen.
+    """Current conditions as data, for the weather panel.
 
-    Deliberately not a job: weather() describes this in a sentence, which is
-    the right answer for chat and the wrong one for a panel — a sentence has
-    no place to put a humidity readout or an icon. Both go through the same
-    request; this one just doesn't throw the structure away.
-
-    Errors come back in the "error" key rather than as an exception, because
-    every caller wants to show them rather than handle them.
+    Not a job: weather() describes this in a sentence, which has nowhere to put
+    a humidity readout or an icon. Same request, structure kept. Errors come
+    back in "error" because every caller wants to show them, not handle them.
     """
     empty = {
         "city": city or "your location",
@@ -101,8 +88,7 @@ def snapshot(city: str = "") -> typing.Dict[str, typing.Any]:
     main = data.get("main") or {}
     return {
         **empty,
-        # OpenWeatherMap names the station's own town, which beats whatever the
-        # caller typed or the IP lookup guessed.
+        # The station's own town beats whatever was typed or the IP guessed.
         "city": data.get("name") or city,
         "description": conditions.get("description", ""),
         "temperature": main.get("temp"),

@@ -1,4 +1,4 @@
-import os
+﻿import os
 import typing
 from datetime import datetime, timedelta
 
@@ -60,7 +60,7 @@ class Calendar:
         name = GoogleAccounts.resolve(account or None)
         if name not in self._services:
             rec = GoogleAccounts.record(name)
-            creds = self._load_credentials(rec["calendar_token"])
+            creds = self._load_credentials(rec["calendar_token"], name)
             self._services[name] = build("calendar", "v3", credentials=creds)
         return self._services[name]
 
@@ -81,7 +81,8 @@ class Calendar:
         start = event.get("start", {})
         return start.get("dateTime") or start.get("date") or ""
 
-    def _load_credentials(self, token_file: str) -> typing.Any:
+    def _load_credentials(self, token_file: str, account: str) -> typing.Any:
+        from google.auth.exceptions import RefreshError
         from google.auth.transport.requests import Request
         from google.oauth2.credentials import Credentials
         from google_auth_oauthlib.flow import InstalledAppFlow
@@ -92,7 +93,15 @@ class Calendar:
 
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
+                try:
+                    creds.refresh(Request())
+                except RefreshError as exc:
+                    # Google says "invalid_grant: Bad Request", which tells
+                    # nobody what to do about it.
+                    raise RuntimeError(
+                        f"Google access for '{account}' has expired or was revoked. "
+                        f"Say 'authorize {account}' to sign in again."
+                    ) from exc
             else:
                 flow = InstalledAppFlow.from_client_secrets_file(
                     CREDENTIALS_FILE, _SCOPES
@@ -151,6 +160,7 @@ class Calendar:
             response = service.events().list(**kwargs).execute()
             for ev in response.get("items", []):
                 ev["_account"] = name
+                ev["_calendar_id"] = calendar_id
                 items.append(ev)
 
         items.sort(key=self._event_start_key)
@@ -179,6 +189,7 @@ class Calendar:
             )
             for ev in response.get("items", []):
                 ev["_account"] = name
+                ev["_calendar_id"] = calendar_id
                 items.append(ev)
 
         items.sort(key=self._event_start_key)
@@ -196,14 +207,11 @@ class Calendar:
         return new_events
 
     def agenda_snapshot(self, days: int = 2) -> typing.Dict[str, typing.Any]:
-        """Upcoming events as data, for the agenda screen.
+        """Upcoming events as data, for the agenda panel.
 
-        Deliberately not a job: find_events writes prose, and a list with a
-        time column and a per-day heading cannot be recovered from prose. Runs
-        the same query, keeping the fields instead of describing them.
-
-        Two days by default — an agenda that empties out at 6pm is useless in
-        the evening, which is exactly when someone checks tomorrow.
+        Not a job: find_events writes prose, and a list with a time column and
+        per-day headings cannot be recovered from prose. Two days by default —
+        an agenda that empties out at 6pm is useless in the evening.
         """
         tz = local_tz()
         start = now_local().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -237,8 +245,8 @@ class Calendar:
         return {
             "events": out,
             "today": start.date().isoformat(),
-            # The screen groups by day and needs to know which days were asked
-            # about, so an empty day reads as "nothing on" and not "not loaded".
+            # The panel groups by day and needs to know which days were asked
+            # about, so an empty day reads as "nothing on", not "not loaded".
             "days": [(start + timedelta(days=i)).date().isoformat() for i in range(max(1, days))],
             "timezone": str(tz),
         }
@@ -409,12 +417,6 @@ class Calendar:
         past, a keyword search, or a named calendar. With no arguments it returns the
         upcoming events in the configured look-ahead window.
 
-        Use this job when the user wants to:
-        - Check their calendar, agenda, or schedule
-        - Know what is next, or what is on today/tomorrow/a given date
-        - Review past meetings, or events between two dates
-        - Search for an event by name, or browse a secondary calendar
-
         Args:
             query (str): Free-text search over event names and descriptions.
             date (str): A single day: YYYY-MM-DD, or 'today', 'tomorrow', 'yesterday'.
@@ -517,102 +519,63 @@ class Calendar:
 
     @capture_response
     @method_job
-    def start_checking_events(
-        self, interval_minutes: int = 0, account: str = ""
-    ) -> str:
+    def watch_calendar(self, action: str = "start", interval_minutes: int = 0, account: str = "") -> str:
         """
-        [CALENDAR JOB] Starts a background job that checks for new calendar events
-        periodically. Announces events as they appear. Stop with 'stop checking calendar'.
-
-        Use this job when the user wants to:
-        - Get automatic calendar notifications
-        - Monitor the calendar in the background
-        - Start periodic agenda polling
-
-        Keywords: start checking calendar, monitor calendar, watch calendar, agenda alerts,
-                 background calendar, auto check calendar, notify new event, event reminders
+        [CALENDAR JOB] Starts or stops background calendar monitoring. While it runs,
+        newly added events are announced as they appear.
 
         Args:
-            interval_minutes (int): How often to check in minutes (defaults to 15).
-            account (str): Google account to monitor (default: primary).
+            action (str): "start" (the default) or "stop".
+            interval_minutes (int): How often to check when starting (defaults to 15).
+            account (str): Google account to watch. Stopping with no account stops all.
 
         Returns:
-            str: Confirmation that background polling started.
+            str: Confirmation of what is now running.
         """
+        wanted = (action or "start").strip().lower()
+
+        if wanted in ("stop", "off", "cancel"):
+            if account:
+                name = GoogleAccounts.resolve(account)
+                stopped = BackgroundJobs.stop(_calendar_job_name(name))
+                return (f"Stopped watching the '{name}' calendar." if stopped
+                        else f"The '{name}' calendar was not being watched.")
+            watched = [j for j in BackgroundJobs.list_jobs() if j.startswith("calendar_polling_")]
+            stopped_any = any(BackgroundJobs.stop(job) for job in watched)
+            return ("Stopped watching the calendar." if stopped_any
+                    else "The calendar was not being watched.")
+
+        if wanted not in ("start", "on", "watch"):
+            return f"Unknown action '{action}'. Use start or stop."
+
         name = GoogleAccounts.resolve(account or None)
         job_name = _calendar_job_name(name)
-
         if BackgroundJobs.is_running(job_name):
-            return f"Calendar polling for '{name}' is already running."
+            return f"Already watching the '{name}' calendar."
 
         if not interval_minutes or interval_minutes <= 0:
             interval_minutes = _DEFAULT_POLL_INTERVAL_MINUTES
 
-        def _poll():
+        def _poll() -> None:
             events = self._get_new_events(name)
             if not events:
                 return
-            msg = f"You have {len(events)} new calendar event(s) in {name}."
-            logger.log_system_event("calendar_poll", msg)
-            messages = [msg] + [self._format_event(e, verbose=False) for e in events]
-            notify(messages, kind="alert", source="calendar")
+            headline = f"You have {len(events)} new calendar event(s) in {name}."
+            logger.log_system_event("calendar_poll", headline)
+            notify(
+                [headline] + [self._format_event(e, verbose=False) for e in events],
+                kind="alert",
+                source="calendar",
+            )
 
         BackgroundJobs.start(job_name, _poll, interval=interval_minutes * 60)
-        return f"Checking '{name}' calendar every {interval_minutes} minutes."
-
-    @capture_response
-    @method_job
-    def stop_checking_events(self, account: str = "") -> str:
-        """
-        [CALENDAR JOB] Stops the background calendar polling job.
-
-        Use this job when the user wants to:
-        - Stop automatic calendar notifications
-        - Cancel background calendar monitoring
-        - Turn off event reminders
-
-        Keywords: stop checking calendar, stop calendar notifications, cancel calendar monitoring,
-                 stop calendar polling, disable event alerts, stop watching calendar
-
-        Args:
-            account (str): Account to stop (default: stop all calendar polling).
-
-        Returns:
-            str: Confirmation that calendar polling was stopped.
-        """
-        if account:
-            name = GoogleAccounts.resolve(account)
-            stopped = BackgroundJobs.stop(_calendar_job_name(name))
-            return (
-                f"Calendar polling for '{name}' stopped."
-                if stopped
-                else f"Calendar polling for '{name}' was not running."
-            )
-        all_jobs = BackgroundJobs.list_jobs()
-        cal_jobs = [j for j in all_jobs if j.startswith("calendar_polling_")]
-        stopped_any = any(BackgroundJobs.stop(j) for j in cal_jobs)
-        return (
-            "Calendar polling stopped."
-            if stopped_any
-            else "Calendar polling was not running."
-        )
-
-
-
+        return f"Watching the '{name}' calendar — checking every {interval_minutes} minutes."
 
     @capture_response
     @method_job
     def list_calendars(self, account: str = "") -> str:
         """
         [CALENDAR JOB] Lists all available Google Calendars for the account.
-
-        Use this job when the user wants to:
-        - See which calendars they have access to
-        - List all calendar names
-        - Find a specific calendar by name
-
-        Keywords: my calendars, list calendars, which calendars, show calendars,
-                 available calendars, calendar list, all calendars
 
         Args:
             account (str): Google account to use (default: primary).
@@ -639,214 +602,140 @@ class Calendar:
 
     @capture_response
     @method_job
-    def check_availability(
-        self, date_str: str = "", start_time: str = "", end_time: str = ""
+    def check_free_time(
+        self,
+        date_str: str = "",
+        start_time: str = "",
+        end_time: str = "",
+        min_minutes: int = 30,
     ) -> str:
         """
-        [CALENDAR JOB] Checks free/busy availability across all Google accounts
-        for a given time window.
-
-        Use this job when the user wants to:
-        - Know if they are free at a specific time
-        - Check availability for a meeting slot
-        - See busy blocks across all calendars
-
-        Keywords: am I free, check availability, busy at, free at, do I have time,
-                 availability check, when am I free, free slot, check if free
+        [CALENDAR JOB] Checks free time across every Google account. Given a start and
+        end time it answers whether that exact window is free; with no times it lists
+        the open gaps in the working day.
 
         Args:
-            date_str (str): The date to check (default: today).
-            start_time (str): Start of the window (e.g. '14:00', '2pm').
-            end_time (str): End of the window (e.g. '15:00', '3pm').
+            date_str (str): The day to check (default: today).
+            start_time (str): Start of the window to check, e.g. '14:00', '2pm'.
+            end_time (str): End of the window to check, e.g. '15:00', '3pm'.
+            min_minutes (int): When listing gaps, the shortest one worth reporting (default 30).
 
         Returns:
-            str: Free/busy status per account and overall.
+            str: Busy/free for the window, or the free slots in the day.
         """
-        base = self._parse_date(date_str)
+        accounts = GoogleAccounts.list_accounts()
+        if not accounts:
+            return "No Google accounts configured."
 
+        target = self._parse_date(date_str)
+        if start_time or end_time:
+            return self._window_status(target, start_time, end_time, accounts)
+        return self._free_slots(target, self._as_int(min_minutes, 30) or 30, accounts)
+
+    def _window_status(
+        self,
+        base: datetime,
+        start_time: str,
+        end_time: str,
+        accounts: typing.List[str],
+    ) -> str:
+        """Free/busy for one explicit window, per account."""
         if start_time:
             t_start = self._parse_time(start_time, base)
         else:
-            t_start = base.replace(hour=9, minute=0, second=0, microsecond=0)
-            if t_start.tzinfo is None:
-                t_start = t_start.replace(tzinfo=local_tz())
-        if end_time:
-            t_end = self._parse_time(end_time, base)
-        else:
-            t_end = t_start + timedelta(hours=1)
+            t_start = base.replace(hour=9, minute=0, second=0, microsecond=0, tzinfo=local_tz())
+        t_end = self._parse_time(end_time, base) if end_time else t_start + timedelta(hours=1)
 
-        t_min = t_start.isoformat()
-        t_max = t_end.isoformat()
-        window_label = (
-            f"{t_start.strftime('%Y-%m-%d %H:%M')} – {t_end.strftime('%H:%M')}"
-        )
-
-        accounts = GoogleAccounts.list_accounts()
-        if not accounts:
-            return "No Google accounts configured."
-
-        all_busy: typing.List[dict] = []
-        account_results: typing.List[str] = []
-
+        any_busy = False
+        per_account: typing.List[str] = []
         for acct in accounts:
             try:
-                service = self._service_for(acct)
-                body = {
-                    "timeMin": t_min,
-                    "timeMax": t_max,
-                    "items": [{"id": "primary"}],
-                }
-                result = service.freebusy().query(body=body).execute()
-                busy = result.get("calendars", {}).get("primary", {}).get("busy", [])
-                all_busy.extend(busy)
-                status = "busy" if busy else "free"
-                account_results.append(
-                    f"  {acct}: {status}"
-                    + (
-                        " — "
-                        + ", ".join(
-                            f"{b['start'][11:16]}–{b['end'][11:16]}" for b in busy
-                        )
-                        if busy
-                        else ""
-                    )
+                result = (
+                    self._service_for(acct)
+                    .freebusy()
+                    .query(body={
+                        "timeMin": t_start.isoformat(),
+                        "timeMax": t_end.isoformat(),
+                        "items": [{"id": "primary"}],
+                    })
+                    .execute()
                 )
+                busy = result.get("calendars", {}).get("primary", {}).get("busy", [])
+                any_busy = any_busy or bool(busy)
+                detail = (
+                    " — " + ", ".join(f"{b['start'][11:16]}–{b['end'][11:16]}" for b in busy)
+                    if busy else ""
+                )
+                per_account.append(f"  {acct}: {'busy' if busy else 'free'}{detail}")
             except Exception as e:
-                account_results.append(f"  {acct}: error ({e})")
+                per_account.append(f"  {acct}: error ({e})")
 
-        overall = "busy" if all_busy else "free"
-        lines = [f"Availability for {window_label}: {overall.upper()}"]
-        lines.extend(account_results)
-        return "\n".join(lines)
+        window = f"{t_start.strftime('%Y-%m-%d %H:%M')} – {t_end.strftime('%H:%M')}"
+        return "\n".join(
+            [f"Availability for {window}: {'BUSY' if any_busy else 'FREE'}"] + per_account
+        )
 
-    @capture_response
-    @method_job
-    def find_free_slots(self, date_str: str = "", min_minutes: int = 30) -> str:
-        """
-        [CALENDAR JOB] Finds free time slots on a given day across all accounts.
-
-        Use this job when the user wants to:
-        - Find open time slots for a meeting
-        - See when they are free during the day
-        - Find a gap in the schedule
-
-        Keywords: free time, open slots, when am I free, find a gap, free slots,
-                 available time, find time, when can I meet, schedule gap, open time
-
-        Args:
-            date_str (str): The date to check (default: today).
-            min_minutes (int): Minimum slot length in minutes (default 30).
-
-        Returns:
-            str: Free time slots within working hours across all accounts.
-        """
-        target = self._parse_date(date_str)
+    def _free_slots(
+        self, target: datetime, min_minutes: int, accounts: typing.List[str]
+    ) -> str:
+        """Open gaps in the working day, merged across every account."""
         cfg = self._cfg()
         work_start = int(cfg.get("work_start_hour", 9))
         work_end = int(cfg.get("work_end_hour", 18))
-
-        accounts = GoogleAccounts.list_accounts()
-        if not accounts:
-            return "No Google accounts configured."
 
         busy_blocks: typing.List[typing.Tuple[datetime, datetime]] = []
         for acct in accounts:
             try:
                 events = self._fetch_events_for_day(target, account=acct)
-                for e in events:
-                    start_raw = e.get("start", {}).get("dateTime") or e.get(
-                        "start", {}
-                    ).get("date")
-                    end_raw = e.get("end", {}).get("dateTime") or e.get("end", {}).get(
-                        "date"
-                    )
-                    if start_raw and end_raw:
-                        try:
-                            s = datetime.fromisoformat(start_raw.replace("Z", "+00:00"))
-                            en = datetime.fromisoformat(end_raw.replace("Z", "+00:00"))
-                            if s.tzinfo is None:
-                                s = s.replace(tzinfo=local_tz())
-                            if en.tzinfo is None:
-                                en = en.replace(tzinfo=local_tz())
-                            busy_blocks.append((s, en))
-                        except ValueError:
-                            pass
             except Exception:
-                pass
+                continue
+            for event in events:
+                start_raw = event.get("start", {}).get("dateTime") or event.get("start", {}).get("date")
+                end_raw = event.get("end", {}).get("dateTime") or event.get("end", {}).get("date")
+                if not (start_raw and end_raw):
+                    continue
+                try:
+                    starts = datetime.fromisoformat(start_raw.replace("Z", "+00:00"))
+                    ends = datetime.fromisoformat(end_raw.replace("Z", "+00:00"))
+                except ValueError:
+                    continue
+                if starts.tzinfo is None:
+                    starts = starts.replace(tzinfo=local_tz())
+                if ends.tzinfo is None:
+                    ends = ends.replace(tzinfo=local_tz())
+                busy_blocks.append((starts, ends))
 
         tz = local_tz()
-        day_start = target.replace(
-            hour=work_start, minute=0, second=0, microsecond=0, tzinfo=tz
-        )
-        day_end = target.replace(
-            hour=work_end, minute=0, second=0, microsecond=0, tzinfo=tz
-        )
+        day_start = target.replace(hour=work_start, minute=0, second=0, microsecond=0, tzinfo=tz)
+        day_end = target.replace(hour=work_end, minute=0, second=0, microsecond=0, tzinfo=tz)
 
-        busy_blocks.sort(key=lambda x: x[0])
-        merged: typing.List[typing.Tuple[datetime, datetime]] = []
-        for s, e in busy_blocks:
-            if merged and s <= merged[-1][1]:
-                merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+        merged: typing.List[typing.List[datetime]] = []
+        for starts, ends in sorted(busy_blocks, key=lambda block: block[0]):
+            if merged and starts <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], ends)
             else:
-                merged.append((s, e))
+                merged.append([starts, ends])
 
-        free_slots: typing.List[str] = []
+        slots: typing.List[str] = []
         cursor = day_start
-        for s, e in merged:
-            if s > cursor:
-                gap_minutes = int((s - cursor).total_seconds() / 60)
-                if gap_minutes >= min_minutes:
-                    free_slots.append(
-                        f"{cursor.strftime('%H:%M')} – {s.strftime('%H:%M')} ({gap_minutes} min)"
+        for starts, ends in merged + [[day_end, day_end]]:
+            if starts > cursor:
+                gap = int((min(starts, day_end) - cursor).total_seconds() / 60)
+                if gap >= min_minutes:
+                    slots.append(
+                        f"{cursor.strftime('%H:%M')} – {min(starts, day_end).strftime('%H:%M')} ({gap} min)"
                     )
-            if e > cursor:
-                cursor = e
-        if cursor < day_end:
-            gap_minutes = int((day_end - cursor).total_seconds() / 60)
-            if gap_minutes >= min_minutes:
-                free_slots.append(
-                    f"{cursor.strftime('%H:%M')} – {day_end.strftime('%H:%M')} ({gap_minutes} min)"
-                )
+            if ends > cursor:
+                cursor = ends
+            if cursor >= day_end:
+                break
 
         label = target.strftime("%Y-%m-%d")
-        if not free_slots:
-            return f"No free slots of {min_minutes}+ minutes found on {label}."
-
-        lines = [
-            f"Free slots on {label} (working hours {work_start}:00–{work_end}:00):"
-        ]
-        for slot in free_slots:
-            lines.append(f"  {slot}")
-        return "\n".join(lines)
-
-
-    @capture_response
-    @method_job
-    def get_week_agenda(self, account: str = "") -> str:
-        """
-        [CALENDAR JOB] Retrieves this week's calendar agenda (next 7 days).
-
-        Use this job when the user wants to:
-        - See all events for the coming week
-        - Get the weekly schedule or agenda
-        - Plan the week ahead
-
-        Keywords: week agenda, this week schedule, weekly events, next 7 days,
-                 week calendar, week meetings, weekly agenda, what's this week
-
-        Args:
-            account (str): Google account to use (default: primary).
-
-        Returns:
-            str: All events for the next 7 days.
-        """
-        events = self._fetch_events_range(
-            account=account, hours_ahead=168, max_results=_DEFAULT_MAX_RESULTS * 3
-        )
-        return self._render_events(
-            events,
-            header="This week's agenda (next 7 days):",
-            count_template="This week you have {count} event(s).",
+        if not slots:
+            return f"No free slots of {min_minutes}+ minutes on {label}."
+        return "\n".join(
+            [f"Free slots on {label} (working hours {work_start}:00–{work_end}:00):"]
+            + [f"  {slot}" for slot in slots]
         )
 
     # ------------------------------------------------------------------
@@ -878,14 +767,6 @@ class Calendar:
     ) -> str:
         """
         [CALENDAR JOB] Creates a new event on Google Calendar.
-
-        Use this job when the user wants to:
-        - Add a meeting, appointment, or reminder to the calendar
-        - Schedule an event
-        - Create a calendar entry
-
-        Keywords: create event, add event, schedule meeting, add to calendar,
-                 new appointment, book meeting, add meeting, schedule appointment
 
         Args:
             title (str): Event title or name. (required)
@@ -996,14 +877,6 @@ class Calendar:
         """
         [CALENDAR JOB] Edits an existing calendar event.
 
-        Use this job when the user wants to:
-        - Change the time, title, or details of an existing event
-        - Reschedule a meeting
-        - Update event description or location
-
-        Keywords: edit event, update event, reschedule, change meeting time,
-                 move event, update calendar, change appointment
-
         Args:
             query (str): Search query or event title to find the event. Provide query or date (at least one required).
             date (str): Date to search on (narrows the search). Provide query or date (at least one required).
@@ -1112,7 +985,7 @@ class Calendar:
             updated = (
                 service.events()
                 .patch(
-                    calendarId="primary",
+                    calendarId=event.get("_calendar_id", "primary"),
                     eventId=event_id,
                     body=patch,
                 )
@@ -1133,13 +1006,6 @@ class Calendar:
     ) -> str:
         """
         [CALENDAR JOB] Deletes a calendar event. Requires confirmation from the user.
-
-        Use this job when the user wants to:
-        - Delete or cancel a calendar event
-        - Remove a meeting from the calendar
-
-        Keywords: delete event, remove event, cancel meeting, delete calendar entry,
-                 cancel appointment, remove from calendar
 
         Args:
             query (str): Event title or search query to find the event. Provide query or date (at least one required).
@@ -1195,7 +1061,9 @@ class Calendar:
 
         service = self._service_for(account)
         try:
-            service.events().delete(calendarId="primary", eventId=event_id).execute()
+            service.events().delete(
+                calendarId=event.get("_calendar_id", "primary"), eventId=event_id
+            ).execute()
         except Exception as e:
             return f"Failed to delete event: {e}"
 

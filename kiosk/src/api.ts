@@ -94,6 +94,21 @@ export interface AgendaPanel {
   timezone: string
 }
 
+export interface Reminder {
+  id: string
+  text: string
+  /** Set when the timer runs a job instead of (or as well as) announcing. */
+  action_job: string
+  when_str: string
+  repeating: boolean
+  /** ISO datetime of the next firing, or null if it has none left. */
+  next_run: string | null
+}
+
+export interface RemindersPanel {
+  reminders: Reminder[]
+}
+
 export interface Device {
   entity_id: string
   name: string
@@ -169,6 +184,33 @@ export interface HealthResponse {
   model: string | null
   modules: Record<string, HealthModule>
   diagnostics?: Diagnostic[]
+}
+
+export interface SettingField {
+  key: string
+  label: string
+  kind: 'text' | 'longtext' | 'number' | 'toggle' | 'choice'
+  help: string
+  choices: string[]
+  min: number | null
+  max: number | null
+  step: number | null
+  /** The change is written straight away but only takes effect on restart. */
+  restart: boolean
+  value: string | number | boolean | null
+}
+
+export interface SettingsModule {
+  key: string
+  label: string
+  help: string
+  enabled: boolean
+}
+
+export interface SettingsResponse {
+  sections: { title: string; fields: SettingField[] }[]
+  modules: SettingsModule[]
+  config_file: string
 }
 
 export interface AppConfig {
@@ -285,6 +327,7 @@ async function fetchPanel<T>(key: string): Promise<PanelResult<T>> {
 
 export const fetchWeather = () => fetchPanel<WeatherPanel>('weather')
 export const fetchAgenda = () => fetchPanel<AgendaPanel>('agenda')
+export const fetchReminders = () => fetchPanel<RemindersPanel>('reminders')
 export const fetchDevices = () => fetchPanel<DevicesPanel>('devices')
 export const fetchGoogleAccounts = () => fetchPanel<GoogleAccountsSnapshot>('accounts')
 
@@ -344,6 +387,36 @@ export async function fetchHistory(limit = 40): Promise<HistoryTurn[]> {
 
 export async function clearChat(): Promise<void> {
   await fetch(`${BASE}/chat/clear`, { method: 'POST' })
+}
+
+export async function fetchSettings(): Promise<SettingsResponse> {
+  return getJson<SettingsResponse>('/settings')
+}
+
+export async function saveSettings(
+  updates: Record<string, string | number | boolean | null>,
+  modules?: string[],
+): Promise<{ written: string[]; restart_required: boolean }> {
+  const res = await fetch(`${BASE}/settings`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ updates, modules: modules ?? null }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(err.detail ?? 'Could not save those settings.')
+  }
+  return res.json()
+}
+
+/** One sentence about whether a newer Wony is waiting. Never updates anything. */
+export async function checkUpdates(): Promise<string> {
+  try {
+    const data = await getJson<{ message: string }>('/updates')
+    return data.message
+  } catch {
+    return 'Could not check for updates.'
+  }
 }
 
 // ── WebSocket ───────────────────────────────────────────────────────────────

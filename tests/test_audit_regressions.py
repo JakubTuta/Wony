@@ -11,6 +11,7 @@ import os
 import sys
 import tempfile
 import threading
+import typing
 import unittest
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -120,42 +121,33 @@ class TestKioskManifests(unittest.TestCase):
         (get_weather, check_emails, pause_song). Nothing caught it until the
         endpoint was called by hand — a tile that runs nothing looks exactly
         like a tile whose module is off."""
+        import re
+
         from helpers.kiosk import _AMBIENT_CARDS, _DEFAULT_TILES
-        from helpers.registry import ServiceRegistry
 
-        # Import every module that owns a default entry so its jobs register.
-        # Some will not import (missing optional packages) — those are skipped
-        # rather than failed, which is the same thing CI does.
-        wanted = {t["module"] for t in _DEFAULT_TILES}
-        wanted |= {c["module"] for c in _AMBIENT_CARDS}
-
-        importable = set()
-        for module_name in sorted(wanted):
-            try:
-                __import__(f"modules.{module_name}")
-                importable.add(module_name)
-            except Exception:
-                pass
-
-        registered = ServiceRegistry.get_all_jobs()
+        # Read the module's source rather than the registry: a module only
+        # registers its jobs once it is enabled AND its credentials are in
+        # place, so a registry check passes or fails by local config instead of
+        # by whether the name is real.
         entries = [(t["module"], t["job"]) for t in _DEFAULT_TILES if t["kind"] == "job"]
         entries += [(c["module"], c["job"]) for c in _AMBIENT_CARDS]
 
-        checked = 0
-        for module_name, job_name in entries:
-            if module_name not in importable:
-                continue
-            with self.subTest(module=module_name, job=job_name):
-                self.assertIn(
-                    job_name,
-                    registered,
-                    f"{module_name} declares a tile/card for '{job_name}', "
-                    f"which is not a registered job.",
-                )
-            checked += 1
+        sources: typing.Dict[str, str] = {}
+        for module_name in {name for name, _ in entries}:
+            path = os.path.join(_REPO_ROOT, "modules", f"{module_name}.py")
+            with open(path, encoding="utf-8") as handle:
+                sources[module_name] = handle.read()
 
-        # If nothing was importable the assertions above all passed vacuously.
-        self.assertGreater(checked, 0, "No default entries could be checked at all.")
+        for module_name, job_name in entries:
+            with self.subTest(module=module_name, job=job_name):
+                self.assertRegex(
+                    sources[module_name],
+                    rf"(?m)^\s*def {re.escape(job_name)}\(",
+                    f"{module_name} declares a tile/card for '{job_name}', "
+                    f"which modules/{module_name}.py does not define.",
+                )
+
+        self.assertTrue(entries, "No default entries could be checked at all.")
 
     def test_prompt_tiles_carry_a_prompt(self) -> None:
         """A prompt tile with no prompt sends an empty message to the agent."""
@@ -207,17 +199,110 @@ class TestKioskManifests(unittest.TestCase):
         on, or runs while its module is off."""
         from helpers.panels import _PANELS
 
-        for key, (module_name, _) in _PANELS.items():
+        for key, spec in _PANELS.items():
             with self.subTest(panel=key):
-                self.assertTrue(module_name)
+                self.assertTrue(spec.module)
                 # modules/<name>.py is the whole contract for a module name.
                 self.assertTrue(
                     os.path.exists(
-                        os.path.join(_REPO_ROOT, "modules", f"{module_name}.py")
+                        os.path.join(_REPO_ROOT, "modules", f"{spec.module}.py")
                     ),
-                    f"panel '{key}' is gated on module '{module_name}', "
+                    f"panel '{key}' is gated on module '{spec.module}', "
                     "which has no modules/ file.",
                 )
+
+    def test_every_panel_loader_resolves(self) -> None:
+        """A panel whose snapshot was renamed fails only when tapped, which is
+        exactly where nobody is looking for it."""
+        import inspect
+
+        from helpers.panels import _PANELS
+
+        # What each panel actually calls. Checked against the module rather
+        # than the registry, which is only populated once modules have loaded.
+        free_functions = {"weather": "snapshot", "home_assistant": "snapshot"}
+        methods = {
+            "calendar": "agenda_snapshot",
+            "spotify": "playback_snapshot",
+            "google_accounts": "accounts_snapshot",
+            "scheduler": "reminders_snapshot",
+        }
+
+        checked = 0
+        for key, spec in _PANELS.items():
+            try:
+                module = __import__(f"modules.{spec.module}", fromlist=["*"])
+            except Exception:
+                continue  # optional dependency missing; same as CI
+            with self.subTest(panel=key):
+                if spec.module in free_functions:
+                    name = free_functions[spec.module]
+                    self.assertTrue(
+                        callable(getattr(module, name, None)),
+                        f"panel '{key}' calls {spec.module}.{name}(), which is gone.",
+                    )
+                else:
+                    name = methods[spec.module]
+                    owners = [
+                        cls
+                        for _, cls in inspect.getmembers(module, inspect.isclass)
+                        if cls.__module__ == module.__name__ and hasattr(cls, name)
+                    ]
+                    self.assertTrue(
+                        owners,
+                        f"panel '{key}' calls {spec.module}.{name}(), "
+                        "which no class in that module defines.",
+                    )
+            checked += 1
+
+        self.assertGreater(checked, 0, "No panels could be checked at all.")
+
+    def test_a_loaders_keyerror_is_not_mistaken_for_an_unknown_panel(self) -> None:
+        """panel() raises KeyError for a name that does not exist, and the API
+        answers 404. A KeyError from inside a loader means something else
+        entirely and must not read as 'no such panel'."""
+        def explode() -> dict:
+            raise KeyError("main")
+
+        from helpers import panels
+        from helpers.config import Config
+
+        Config.load(os.path.join(_REPO_ROOT, "config.example.yaml"))
+        assert Config._settings is not None
+        original_modules = list(Config._settings.enabled_modules)
+        # _Panel is a NamedTuple, so the entry is replaced rather than patched.
+        original_panel = panels._PANELS["weather"]
+        try:
+            Config._settings.enabled_modules = ["weather"]
+            panels._PANELS["weather"] = original_panel._replace(load=explode)
+            with self.assertRaises(RuntimeError):
+                panels.panel("weather")
+
+            # And a genuinely unknown key still raises KeyError.
+            with self.assertRaises(KeyError):
+                panels.panel("nonsense")
+        finally:
+            panels._PANELS["weather"] = original_panel
+            Config._settings.enabled_modules = original_modules
+
+    def test_available_follows_enabled_modules(self) -> None:
+        """The tile row is built from this; a panel for a module that is off is
+        a button that only ever 503s."""
+        from helpers.config import Config
+        from helpers.panels import available
+
+        Config.load(os.path.join(_REPO_ROOT, "config.example.yaml"))
+        assert Config._settings is not None
+        original = list(Config._settings.enabled_modules)
+        try:
+            Config._settings.enabled_modules = ["weather", "spotify"]
+            keys = [p["key"] for p in available()]
+            self.assertEqual(keys, ["weather", "music"])
+
+            Config._settings.enabled_modules = []
+            self.assertEqual(available(), [])
+        finally:
+            Config._settings.enabled_modules = original
 
     def test_screen_tiles_are_not_runnable(self) -> None:
         """POSTing a screen tile used to fall through to _run_job with a null
@@ -235,6 +320,125 @@ class TestKioskManifests(unittest.TestCase):
                 kiosk.run_tile("accounts")
         finally:
             kiosk.tiles = original
+
+
+class TestKioskJobsShareTheAgentLock(unittest.TestCase):
+    """A tile runs a job on the request thread. Both of these fail silently:
+    the flag one makes a running turn narrate every tool call, and the idle one
+    only shows up as a screen that stopped refreshing."""
+
+    def test_a_tile_waits_for_a_turn_in_progress(self) -> None:
+        from helpers import kiosk
+        from helpers.decorators import agent_lock
+        from helpers.registry import ServiceRegistry
+
+        started = threading.Event()
+        ServiceRegistry._jobs["_probe"] = lambda: started.set() or "done"
+        try:
+            with agent_lock:
+                worker = threading.Thread(
+                    target=lambda: kiosk._run_job("_probe", {}, source="test")
+                )
+                worker.start()
+                # The lock is held here, so the job must not have run yet.
+                self.assertFalse(started.wait(0.3))
+            worker.join(timeout=5)
+            self.assertTrue(started.is_set())
+        finally:
+            ServiceRegistry._jobs.pop("_probe", None)
+
+    def test_the_idle_screen_gives_up_instead_of_queueing(self) -> None:
+        from helpers import kiosk
+        from helpers.decorators import agent_lock
+        from helpers.registry import ServiceRegistry
+
+        ServiceRegistry._jobs["_probe"] = lambda: "done"
+        try:
+            with agent_lock:
+                result = kiosk._run_job("_probe", {}, source="ambient:x", wait=False)
+            self.assertFalse(result.ok)
+            self.assertEqual(result.text, "")
+        finally:
+            ServiceRegistry._jobs.pop("_probe", None)
+
+
+class TestNotifications(unittest.TestCase):
+    def test_wipe_clears_notifications(self) -> None:
+        """'Erase everything you know about me' has to mean the reminders that
+        already fired too, not just conversation history."""
+        import inspect
+
+        from helpers import memory_db
+
+        source = inspect.getsource(memory_db.wipe_all)
+        self.assertIn("notifications", source)
+
+    def test_notify_survives_a_dead_database(self) -> None:
+        """A poller must not die because the DB is locked — the message still
+        has to reach a connected screen."""
+        from unittest import mock
+
+        from helpers import events, notify as notify_mod
+
+        seen = []
+        events.subscribe(seen.append)
+        try:
+            with mock.patch(
+                "helpers.memory_db.insert_notification",
+                side_effect=OSError("database is locked"),
+            ):
+                notify_mod.notify("Timer done", kind="reminder", source="scheduler")
+        finally:
+            events.unsubscribe(seen.append)
+
+        self.assertEqual(len(seen), 1, seen)
+        self.assertEqual(seen[0]["type"], "notification")
+        self.assertEqual(seen[0]["text"], "Timer done")
+
+    def test_several_messages_arrive_as_one(self) -> None:
+        """The pollers hand over a list; passing it straight through would put
+        the word 'list' on the screen."""
+        from unittest import mock
+
+        from helpers import notify as notify_mod
+
+        with mock.patch("helpers.memory_db.insert_notification") as insert:
+            insert.side_effect = lambda text, kind, source: {
+                "id": 1, "ts": "", "kind": kind, "source": source,
+                "text": text, "acknowledged": False,
+            }
+            notify_mod.notify(["You have 2 new email(s).", "From: Ada"],
+                              kind="alert", source="gmail")
+            self.assertEqual(
+                insert.call_args.args[0], "You have 2 new email(s). From: Ada"
+            )
+
+    def test_unknown_kind_falls_back_rather_than_raising(self) -> None:
+        """kind reaches the UI as a style name; an unknown one must not throw
+        inside a background thread."""
+        from unittest import mock
+
+        from helpers import notify as notify_mod
+
+        with mock.patch("helpers.memory_db.insert_notification") as insert:
+            insert.side_effect = lambda text, kind, source: {
+                "id": 1, "ts": "", "kind": kind, "source": source,
+                "text": text, "acknowledged": False,
+            }
+            notify_mod.notify("hello", kind="klaxon", source="test")
+            self.assertEqual(insert.call_args.kwargs["kind"], "info")
+
+    def test_empty_message_is_dropped(self) -> None:
+        """An empty list from a poller that found nothing must not become a
+        blank row in the notifications screen."""
+        from unittest import mock
+
+        from helpers import notify as notify_mod
+
+        with mock.patch("helpers.memory_db.insert_notification") as insert:
+            notify_mod.notify([])
+            notify_mod.notify("   ")
+            insert.assert_not_called()
 
 
 class TestWeatherUnits(unittest.TestCase):

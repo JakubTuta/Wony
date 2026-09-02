@@ -1,4 +1,13 @@
-import { Bell, ChevronLeft, Moon, Music, Sun, Terminal, WifiOff } from 'lucide-react'
+import {
+  Bell,
+  ChevronLeft,
+  Moon,
+  Music,
+  Settings as SettingsIcon,
+  Sun,
+  Terminal,
+  WifiOff,
+} from 'lucide-react'
 import { useClock } from '../state/useClock'
 import { useWony } from '../state/wony-context'
 import type { Theme } from '../state/useTheme'
@@ -9,6 +18,7 @@ export function StatusBar({
   onNotifications,
   onCommands,
   onMusic,
+  onSettings,
   theme,
   onToggleTheme,
 }: {
@@ -18,6 +28,7 @@ export function StatusBar({
   onCommands: () => void
   /** Omitted when the Spotify module is not enabled. */
   onMusic?: () => void
+  onSettings: () => void
   theme: Theme
   onToggleTheme: () => void
 }) {
@@ -66,6 +77,14 @@ export function StatusBar({
         className="press flex items-center justify-center w-11 h-11 rounded-full text-muted"
       >
         <Terminal size={20} />
+      </button>
+
+      <button
+        onClick={onSettings}
+        aria-label="Settings"
+        className="press flex items-center justify-center w-11 h-11 rounded-full text-muted"
+      >
+        <SettingsIcon size={20} />
       </button>
 
       <button

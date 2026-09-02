@@ -118,6 +118,12 @@ def run_turn(
             error=None,
         )
 
+    # A stopped turn returns empty text, which the UI would render as nothing at
+    # all — say what happened instead.
+    if not agent_result.text and session_cancel.is_set():
+        return TurnResult(text="Stopped.", calls=agent_result.calls,
+                          timed_out=False, error=None)
+
     return TurnResult(
         text=agent_result.text,
         calls=agent_result.calls,
