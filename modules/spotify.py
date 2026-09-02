@@ -392,8 +392,37 @@ class Spotify:
 
         return result
 
+    @retry_on_unauthorized("_refresh_access_token")
+    def playback_snapshot(self) -> typing.Dict[str, typing.Any]:
+        """Playback state as data, for the now-playing panel.
 
+        Not a job: get_current_track says the same thing in a sentence, and a
+        progress bar needs numbers a sentence cannot carry.
+        """
+        state = self._get_playback_state()
+        item = (state or {}).get("item")
+        if not state or not item:
+            return {"active": False}
 
+        images = item.get("album", {}).get("images", [])
+        # Spotify returns 640/300/64 px. The middle one is the right size for a
+        # panel and a third of the bytes.
+        art = images[1] if len(images) > 1 else (images[0] if images else None)
+
+        device = state.get("device") or {}
+        return {
+            "active": True,
+            "is_playing": bool(state.get("is_playing")),
+            "title": item.get("name", ""),
+            "artist": ", ".join(a["name"] for a in item.get("artists", [])),
+            "album": item.get("album", {}).get("name", ""),
+            "art_url": art.get("url") if art else None,
+            "progress_ms": state.get("progress_ms") or 0,
+            "duration_ms": item.get("duration_ms") or 0,
+            "shuffle": bool(state.get("shuffle_state")),
+            "device": device.get("name", ""),
+            "volume": device.get("volume_percent"),
+        }
 
     @capture_response
     @retry_on_unauthorized("_refresh_access_token")

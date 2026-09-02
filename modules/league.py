@@ -1,7 +1,7 @@
 import os
 import time
 
-from helpers.audio import Audio
+from helpers.notify import notify
 from helpers.controllers import MouseController
 from helpers.decorators import capture_response
 from helpers.jobs import BackgroundJobs
@@ -54,7 +54,7 @@ def accept_game() -> str:
                 mouse_controller.go_to_center_of_bbox(accept_object)
                 mouse_controller.click_left_button()
                 msg = "Game accepted."
-                Audio.notify(msg)
+                notify(msg, kind="info", source="league")
                 logger.log_system_event("league_accept", msg)
                 BackgroundJobs.stop(_ACCEPT_JOB)
                 return

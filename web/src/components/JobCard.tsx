@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { AlertTriangle } from 'lucide-react';
-import { iconForModule } from './icons';
+import { ModuleIcon } from './icons';
 import { JobForm } from './JobForm';
 import type { Job } from '../api';
 
@@ -44,7 +44,6 @@ function typeBadge(type: string): string {
 
 export function JobCard({ job }: Props) {
   const [open, setOpen] = useState(false);
-  const Icon = iconForModule(job.module);
   const color = moduleColor(job.module);
   const props = job.parameters.properties;
   const required = new Set(job.parameters.required);
@@ -66,7 +65,7 @@ export function JobCard({ job }: Props) {
         <div className="flex items-start gap-3">
           {/* Icon */}
           <div className={`shrink-0 rounded-lg p-2 ${color}`}>
-            <Icon size={18} />
+            <ModuleIcon module={job.module} size={18} />
           </div>
 
           {/* Title + module chip */}

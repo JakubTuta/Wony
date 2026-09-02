@@ -6,7 +6,7 @@ import typing
 from datetime import datetime
 
 from helpers.accounts import CREDENTIALS_FILE, GoogleAccounts
-from helpers.audio import Audio
+from helpers.notify import notify
 from helpers.cache import Cache
 from helpers.config import Config
 from helpers.decorators import capture_response
@@ -936,7 +936,7 @@ class Gmail:
             msg = f"You have {len(messages)} new email(s) in {name}."
             logger.log_system_event("gmail_poll", msg)
             notifications = [msg] + [self._format_message(m, verbose=False) for m in messages]
-            Audio.notify(notifications)
+            notify(notifications, kind="alert", source="gmail")
 
         BackgroundJobs.start(job_name, _poll, interval=interval_minutes * 60)
         return f"Checking '{name}' emails every {interval_minutes} minutes."
@@ -1351,17 +1351,22 @@ class Gmail:
 
         svc = self._svc(account)
         try:
-            existing = svc.users().drafts().get(userId="me", id=draft_id, format="metadata").execute()
+            # format="full" so an edit that keeps the body can carry it forward
+            existing = svc.users().drafts().get(userId="me", id=draft_id, format="full").execute()
             msg = existing.get("message", {})
-            headers = {h["name"].lower(): h["value"] for h in msg.get("payload", {}).get("headers", [])}
+            payload = msg.get("payload", {})
+            headers = {h["name"].lower(): h["value"] for h in payload.get("headers", [])}
             current_to = headers.get("to", "")
             current_subject = headers.get("subject", "")
+            current_body, current_html, _ = _walk_parts(payload)
+            if not current_body and current_html:
+                current_body = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", current_html)).strip()
         except Exception as e:
             return f"Failed to fetch draft: {e}"
 
         new_to = to.strip() or current_to
         new_subject = subject.strip() or current_subject
-        new_body = body  # empty string is fine as updated body
+        new_body = body if body.strip() else current_body
 
         sender_email = GoogleAccounts.record(GoogleAccounts.resolve(account or None)).get("email", "")
         msg_dict = _build_mime_raw(sender_email, new_to, new_subject or "(no subject)", new_body)

@@ -42,6 +42,13 @@ def emit_state(state: str) -> None:
     emit({"type": "state", "state": state})
 
 
+def emit_notification(notification: typing.Dict) -> None:
+    """Broadcast a proactive message (tags payload with type='notification')."""
+    tagged = dict(notification)
+    tagged.setdefault("type", "notification")
+    emit(tagged)
+
+
 # ── Global session cancel ──────────────────────────────────────────────────
 # A single deliberate "stop everything" signal (tray "Stop" / web `stop`),
 # distinct from barge-in interruption (a new utterance stopping playback so

@@ -30,8 +30,11 @@ const MODULE_ICONS: Record<string, LucideIcon> = {
   status: Zap,
 };
 
-export function iconForModule(module: string): LucideIcon {
-  return MODULE_ICONS[module.toLowerCase()] ?? Wrench;
+/** A component, not a component *factory* — picking the icon inside a caller's
+ *  render and rendering the result counts as creating a component per render. */
+export function ModuleIcon({ module, size }: { module: string; size?: number }) {
+  const Icon = MODULE_ICONS[module.toLowerCase()] ?? Wrench;
+  return <Icon size={size} />;
 }
 
 export type { LucideIcon };

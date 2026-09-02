@@ -90,7 +90,8 @@ enabled_modules:
   # - gmail          # read, search, and monitor Gmail (requires Google OAuth)
   # - calendar       # read Google Calendar events and check availability (requires Google OAuth)
   # - google_accounts  # manage multiple Google accounts
-  # - league         # League of Legends player stats and match history
+  # - league         # League of Legends: launch/close the client, auto-accept queue pop-ups
+  # - shazam         # identify the song currently playing on this PC
   # - home_assistant # Control your whole house through Home Assistant (needs HOME_ASSISTANT_TOKEN)
   # - web            # Web search and URL fetch (pip install -r requirements/web.txt)
   # - desktop        # Desktop control: open apps, windows, clipboard (pip install -r requirements/desktop.txt)

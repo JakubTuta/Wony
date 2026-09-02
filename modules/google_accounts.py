@@ -3,6 +3,7 @@ import threading
 import typing
 
 from helpers.accounts import CREDENTIALS_FILE, GoogleAccounts
+from helpers.config import Config
 from helpers.decorators import capture_response
 from helpers.logger import logger
 from helpers.registry import ServiceRegistry, method_job, register_service
@@ -113,6 +114,36 @@ class GoogleAccountsService:
 
         # Copied: an abandoned worker may still append to these.
         return list(authorized), list(problems)
+
+    def accounts_snapshot(self) -> typing.Dict[str, typing.Any]:
+        """Accounts as data, for the accounts panel.
+
+        Not a job: list_google_accounts returns a sentence, and a row with a
+        primary marker and per-service sign-in state cannot be parsed out of
+        one. Reads only local files, so it never triggers a consent prompt.
+        """
+        primary = GoogleAccounts.get_primary()
+
+        accounts = []
+        for name in GoogleAccounts.list_accounts():
+            record = GoogleAccounts.record(name)
+            accounts.append(
+                {
+                    "name": name,
+                    "email": (record.get("email", "") or "").strip(),
+                    "primary": name == primary,
+                    "tokens": GoogleAccounts.token_status(name),
+                }
+            )
+
+        enabled = Config.enabled_modules()
+        return {
+            "accounts": accounts,
+            "primary": primary,
+            "services": {module: module in enabled for module in _GOOGLE_SERVICES},
+            # Without the OAuth client file nothing can be authorized at all.
+            "credentials_ready": os.path.exists(CREDENTIALS_FILE),
+        }
 
     @capture_response
     @method_job

@@ -1,12 +1,13 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Bot, Cpu, AlertCircle, MessageSquare, Wrench } from 'lucide-react';
-import { fetchHealth, fetchJobs, connectEventSocket } from './api';
-import type { HealthResponse, Job, Diagnostic } from './api';
+import { Bot, Cpu, AlertCircle, LayoutGrid, MessageSquare } from 'lucide-react';
+import { fetchConfig, fetchHealth, fetchJobs, connectEventSocket } from './api';
+import type { AppConfig, HealthResponse, Job, Diagnostic } from './api';
 import { ChatPanel } from './components/ChatPanel';
-import { JobsPanel } from './components/JobsPanel';
+import { PanelsPane } from './components/PanelsPane';
+import { NotificationBell } from './components/NotificationBell';
 import { DiagnosticsBanner } from './components/DiagnosticsBanner';
 
-type Tab = 'chat' | 'jobs';
+type Tab = 'chat' | 'panels';
 
 export default function App() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
@@ -15,8 +16,10 @@ export default function App() {
   const [jobsLoading, setJobsLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<Tab>('chat');
   const [diagnostics, setDiagnostics] = useState<Diagnostic[]>([]);
+  const [config, setConfig] = useState<AppConfig | null>(null);
 
   useEffect(() => {
+    fetchConfig().then(setConfig).catch(() => {});
     fetchHealth()
       .then((h) => {
         setHealth(h);
@@ -60,6 +63,8 @@ export default function App() {
     ? `STT:${compute.stt_device} TTS:${compute.tts_device}`
     : null;
 
+  const locale = config?.assistant.language || 'en';
+
   return (
     <div className="h-screen overflow-hidden bg-gray-50 dark:bg-gray-950 flex flex-col">
       {/* Header */}
@@ -99,6 +104,8 @@ export default function App() {
         ) : (
           <div className="h-6 w-32 bg-gray-100 dark:bg-gray-800 rounded-full animate-pulse" />
         )}
+
+        <NotificationBell />
       </header>
 
       {/* Diagnostics banner — amber/red alerts with fix hints */}
@@ -110,9 +117,9 @@ export default function App() {
           <MessageSquare size={14} />
           Chat
         </TabButton>
-        <TabButton active={activeTab === 'jobs'} onClick={() => setActiveTab('jobs')}>
-          <Wrench size={14} />
-          Jobs {jobs.length > 0 && <span className="ml-1 text-xs opacity-60">({jobs.length})</span>}
+        <TabButton active={activeTab === 'panels'} onClick={() => setActiveTab('panels')}>
+          <LayoutGrid size={14} />
+          Panels
         </TabButton>
       </div>
 
@@ -123,12 +130,8 @@ export default function App() {
           <Pane title="Chat" icon={<MessageSquare size={15} />} className="w-[45%] min-w-0 border-r border-gray-200 dark:border-gray-800">
             <ChatPanel />
           </Pane>
-          <Pane
-            title={`Jobs${jobs.length ? ` (${jobs.length})` : ''}`}
-            icon={<Wrench size={15} />}
-            className="flex-1 min-w-0"
-          >
-            <JobsPanel jobs={jobs} loading={jobsLoading} />
+          <Pane title="Panels" icon={<LayoutGrid size={15} />} className="flex-1 min-w-0">
+            <PanelsPane jobs={jobs} jobsLoading={jobsLoading} locale={locale} />
           </Pane>
         </div>
 
@@ -139,8 +142,8 @@ export default function App() {
               <ChatPanel />
             </Pane>
           ) : (
-            <Pane title={`Jobs${jobs.length ? ` (${jobs.length})` : ''}`} icon={<Wrench size={15} />} className="h-full">
-              <JobsPanel jobs={jobs} loading={jobsLoading} />
+            <Pane title="Panels" icon={<LayoutGrid size={15} />} className="h-full">
+              <PanelsPane jobs={jobs} jobsLoading={jobsLoading} locale={locale} />
             </Pane>
           )}
         </div>

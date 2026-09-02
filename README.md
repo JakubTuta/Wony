@@ -9,7 +9,7 @@ A local personal assistant powered by AI that accepts text and voice commands. M
 | `.env`        | **Secrets only** — API keys, client secrets. Never committed.                   |
 | `config.yaml` | **Your choices** — assistant name, enabled modules, settings. Copy from `config.example.yaml`. |
 | `cache.json`  | Machine-written runtime state (Spotify tokens, poll timestamps). Google OAuth tokens live in `credentials/`. |
-| `wony.db`     | Conversation history, remembered facts, reminders, embeddings.                  |
+| `wony.db`     | Conversation history, remembered facts, reminders, notifications, embeddings.   |
 
 Modules auto-register via decorators. If a module's env vars, credential files, or pip packages are missing it registers as `disabled` / `misconfigured` / `unavailable` — nothing crashes. The startup summary and `check setup` command tell you exactly what to fix.
 
@@ -64,9 +64,28 @@ python wony.py autostart status     # show task info
 
 Wony includes a browser-based chat interface. Start the app then open `http://127.0.0.1:8000` (or whatever port you set under `server.port` in `config.yaml`).
 
-The web UI has two panels:
+Two panes side by side:
+
 - **Chat** — send messages and see AI responses with tool call details
-- **Jobs** — browse and invoke all registered commands directly
+- **Panels** — the things worth looking at rather than asking about
+
+The panels you get depend on which modules are enabled. Each one is the same
+information a job would have described, before it was turned into a sentence:
+
+| Panel | Needs | What you get |
+| --- | --- | --- |
+| Weather | `weather` | Temperature, conditions, wind, humidity, sunrise and sunset |
+| Today | `calendar` | Today's and tomorrow's events, as a list |
+| Devices | `home_assistant` | Every smart device by room, with switches and dimmers |
+| Music | `spotify` | Cover art, transport and volume |
+| Accounts | `google_accounts` | Add, sign in to and switch Google accounts |
+
+**All commands** at the bottom of the pane opens every registered job with its
+argument form — the same list as before, just no longer the first thing you meet.
+
+**Notifications** — the bell in the header. A timer firing or a poller finding
+mail is written down and waits there until you clear it, so nothing is lost
+while you are away from the machine (or have audio off).
 
 A diagnostics banner shows warnings and errors (e.g. CUDA fallback, missing deps) with fix hints.
 

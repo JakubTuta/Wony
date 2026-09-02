@@ -146,6 +146,20 @@ class GoogleAccounts:
         cls._delete_token_files(data["accounts"][name])
 
     @classmethod
+    def token_status(cls, name: str) -> typing.Dict[str, bool]:
+        """Which services this account has a stored token for.
+
+        A file on disk is not proof the token still works, but it is the only
+        answer available without a network call.
+        """
+        rec = cls.record(name)
+        return {
+            "gmail": bool(rec.get("gmail_token")) and os.path.exists(rec["gmail_token"]),
+            "calendar": bool(rec.get("calendar_token"))
+            and os.path.exists(rec["calendar_token"]),
+        }
+
+    @classmethod
     def set_email(cls, name: str, email: str) -> None:
         data = cls._load()
         if name in data["accounts"]:

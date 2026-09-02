@@ -69,6 +69,18 @@ def _init_schema(conn: sqlite3.Connection) -> None:
         conn.commit()
     except sqlite3.OperationalError:
         pass
+    # Proactive messages (a timer firing, a poller finding something). Persisted
+    # because nobody is necessarily at the machine when one arrives.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS notifications (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts           TEXT NOT NULL,
+            kind         TEXT NOT NULL DEFAULT 'info',
+            source       TEXT NOT NULL DEFAULT '',
+            text         TEXT NOT NULL,
+            acknowledged INTEGER NOT NULL DEFAULT 0
+        )
+    """)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS mcp_servers (
             name         TEXT PRIMARY KEY,
@@ -327,7 +339,71 @@ def all_reminders() -> typing.List[typing.Dict]:
         return result
 
 
-# ------------------------------------------------------------------
+# ------------------------------------------------------------------ notifications
+
+def insert_notification(text: str, kind: str = "info", source: str = "") -> typing.Dict:
+    """Store a proactive message and return the stored row."""
+    conn = _get_conn()
+    ts = datetime.now().isoformat(timespec="seconds")
+    with _lock:
+        cur = conn.execute(
+            "INSERT INTO notifications (ts, kind, source, text) VALUES (?, ?, ?, ?)",
+            (ts, kind, source, text),
+        )
+        conn.commit()
+        row_id = cur.lastrowid
+    return {
+        "id": row_id,
+        "ts": ts,
+        "kind": kind,
+        "source": source,
+        "text": text,
+        "acknowledged": False,
+    }
+
+
+def all_notifications(
+    include_acknowledged: bool = False,
+    limit: int = 50,
+) -> typing.List[typing.Dict]:
+    """Newest first. Unacknowledged only unless asked otherwise."""
+    conn = _get_conn()
+    query = "SELECT id, ts, kind, source, text, acknowledged FROM notifications"
+    if not include_acknowledged:
+        query += " WHERE acknowledged = 0"
+    query += " ORDER BY id DESC LIMIT ?"
+    with _lock:
+        rows = conn.execute(query, (limit,)).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["acknowledged"] = bool(d["acknowledged"])
+        out.append(d)
+    return out
+
+
+def acknowledge_notification(notification_id: int) -> bool:
+    """Mark one notification read. False if no such row."""
+    conn = _get_conn()
+    with _lock:
+        cur = conn.execute(
+            "UPDATE notifications SET acknowledged = 1 WHERE id = ?",
+            (notification_id,),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def acknowledge_all_notifications() -> int:
+    """Mark every unread notification read. Returns how many were cleared."""
+    conn = _get_conn()
+    with _lock:
+        cur = conn.execute(
+            "UPDATE notifications SET acknowledged = 1 WHERE acknowledged = 0"
+        )
+        conn.commit()
+        return cur.rowcount
+
 
 # ------------------------------------------------------------------ mcp servers
 
@@ -492,14 +568,15 @@ def delete_embedding_by_ref(
 # ------------------------------------------------------------------
 
 def wipe_all() -> None:
-    """Delete every row the user owns: turns, facts, reminders, mcp servers, embeddings.
+    """Delete every row the user owns: turns, facts, reminders, notifications,
+    mcp servers, embeddings.
 
     Resets a fresh session id and clears the in-memory conversation window.
     """
     global SESSION_ID
     conn = _get_conn()
     with _lock:
-        for table in ("turns", "facts", "reminders", "mcp_servers", "embeddings"):
+        for table in ("turns", "facts", "reminders", "notifications", "mcp_servers", "embeddings"):
             try:
                 conn.execute(f"DELETE FROM {table}")
             except sqlite3.OperationalError:

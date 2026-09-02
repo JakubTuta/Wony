@@ -121,6 +121,17 @@ class ChatRequest(BaseModel):
     message: str
 
 
+class DeviceControlRequest(BaseModel):
+    entity_id: str
+    action: str = "toggle"
+    brightness_percent: typing.Optional[int] = None
+
+
+class NotificationAckRequest(BaseModel):
+    # None clears everything unread.
+    id: typing.Optional[int] = None
+
+
 # Wall-clock backstop for one web turn, mirroring _TURN_TIMEOUT_SECONDS in
 # modules/employer.py — without it a stuck tool loop held agent_lock (and so
 # every other turn, voice included) until the process was restarted.
@@ -330,6 +341,79 @@ def build_app() -> FastAPI:
 
         return {"jobs": jobs_out}
 
+    @app.get("/api/panels")
+    def list_panels() -> typing.Dict[str, typing.Any]:
+        """Which panels this install has, given the modules that are on."""
+        from helpers.panels import available
+
+        return {"panels": available()}
+
+    @app.get("/api/panel/{key}")
+    def get_panel(key: str) -> typing.Dict[str, typing.Any]:
+        """Structured data for one panel. The write side of every panel goes
+        through /api/invoke like any other job; only reading needs a shape."""
+        from helpers.panels import PanelUnavailable, panel
+
+        try:
+            return panel(key)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"No panel '{key}'.")
+        except PanelUnavailable as e:
+            raise HTTPException(status_code=503, detail=str(e))
+        except Exception as e:
+            from helpers.logger import logger
+
+            logger.log_error(str(e), f"web_panel.{key}")
+            raise HTTPException(status_code=502, detail=str(e))
+
+    @app.post("/api/devices/control")
+    def control_device(req: DeviceControlRequest) -> typing.Dict[str, typing.Any]:
+        """Act on one Home Assistant device by its exact id.
+
+        The one panel with a write path, and the reason it is not /api/invoke:
+        control_home_device resolves a spoken name, which would toggle both
+        lamps called 'Lamp'. The UI already knows which one was clicked.
+        """
+        if "home_assistant" not in Config.enabled_modules():
+            raise HTTPException(status_code=503, detail="Home Assistant is not enabled.")
+
+        from helpers.logger import logger
+        from modules import home_assistant
+
+        logger.log_function_call(
+            "control_device", "[web]", {"entity_id": req.entity_id, "action": req.action}
+        )
+        try:
+            ok, text = home_assistant.control(
+                req.entity_id, req.action, req.brightness_percent
+            )
+        except Exception as e:
+            logger.log_error(str(e), "web_device_control")
+            raise HTTPException(status_code=502, detail=str(e))
+        return {"ok": ok, "text": text}
+
+    @app.get("/api/notifications")
+    def list_notifications(include_acknowledged: bool = False, limit: int = 50):
+        from helpers.memory_db import all_notifications
+
+        return {
+            "notifications": all_notifications(
+                include_acknowledged=include_acknowledged, limit=min(limit, 200)
+            )
+        }
+
+    @app.post("/api/notifications/ack")
+    def ack_notifications(req: NotificationAckRequest) -> typing.Dict[str, typing.Any]:
+        """Clear one notification, or every unread one when no id is given."""
+        from helpers.memory_db import (
+            acknowledge_all_notifications,
+            acknowledge_notification,
+        )
+
+        if req.id is None:
+            return {"cleared": acknowledge_all_notifications()}
+        return {"cleared": 1 if acknowledge_notification(req.id) else 0}
+
     @app.post("/api/invoke")
     def invoke_job(req: InvokeRequest) -> typing.Dict[str, typing.Any]:
         from helpers.logger import logger
@@ -348,7 +432,11 @@ def build_app() -> FastAPI:
 
         logger.log_function_call(req.name, "[web]", coerced)
         try:
-            result = func(**coerced)
+            # agent_lock guards the per-turn tool-outcome ledger (see scheduler._run_action)
+            from helpers.decorators import agent_lock
+
+            with agent_lock:
+                result = func(**coerced)
             result_str = str(result) if result is not None else ""
             logger.log_function_response(req.name, result_str[:200], "[web]")
             return {"ok": True, "result": result_str}

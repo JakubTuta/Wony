@@ -3,7 +3,7 @@ import typing
 from datetime import datetime, timedelta
 
 from helpers.accounts import CREDENTIALS_FILE, GoogleAccounts
-from helpers.audio import Audio
+from helpers.notify import notify
 from helpers.cache import Cache
 from helpers.config import Config
 from helpers.decorators import capture_response
@@ -60,7 +60,7 @@ class Calendar:
         name = GoogleAccounts.resolve(account or None)
         if name not in self._services:
             rec = GoogleAccounts.record(name)
-            creds = self._load_credentials(rec["calendar_token"])
+            creds = self._load_credentials(rec["calendar_token"], name)
             self._services[name] = build("calendar", "v3", credentials=creds)
         return self._services[name]
 
@@ -81,7 +81,8 @@ class Calendar:
         start = event.get("start", {})
         return start.get("dateTime") or start.get("date") or ""
 
-    def _load_credentials(self, token_file: str) -> typing.Any:
+    def _load_credentials(self, token_file: str, account: str) -> typing.Any:
+        from google.auth.exceptions import RefreshError
         from google.auth.transport.requests import Request
         from google.oauth2.credentials import Credentials
         from google_auth_oauthlib.flow import InstalledAppFlow
@@ -92,7 +93,15 @@ class Calendar:
 
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
+                try:
+                    creds.refresh(Request())
+                except RefreshError as exc:
+                    # Google says "invalid_grant: Bad Request", which tells
+                    # nobody what to do about it.
+                    raise RuntimeError(
+                        f"Google access for '{account}' has expired or was revoked. "
+                        f"Say 'authorize {account}' to sign in again."
+                    ) from exc
             else:
                 flow = InstalledAppFlow.from_client_secrets_file(
                     CREDENTIALS_FILE, _SCOPES
@@ -194,6 +203,51 @@ class Calendar:
             seen_ids = announced + [e.get("id") for e in new_events if e.get("id")]
             Cache.set_value(cache_key, seen_ids[-200:])
         return new_events
+
+    def agenda_snapshot(self, days: int = 2) -> typing.Dict[str, typing.Any]:
+        """Upcoming events as data, for the agenda panel.
+
+        Not a job: find_events writes prose, and a list with a time column and
+        per-day headings cannot be recovered from prose. Two days by default —
+        an agenda that empties out at 6pm is useless in the evening.
+        """
+        tz = local_tz()
+        start = now_local().replace(hour=0, minute=0, second=0, microsecond=0)
+        end = start + timedelta(days=max(1, days))
+
+        events = self._fetch_events_range(
+            time_min=start.isoformat(),
+            time_max=end.isoformat(),
+            max_results=50,
+        )
+
+        out = []
+        for event in events:
+            when = event.get("start", {})
+            until = event.get("end", {})
+            # Google marks an all-day event by sending "date" instead of
+            # "dateTime"; there is no other flag for it.
+            all_day = "date" in when and "dateTime" not in when
+            out.append(
+                {
+                    "id": event.get("id", ""),
+                    "title": event.get("summary", "Untitled event"),
+                    "start": when.get("dateTime") or when.get("date") or "",
+                    "end": until.get("dateTime") or until.get("date") or "",
+                    "all_day": all_day,
+                    "location": event.get("location", ""),
+                    "account": event.get("_account", ""),
+                }
+            )
+
+        return {
+            "events": out,
+            "today": start.date().isoformat(),
+            # The panel groups by day and needs to know which days were asked
+            # about, so an empty day reads as "nothing on", not "not loaded".
+            "days": [(start + timedelta(days=i)).date().isoformat() for i in range(max(1, days))],
+            "timezone": str(tz),
+        }
 
     def _format_event(self, event: dict, verbose: bool = False) -> str:
         summary = event.get("summary", "Untitled event")
@@ -511,7 +565,7 @@ class Calendar:
             msg = f"You have {len(events)} new calendar event(s) in {name}."
             logger.log_system_event("calendar_poll", msg)
             messages = [msg] + [self._format_event(e, verbose=False) for e in events]
-            Audio.notify(messages)
+            notify(messages, kind="alert", source="calendar")
 
         BackgroundJobs.start(job_name, _poll, interval=interval_minutes * 60)
         return f"Checking '{name}' calendar every {interval_minutes} minutes."
