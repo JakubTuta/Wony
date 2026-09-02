@@ -15,6 +15,7 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+          cache-dependency-path: requirements/*.txt
 
       # Core only. The optional feature modules gate themselves off when their
       # dependencies are absent, which is exactly the path CI should exercise.
