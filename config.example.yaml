@@ -108,8 +108,9 @@ modules:
   weather:
     default_units: "metric"   # metric | imperial
   gmail:
-    # Safety gate — set to true to allow sending/replying to emails.
-    allow_send: false
+    # Safety gate — set to true to let Wony send, reply and delete email.
+    # While false it saves everything as a draft for you to send yourself.
+    allow_write: false
     # Set to true to have AI summarize email lists (sends content to your AI provider).
     use_ai: false
   calendar:

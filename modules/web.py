@@ -35,15 +35,6 @@ def web_search(query: str) -> str:
     Use this to answer questions about recent events, current news, facts that may
     have changed since the AI's training cutoff, or anything requiring live data.
 
-    Use this job when the user wants to:
-    - Look up current news or recent events
-    - Find up-to-date facts, prices, or status
-    - Research a topic with live web results
-    - Ask about anything post-training-cutoff
-
-    Keywords: search, look up, find, google, web, current, latest, news, what's happening,
-             today's, recent, now, 2024, 2025, check online
-
     Args:
         query (str): The search query. Be specific for better results. (required)
 
@@ -87,14 +78,6 @@ def fetch_url(url: str) -> str:
     [WEB JOB] Fetches the main text content of a web page URL.
     Use this to read a specific article, documentation page, or any URL the user provides.
     Chain with web_search to first find a URL, then read its full content.
-
-    Use this job when the user wants to:
-    - Read the content of a specific URL
-    - Get the full text of an article or page
-    - Follow up a web search by reading one of the results
-
-    Keywords: read, open, fetch, get content, read article, open link, visit url,
-             what does this page say, read this link
 
     Args:
         url (str): The full URL to fetch (must start with http:// or https://). (required)

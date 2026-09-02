@@ -14,48 +14,26 @@ from helpers.timeutil import now_local
 # --- clock ---
 
 
-@register_job(module_name="basics", summary="Tell the current time")
+@register_job(module_name="basics", summary="Tell the current time and date")
 @capture_response
-def get_time() -> str:
+def get_datetime(part: str = "both") -> str:
     """
-    [CLOCK JOB] Tells the current local time.
-
-    Use this job when the user wants to:
-    - Know what time it is
-    - Check the current time
-
-    Keywords: time, what time, current time, what's the time, tell me the time, clock
+    [CLOCK JOB] Tells the current local time, today's date, or both.
 
     Args:
-        None
+        part (str): "time" for the clock, "date" for the day, "both" (the default)
+            for one sentence carrying each.
 
     Returns:
-        str: Current time as a human-readable string.
+        str: The current time and/or date.
     """
     now = datetime.now()
-    return f"It's {now.strftime('%H:%M')}."
-
-
-@register_job(module_name="basics", summary="Tell today's date")
-@capture_response
-def get_date() -> str:
-    """
-    [CLOCK JOB] Tells today's date.
-
-    Use this job when the user wants to:
-    - Know today's date
-    - Check the current date
-
-    Keywords: date, today, what's today, what day is it, current date, today's date
-
-    Args:
-        None
-
-    Returns:
-        str: Today's date as a human-readable string.
-    """
-    now = datetime.now()
-    return f"Today is {now.strftime('%A, %B %d, %Y')}."
+    wanted = (part or "both").strip().lower()
+    if wanted == "time":
+        return f"It's {now.strftime('%H:%M')}."
+    if wanted == "date":
+        return f"Today is {now.strftime('%A, %B %d, %Y')}."
+    return f"It's {now.strftime('%H:%M')} on {now.strftime('%A, %B %d, %Y')}."
 
 
 # --- system ---
@@ -68,18 +46,6 @@ def close_computer() -> str:
     [SYSTEM CONTROL JOB] Immediately shuts down the entire computer system.
     This is a critical system operation that forcefully terminates all processes
     and powers off the machine. Use with extreme caution as it will close all applications.
-
-    Use this job when the user wants to:
-    - Completely power down the computer
-    - Shut down the system via voice command
-    - Emergency system shutdown
-    - End the computing session entirely
-
-    Keywords: close computer, shut down, power off, turn off, exit, close system, shutdown, power down,
-             restart computer, shut down pc, power down system, close everything
-
-    Args:
-        None
 
     Returns:
         str: Confirmation of shutdown, cancellation, or why it couldn't be confirmed.
@@ -116,18 +82,6 @@ def greeting() -> str:
     Includes owner name, full date and time, and conditionally appends current weather,
     unread email summary with deduplicated senders, and today's calendar meetings depending
     on which modules are enabled.
-
-    Use this job when the user wants to:
-    - Start a conversation with a greeting
-    - Get a daily morning or evening briefing
-    - Hear the current time, date, weather, emails, and meetings at once
-
-    Keywords: hello, hi, hey, hey there, good morning, good afternoon, good evening,
-             greet, greeting, morning, what's up, daily briefing, morning briefing,
-             status update, how are you, what do I have today
-
-    Args:
-        None
 
     Returns:
         str: Personalized greeting with time, date, and optional contextual info.

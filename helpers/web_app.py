@@ -22,26 +22,24 @@ from helpers.registry import ServiceRegistry
 _DESTRUCTIVE_JOBS: typing.Set[str] = {
     "exit",
     "close_computer",
-    "stop_active_jobs",
+    "background_jobs",
     "send_email",
     "reply_to_email",
     "mark_as_read",
+    "delete_email",
+    "manage_drafts",
     "create_event",
     "edit_event",
     "delete_event",
-    # scheduler
     "cancel_reminder",
     "edit_reminder",
-    # gmail write
-    "delete_email",
-    "delete_draft",
-    "edit_draft",
-    # accounts
     "remove_google_account",
     "edit_google_account",
     # Discards the stored token before re-running consent: an interrupted
     # sign-in leaves the account worse off than it started.
     "authorize_google_account",
+    "manage_mcp_server",
+    "wipe_data",
 }
 
 
@@ -132,6 +130,12 @@ class NotificationAckRequest(BaseModel):
     id: typing.Optional[int] = None
 
 
+class SettingsRequest(BaseModel):
+    updates: typing.Dict[str, typing.Any] = {}
+    # None leaves the enabled modules alone; a list replaces them.
+    modules: typing.Optional[typing.List[str]] = None
+
+
 # Wall-clock backstop for one web turn, mirroring _TURN_TIMEOUT_SECONDS in
 # modules/employer.py — without it a stuck tool loop held agent_lock (and so
 # every other turn, voice included) until the process was restarted.
@@ -146,7 +150,7 @@ def _run_web_turn(
     WebSocket chat path so both get the same cancel and timeout behaviour."""
     import threading
 
-    from helpers.agent import run_agent
+    from helpers.agent import AgentResult, _fallback_from_calls, run_agent
     from helpers.bootstrap import get_ai_client
     from helpers.conversation import Conversation
     from helpers.decorators import agent_lock, set_agent_active
@@ -175,7 +179,7 @@ def _run_web_turn(
         set_agent_active(True)
         timer.start()
         try:
-            return run_agent(
+            result = run_agent(
                 client=ai_client,
                 user_input=message,
                 available_jobs=all_jobs,
@@ -188,6 +192,25 @@ def _run_web_turn(
         finally:
             timer.cancel()
             set_agent_active(False)
+
+    # A stopped or timed-out turn returns empty text, which the UI would render
+    # as "Empty response" — say what actually happened instead.
+    if result.text:
+        return result
+    if timed_out.is_set():
+        import helpers.diagnostics
+
+        helpers.diagnostics.add(
+            "warning", "AI",
+            f"Web turn exceeded {_WEB_TURN_TIMEOUT_SECONDS:.0f}s — aborted.",
+        )
+        text = _fallback_from_calls(result.calls)
+        if text == "Done.":
+            text = f"That took longer than {_WEB_TURN_TIMEOUT_SECONDS:.0f} seconds — I stopped there."
+        return AgentResult(text=text, calls=result.calls)
+    if session_cancel.is_set():
+        return AgentResult(text="Stopped.", calls=result.calls)
+    return result
 
 
 def build_app() -> FastAPI:
@@ -414,6 +437,29 @@ def build_app() -> FastAPI:
             return {"cleared": acknowledge_all_notifications()}
         return {"cleared": 1 if acknowledge_notification(req.id) else 0}
 
+    @app.get("/api/settings")
+    def get_settings() -> typing.Dict[str, typing.Any]:
+        from helpers.settings import describe
+
+        return describe()
+
+    @app.post("/api/settings")
+    def save_settings(req: SettingsRequest) -> typing.Dict[str, typing.Any]:
+        from helpers.logger import logger
+        from helpers.settings import SettingsError, apply
+
+        try:
+            result = apply(req.updates, req.modules)
+        except SettingsError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        except Exception as e:
+            logger.log_error(str(e), "web_settings")
+            raise HTTPException(status_code=500, detail=f"Could not save settings: {e}")
+
+        if result["written"]:
+            logger.log_system_event("settings_changed", ", ".join(result["written"]))
+        return result
+
     @app.post("/api/invoke")
     def invoke_job(req: InvokeRequest) -> typing.Dict[str, typing.Any]:
         from helpers.logger import logger
@@ -432,11 +478,18 @@ def build_app() -> FastAPI:
 
         logger.log_function_call(req.name, "[web]", coerced)
         try:
-            # agent_lock guards the per-turn tool-outcome ledger (see scheduler._run_action)
-            from helpers.decorators import agent_lock
+            # agent_lock guards the per-turn tool-outcome ledger (see
+            # scheduler._run_action). set_agent_active keeps capture_response
+            # from speaking the result: the user clicked a button and is
+            # looking at the answer, not waiting to hear it read out.
+            from helpers.decorators import agent_lock, set_agent_active
 
             with agent_lock:
-                result = func(**coerced)
+                set_agent_active(True)
+                try:
+                    result = func(**coerced)
+                finally:
+                    set_agent_active(False)
             result_str = str(result) if result is not None else ""
             logger.log_function_response(req.name, result_str[:200], "[web]")
             return {"ok": True, "result": result_str}

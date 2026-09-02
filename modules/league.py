@@ -1,5 +1,6 @@
 import os
 import time
+import typing
 
 from helpers.notify import notify
 from helpers.controllers import MouseController
@@ -15,9 +16,50 @@ _LEAGUE_REQ = Requirement(
     setup_hint="pip install -r requirements/automation.txt",
 )
 
-_LEAGUE_LNK = "C:/Users/Public/Desktop/League of Legends.lnk"
 _ACCEPT_JOB = "league_accept"
 _MAX_ACCEPT_MINUTES = 30
+# Where Riot's installer actually puts things, in the order worth trying. Drive
+# letters are filled in from the drives this machine has, since a second SSD is
+# the normal place for a game this size.
+_SHORTCUT_DIRS = (
+    os.path.join(os.environ.get("PUBLIC", r"C:\Users\Public"), "Desktop"),
+    os.path.join(os.path.expanduser("~"), "Desktop"),
+    os.path.join(os.environ.get("APPDATA", ""), r"Microsoft\Windows\Start Menu\Programs"),
+    os.path.join(os.environ.get("PROGRAMDATA", ""), r"Microsoft\Windows\Start Menu\Programs"),
+)
+_INSTALL_SUBPATHS = (
+    r"Riot Games\League of Legends\LeagueClient.exe",
+    r"Games\Riot Games\League of Legends\LeagueClient.exe",
+    r"Program Files\Riot Games\League of Legends\LeagueClient.exe",
+    r"Riot Games\Riot Client\RiotClientServices.exe",
+)
+
+
+def _find_league() -> typing.Optional[str]:
+    """The League launcher on this machine, or None.
+
+    Hardcoding one path meant the job only ever worked on the machine it was
+    written on — this checks the shortcuts Riot creates and then every drive.
+    """
+    for directory in _SHORTCUT_DIRS:
+        if not directory:
+            continue
+        candidate = os.path.join(directory, "League of Legends.lnk")
+        if os.path.isfile(candidate):
+            return candidate
+
+    for drive in _drives():
+        for subpath in _INSTALL_SUBPATHS:
+            candidate = os.path.join(drive, subpath)
+            if os.path.isfile(candidate):
+                return candidate
+    return None
+
+
+def _drives() -> typing.List[str]:
+    if os.name != "nt":
+        return ["/"]
+    return [f"{letter}:\\" for letter in "CDEFGH" if os.path.isdir(f"{letter}:\\")]
 
 
 @capture_response
@@ -26,17 +68,6 @@ def accept_game() -> str:
     """
     [GAME AUTOMATION JOB] Monitors the screen for a League of Legends queue pop-up and clicks Accept.
     Runs in the background; stops automatically once accepted or after 30 minutes.
-
-    Use this job when the user wants to:
-    - Automatically accept League of Legends matches
-    - Avoid missing queue pop-ups while multitasking
-    - Enable hands-free match acceptance
-
-    Keywords: league, lol, queue, accept match, accept game, queue pop, ready check, auto accept,
-             league of legends, automatic accept, match found, game ready, auto queue
-
-    Args:
-        None
 
     Returns:
         str: Confirmation that monitoring started.
@@ -72,26 +103,16 @@ def queue_up() -> str:
     """
     [APPLICATION LAUNCHER JOB] Launches the League of Legends game client.
 
-    Use this job when the user wants to:
-    - Start playing League of Legends
-    - Launch the game client
-    - Open the League application
-
-    Keywords: queue up, run game, start league, open league, launch lol, play league,
-             start lol, run league, start game, launch league of legends, open lol
-
-    Args:
-        None
-
     Returns:
         str: Success or error message.
     """
-    if not os.path.exists(_LEAGUE_LNK):
+    launcher = _find_league()
+    if launcher is None:
         return (
-            f"League of Legends shortcut not found at {_LEAGUE_LNK}. "
-            "Create a desktop shortcut or update the path in modules/league.py."
+            "Couldn't find League of Legends on this computer. Make a desktop "
+            "shortcut for it and try again."
         )
-    os.startfile(_LEAGUE_LNK)
+    os.startfile(launcher)
     return "League of Legends launched."
 
 
@@ -100,17 +121,6 @@ def queue_up() -> str:
 def close_game() -> str:
     """
     [APPLICATION TERMINATION JOB] Forcefully closes the League of Legends client.
-
-    Use this job when the user wants to:
-    - Exit League of Legends completely
-    - End their gaming session
-    - Close the game client
-
-    Keywords: exit league, quit league, terminate lol, close lol, shut down league, stop league,
-             exit game, close game, end league, quit lol, stop playing, close league of legends
-
-    Args:
-        None
 
     Returns:
         str: Confirmation message.

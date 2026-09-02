@@ -110,7 +110,7 @@ def build_agent_system_prompt() -> typing.List[str]:
         " Call the tool silently, then narrate only in the final step once you"
         " have its result."
         "\n\n7. REMEMBER FACTS: If the user states a personal preference or fact,"
-        " call `remember` to store it for future sessions."
+        " call `memory` with action 'save' to store it for future sessions."
         "\n\n8. ANSWER FROM HISTORY — BUT FETCH WHEN ASKED FOR MORE: For a follow-up"
         " whose answer is already fully present in the conversation ('what was it about',"
         " 'when is that'), answer directly from history. But if the user asks for detail"
@@ -125,11 +125,9 @@ def build_agent_system_prompt() -> typing.List[str]:
         " compute or guess a countdown yourself from when it was set."
         "\n\n9. RECALL FROM PERSISTENT HISTORY: If the user asks about past conversations"
         " across sessions ('what did we discuss last week', 'did I mention X before',"
-        " 'what did we talk about on Monday'), first try `semantic_recall` for fuzzy/meaning-based"
-        " recall, or `search_history` for exact keyword matches, or `recall_on_date` for a specific date."
-        " Do NOT claim you cannot remember past sessions — use these tools first."
-        " `semantic_recall` is preferred for questions like 'what did we talk about regarding X',"
-        " 'do you remember what I think about Y', or 'what did I say about Z' where meaning matters."
+        " 'what did we talk about on Monday'), call `recall` — pass `query` for a topic,"
+        " `date` for a specific day, or neither for the latest exchanges."
+        " Do NOT claim you cannot remember past sessions — use that tool first."
         "\n\n10. USE WEB FOR CURRENT INFO: If the user asks about recent events, current"
         " news, live data, or anything that may have changed since your training cutoff,"
         " call `web_search`. Do not fabricate current information — search for it."
@@ -189,11 +187,7 @@ class AI:
         This service method handles open-ended questions, information requests, and general queries
         that don't require specific system actions or external API calls.
 
-        Use this method for: general questions, information retrieval, knowledge queries, facts,
         explanations, definitions, conversational responses, or when no other specific tool matches the query.
-
-        Keywords: ask, question, what is, how to, explain, tell me, information, know, answer,
-                 general question, inquiry, knowledge, facts, definition, explanation
 
         Args:
             question (str): The question to ask the AI assistant. (required)
@@ -239,18 +233,6 @@ class AI:
         [AI SERVICE JOB] Clears the conversation history so the assistant starts fresh.
         Useful when switching topics or wanting a clean slate.
 
-        Use this job when the user wants to:
-        - Start a new conversation
-        - Reset memory
-        - Forget previous messages
-        - Clear chat history
-
-        Keywords: forget, new conversation, clear chat, start over, reset memory,
-                 clear history, fresh start, wipe memory, reset chat
-
-        Args:
-            None
-
         Returns:
             str: Confirmation that history was cleared.
         """
@@ -260,286 +242,138 @@ class AI:
     @register_job
     @capture_response
     @staticmethod
-    def remember(fact: str = "", topic: str = "") -> str:
+    def memory(action: str = "list", fact: str = "", topic: str = "") -> str:
         """
-        [AI SERVICE JOB] Saves a personal fact or preference to persistent memory.
-        Use this when the user tells you to remember something about themselves,
-        their preferences, or any fact that should be recalled in future sessions.
-
-        Use this job when the user wants to:
-        - Store a personal preference ("remember I prefer metric units")
-        - Save a fact ("remember my boss is Anna")
-        - Set a default ("remember my default account is work")
+        [AI SERVICE JOB] The assistant's long-term memory of personal facts and
+        preferences: save one, forget one, or list everything stored. Saved facts are
+        available in every future session.
 
         Args:
-            fact (str): The fact or preference to remember, as stated by the user. (required)
-            topic (str): Short snake_case subject this fact is about, e.g.
-                "preferred_units", "boss", "default_account". Reuse the same topic
-                when the user updates an existing fact so it overwrites rather than
-                duplicates. Derived from the fact text if omitted.
+            action (str): "list" (the default), "save", or "forget".
+            fact (str): The fact to save, as the user stated it. (required when saving)
+            topic (str): Short snake_case subject the fact is about, e.g. "preferred_units",
+                "boss". Reuse the same topic when updating a fact so it overwrites rather
+                than duplicates; derived from the fact text if omitted. Names which fact
+                to remove when forgetting.
 
         Returns:
-            str: Confirmation that the fact was saved.
+            str: The stored memory, or confirmation of the change.
         """
         import re
 
         from helpers.profile import Profile
 
-        if not fact:
-            return "Error: No fact provided to remember."
+        wanted = (action or "list").strip().lower()
 
-        # A model-supplied topic is what makes "I like tea" overwrite "I like
-        # coffee" instead of accumulating a near-duplicate on every restatement.
-        key = re.sub(r"[^a-z0-9_]+", "_", (topic or fact).lower().strip())[:40].strip(
-            "_"
-        )
-        if not key:
-            key = "note"
-        Profile.set(key, fact)
-        return f"Remembered ({key}): {fact}"
-
-    @register_job
-    @capture_response
-    @staticmethod
-    def forget(key: str = "") -> str:
-        """
-        [AI SERVICE JOB] Removes a previously remembered fact from persistent memory.
-        Use this when the user wants to delete a stored preference or fact.
-
-        Use this job when the user wants to:
-        - Delete a remembered fact ("forget my preferred units")
-        - Remove a stored preference
-        - Clear a specific memory entry
-
-        Keywords: forget, remove fact, delete preference, stop remembering, clear memory entry
-
-        Args:
-            key (str): The key or description of the fact to forget.
-
-        Returns:
-            str: Confirmation that the fact was removed, or notice that it was not found.
-        """
-        from helpers.profile import Profile
-
-        if not key:
-            return "Error: No key provided."
-
-        removed = Profile.remove(key)
-        if removed:
-            return f"Forgotten: {key}"
-        # Try partial match
-        all_facts = Profile.all()
-        matches = [k for k in all_facts if key.lower() in k.lower()]
-        if matches:
-            for m in matches:
-                Profile.remove(m)
-            return f"Forgotten: {', '.join(matches)}"
-        return f"No memory found matching: {key}"
-
-    @register_job
-    @capture_response
-    @staticmethod
-    def list_memory() -> str:
-        """
-        [AI SERVICE JOB] Lists all facts and preferences stored in persistent memory.
-
-        Use this job when the user wants to:
-        - See what the assistant remembers about them
-        - Review stored preferences
-        - Check what facts are saved
-
-        Keywords: list memory, show memory, what do you remember, my facts,
-                 stored preferences, show facts, memory
-
-        Args:
-            None
-
-        Returns:
-            str: All stored facts and preferences.
-        """
-        from helpers.profile import Profile
-
-        facts = Profile.all()
-        if not facts:
-            return "No facts stored in memory."
-        lines = [f"  {k}: {v}" for k, v in sorted(facts.items())]
-        return "Stored memory:\n" + "\n".join(lines)
-
-    @register_job
-    @capture_response
-    @staticmethod
-    def search_history(keyword: str = "", days_back: int = 30, limit: int = 5) -> str:
-        """
-        [AI SERVICE JOB] Searches persistent conversation history for past exchanges matching a keyword.
-        Queries the local SQLite database of all past conversations that survive restarts.
-
-        Use this job when the user wants to:
-        - Find what was discussed about a topic ("what did we say about the dentist")
-        - Recall a past conversation by keyword
-        - Look up something mentioned in a previous session
-
-        Keywords: what did we discuss, do you remember, look up history, past conversation,
-                 recall, find in history, search history, previous session
-
-        Args:
-            keyword (str): Word or phrase to search for in past conversations. (required)
-            days_back (int): How many days back to search (default 30).
-            limit (int): Max number of results to return (default 5).
-
-        Returns:
-            str: Matching past exchanges with timestamps, or a message if nothing found.
-        """
-        from helpers.memory_db import search_turns
-
-        if not keyword:
-            return "Error: No keyword provided."
-
-        results = search_turns(keyword, days_back=int(days_back), limit=int(limit))
-        if not results:
-            return f"No past conversations found matching '{keyword}' in the last {days_back} days."
-
-        lines = [f"Found {len(results)} past exchange(s) matching '{keyword}':"]
-        for r in results:
-            ts = r.get("ts", "")[:16].replace("T", " ")
-            lines.append(f"\n[{ts}]")
-            lines.append(f"  You: {r['user_text']}")
-            if r.get("assistant_text"):
-                preview = r["assistant_text"][:200]
-                if len(r["assistant_text"]) > 200:
-                    preview += "…"
-                lines.append(f"  Assistant: {preview}")
-        return "\n".join(lines)
-
-    @register_job
-    @capture_response
-    @staticmethod
-    def recall_on_date(date_str: str = "") -> str:
-        """
-        [AI SERVICE JOB] Retrieves all conversation exchanges from a specific date.
-        Queries the persistent SQLite conversation history.
-
-        Use this job when the user wants to:
-        - See what was discussed on a specific day ("what did we talk about Tuesday")
-        - Review a day's conversation history
-        - Look up exchanges from a date like "last Monday" or "2024-12-25"
-
-        Keywords: what did we talk about on, conversations from, history on, recall Tuesday,
-                 what happened on, exchanges on date
-
-        Args:
-            date_str (str): Date to retrieve history for, e.g. "yesterday", "last Monday",
-                           "2024-12-25". (required)
-
-        Returns:
-            str: All exchanges from that date, or a message if none found.
-        """
-        from helpers.memory_db import turns_on_date
-
-        if not date_str:
-            return "Error: No date provided."
-
-        results = turns_on_date(date_str)
-        if not results:
-            return f"No conversation history found for '{date_str}'."
-
-        lines = [f"Conversation history for '{date_str}' ({len(results)} exchange(s)):"]
-        for r in results:
-            ts = r.get("ts", "")[:16].replace("T", " ")
-            lines.append(f"\n[{ts}]")
-            lines.append(f"  You: {r['user_text']}")
-            if r.get("assistant_text"):
-                preview = r["assistant_text"][:200]
-                if len(r["assistant_text"]) > 200:
-                    preview += "…"
-                lines.append(f"  Assistant: {preview}")
-        return "\n".join(lines)
-
-    @register_job
-    @capture_response
-    @staticmethod
-    def recent_history(limit: int = 10) -> str:
-        """
-        [AI SERVICE JOB] Retrieves the most recent conversation exchanges from persistent history,
-        including exchanges from previous sessions that survive restarts.
-
-        Use this job when the user wants to:
-        - See the last N conversation exchanges across all sessions
-        - Review recent history beyond the current session window
-        - Check what was discussed recently
-
-        Keywords: recent history, last conversations, what did we talk about recently,
-                 show recent, last N exchanges, history
-
-        Args:
-            limit (int): Number of most recent exchanges to return (default 10).
-
-        Returns:
-            str: The most recent conversation exchanges with timestamps.
-        """
-        from helpers.memory_db import recent_turns
-
-        results = recent_turns(limit=int(limit))
-        if not results:
-            return "No conversation history found."
-
-        lines = [f"Most recent {len(results)} exchange(s):"]
-        for r in results:
-            ts = r.get("ts", "")[:16].replace("T", " ")
-            lines.append(f"\n[{ts}]")
-            lines.append(f"  You: {r['user_text']}")
-            if r.get("assistant_text"):
-                preview = r["assistant_text"][:200]
-                if len(r["assistant_text"]) > 200:
-                    preview += "…"
-                lines.append(f"  Assistant: {preview}")
-        return "\n".join(lines)
-
-    @register_job
-    @capture_response
-    @staticmethod
-    def semantic_recall(query: str = "", k: int = 5) -> str:
-        """
-        [AI SERVICE JOB] Finds past conversation turns, stored facts, and indexed documents
-        that are semantically related to the query — not just keyword matches.
-        Uses local embeddings (no API key needed). Best for fuzzy recall across sessions.
-
-        Use this job when the user wants to:
-        - Find what was said about a topic across past sessions
-        - Recall a preference or opinion they mentioned before
-        - Search memory by meaning rather than exact words
-
-        Keywords: remember, recall, what did we talk about, what do I think about, semantic search,
-                 fuzzy recall, memory search, past conversations about, what did I say about
-
-        Args:
-            query (str): The topic or question to search for semantically. (required)
-            k (int): Number of top results to return (default 5).
-
-        Returns:
-            str: Top matching past exchanges and facts, ranked by semantic similarity.
-        """
-        from helpers import semantic as _sem
-
-        if not query:
-            return "Error: No query provided."
-
-        if not _sem.is_available():
-            return (
-                "Semantic recall unavailable — install fastembed: pip install fastembed"
+        if wanted in ("list", "show", "all"):
+            facts = Profile.all()
+            if not facts:
+                return "No facts stored in memory."
+            return "Stored memory:\n" + "\n".join(
+                f"  {key}: {value}" for key, value in sorted(facts.items())
             )
 
-        results = _sem.retrieve(query, k=int(k))
-        if not results:
-            return f"No semantically similar memories found for '{query}'."
+        if wanted in ("save", "remember", "store", "add"):
+            if not fact:
+                return "Error: No fact provided to remember."
+            # A model-supplied topic is what makes "I like tea" overwrite "I like
+            # coffee" instead of accumulating a near-duplicate on every restatement.
+            key = re.sub(r"[^a-z0-9_]+", "_", (topic or fact).lower().strip())[:40].strip("_")
+            Profile.set(key or "note", fact)
+            return f"Remembered ({key or 'note'}): {fact}"
 
-        lines = [f"Semantic recall for '{query}' ({len(results)} result(s)):"]
-        for r in results:
-            score = r["score"]
-            stype = r["source_type"]
-            text = r["text"]
+        if wanted in ("forget", "remove", "delete"):
+            key = topic or fact
+            if not key:
+                return "Error: Say which fact to forget."
+            if Profile.remove(key):
+                return f"Forgotten: {key}"
+            matches = [k for k in Profile.all() if key.lower() in k.lower()]
+            for match in matches:
+                Profile.remove(match)
+            if matches:
+                return f"Forgotten: {', '.join(matches)}"
+            return f"No memory found matching: {key}"
+
+        return f"Unknown action '{action}'. Use list, save or forget."
+
+    @register_job
+    @capture_response
+    @staticmethod
+    def recall(query: str = "", date: str = "", limit: int = 5) -> str:
+        """
+        [AI SERVICE JOB] Searches past conversations, including ones from earlier
+        sessions that the current chat no longer holds. Searches by meaning as well as
+        by wording, so it answers "what did we say about the dentist", "what did we talk
+        about on Tuesday", and "what were we just discussing" alike.
+
+        Args:
+            query (str): What to look for. Leave empty to get the most recent exchanges.
+            date (str): Restrict to a single day, e.g. "yesterday", "last Monday", "2024-12-25".
+            limit (int): How many exchanges to return (default 5).
+
+        Returns:
+            str: Matching past exchanges with timestamps.
+        """
+        from helpers.memory_db import recent_turns, search_turns, turns_on_date
+
+        count = max(1, int(limit or 5))
+
+        if date:
+            turns = turns_on_date(date)
+            if not turns:
+                return f"No conversation history found for '{date}'."
+            return AI._render_turns(turns, f"Conversation history for '{date}'")
+
+        if not query:
+            turns = recent_turns(limit=count)
+            if not turns:
+                return "No conversation history found."
+            return AI._render_turns(turns, f"Most recent {len(turns)} exchange(s)")
+
+        semantic_lines = AI._semantic_matches(query, count)
+        if semantic_lines:
+            return semantic_lines
+
+        turns = search_turns(query, days_back=365, limit=count)
+        if not turns:
+            return f"Nothing in past conversations matches '{query}'."
+        return AI._render_turns(turns, f"Past exchanges matching '{query}'")
+
+    @staticmethod
+    def _semantic_matches(query: str, count: int) -> str:
+        """Meaning-based hits from the embedding store, or "" when it is unavailable
+        or finds nothing — the caller then falls back to a keyword search."""
+        from helpers import semantic as _sem
+
+        if not _sem.is_available():
+            return ""
+        try:
+            results = _sem.retrieve(query, k=count)
+        except Exception:
+            return ""
+        if not results:
+            return ""
+
+        lines = [f"Past exchanges about '{query}' ({len(results)} result(s)):"]
+        for result in results:
+            text = result["text"]
             preview = text[:300] + ("…" if len(text) > 300 else "")
-            lines.append(f"\n[{stype} | score {score:.3f}]")
+            lines.append(f"\n[{result['source_type']}]")
             lines.append(f"  {preview}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _render_turns(turns: typing.List[typing.Dict], header: str) -> str:
+        lines = [f"{header} ({len(turns)} exchange(s)):"]
+        for turn in turns:
+            stamp = turn.get("ts", "")[:16].replace("T", " ")
+            lines.append(f"\n[{stamp}]")
+            lines.append(f"  You: {turn['user_text']}")
+            answer = turn.get("assistant_text") or ""
+            if answer:
+                preview = answer[:200] + ("…" if len(answer) > 200 else "")
+                lines.append(f"  Assistant: {preview}")
         return "\n".join(lines)
 
     @register_job
@@ -550,14 +384,6 @@ class AI:
         [AI SERVICE JOB] Indexes a local file for semantic recall via ask_my_docs.
         Extracts text from the file and embeds it for future retrieval.
         Supports text files, PDFs (via pdfminer/pypdf2 if available), and plain text.
-
-        Use this job when the user wants to:
-        - Add a document to their searchable knowledge base
-        - Make a file queryable with ask_my_docs
-        - Index a PDF, text file, or notes file for later recall
-
-        Keywords: index document, add document, index file, add to knowledge base, read this file,
-                 remember this document, index this
 
         Args:
             path (str): Absolute or home-relative path to the file to index. (required)
@@ -596,14 +422,6 @@ class AI:
         """
         [AI SERVICE JOB] Answers a question using semantically indexed personal documents.
         Retrieves the most relevant document chunks and synthesises an answer.
-
-        Use this job when the user wants to:
-        - Ask a question about a previously indexed document
-        - Search their personal notes or files
-        - Query their local knowledge base
-
-        Keywords: ask my docs, search documents, query notes, what does my document say,
-                 find in my files, search knowledge base, ask about document
 
         Args:
             query (str): The question to answer from indexed documents. (required)

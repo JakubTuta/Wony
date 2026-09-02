@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
 import {
+  AlarmClock,
   CalendarDays,
   ChevronLeft,
   CloudSun,
   Lightbulb,
   Music,
+  SlidersHorizontal,
   Terminal,
   UserRound,
 } from 'lucide-react';
@@ -15,16 +17,24 @@ import { Accounts } from '../panels/Accounts';
 import { Agenda } from '../panels/Agenda';
 import { Devices } from '../panels/Devices';
 import { Music as MusicPanel } from '../panels/Music';
+import { Reminders } from '../panels/Reminders';
+import { Settings } from '../panels/Settings';
 import { Weather } from '../panels/Weather';
 import { MUTED } from '../panels/ui';
 
 const PANEL_ICONS: Record<string, typeof CloudSun> = {
   weather: CloudSun,
   agenda: CalendarDays,
+  reminders: AlarmClock,
   devices: Lightbulb,
   music: Music,
   accounts: UserRound,
+  settings: SlidersHorizontal,
 };
+
+// Settings is not a module panel — it is always there, and it goes last so the
+// things you look at every day stay first.
+const SETTINGS_PANEL: PanelInfo = { key: 'settings', label: 'Settings', module: '' };
 
 /** The right-hand pane: a few things worth looking at, and the full command
  *  list one click away.
@@ -48,10 +58,10 @@ export function PanelsPane({
 
   useEffect(() => {
     fetchPanels().then((list) => {
-      setPanels(list);
+      setPanels([...list, SETTINGS_PANEL]);
       // Open the first one rather than an empty pane: a blank right half reads
       // as broken, and the top tile is one click away regardless.
-      setActive((current) => current ?? list[0]?.key ?? null);
+      setActive((current) => current ?? list[0]?.key ?? SETTINGS_PANEL.key);
     });
   }, []);
 
@@ -99,17 +109,7 @@ export function PanelsPane({
       )}
 
       <div className="flex-1 overflow-y-auto">
-        {active === null ? (
-          <div className="flex flex-col items-center justify-center h-full gap-2 px-8 text-center">
-            <p className={`text-sm ${MUTED}`}>No panels yet.</p>
-            <p className={`text-xs ${MUTED}`}>
-              Switch on weather, calendar, spotify, home_assistant or google_accounts in
-              config.yaml and they appear here.
-            </p>
-          </div>
-        ) : (
-          <ActivePanel which={active} locale={locale} />
-        )}
+        <ActivePanel which={active ?? SETTINGS_PANEL.key} locale={locale} />
       </div>
 
       <button
@@ -138,6 +138,10 @@ function ActivePanel({ which, locale }: { which: string; locale: string }) {
       return <MusicPanel key="music" />;
     case 'accounts':
       return <Accounts key="accounts" />;
+    case 'reminders':
+      return <Reminders key="reminders" />;
+    case 'settings':
+      return <Settings key="settings" />;
     default:
       return null;
   }

@@ -208,12 +208,6 @@ def list_home_devices(query: str = "", area: str = "", domain: str = "") -> str:
     and for reading state ("is the garage door open", "what's the bedroom temperature",
     "did I leave a light on"). With no arguments it lists the whole house.
 
-    Use this job when the user wants to:
-    - Know what smart-home devices exist, or what is in a given room
-    - Check whether something is on, off, open, closed or locked
-    - Read a sensor: temperature, humidity, power, battery
-    - Find the right device name before controlling it
-
     Args:
         query (str): Name to look for, e.g. 'garage door', 'bedroom lamp'.
         area (str): Restrict to one room, e.g. 'kitchen', 'living room'.
@@ -255,14 +249,6 @@ def control_home_device(
     switches, blinds, thermostats, locks, media players, scenes and scripts. Device
     names are resolved here, so pass what the user said ('the bedroom lamp') rather
     than an entity id. Give target, or area/domain, or both.
-
-    Use this job when the user wants to:
-    - Turn something on, off or toggle it
-    - Dim a light or change its brightness
-    - Open, close or stop blinds, curtains, or the garage
-    - Set the thermostat temperature
-    - Lock or unlock a door, arm or disarm the alarm
-    - Run a scene or script, e.g. 'movie night'
 
     Args:
         target (str): What to control, as the user named it, e.g. 'bedroom lamp'.

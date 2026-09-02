@@ -36,23 +36,43 @@ elif hasattr(sys.stderr, "reconfigure"):
     except Exception:
         pass
 
-_TRAY_LOCK_PORT = 10923  # ephemeral port used as single-instance mutex
+_INSTANCE_NAME = "WonyAssistantTraySingleInstance"
+_lock_handle: typing.Any = None
 _lock_socket: typing.Optional[socket.socket] = None
 
 
 def _try_acquire_instance_lock() -> bool:
-    global _lock_socket
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
+    """True if this process is the only tray instance.
+
+    A named mutex, not a bound port: any unrelated program holding the port
+    would otherwise look like a running Wony and block startup entirely.
+    """
+    global _lock_handle, _lock_socket
+
+    if sys.platform == "win32":
+        import ctypes
+
+        ERROR_ALREADY_EXISTS = 183
+        # use_last_error so the error code belongs to CreateMutexW, and
+        # c_void_p so a 64-bit handle is not truncated on the way back.
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateMutexW.restype = ctypes.c_void_p
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+
+        handle = kernel32.CreateMutexW(None, False, _INSTANCE_NAME)
+        if handle and ctypes.get_last_error() == ERROR_ALREADY_EXISTS:
+            kernel32.CloseHandle(handle)
+            return False
+        _lock_handle = handle  # released when the process exits
+        return True
+
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
-        sock.bind(("127.0.0.1", _TRAY_LOCK_PORT))
+        sock.bind("\0" + _INSTANCE_NAME)  # abstract namespace: no file to clean up
         _lock_socket = sock
         return True
     except OSError:
-        try:
-            sock.close()
-        except OSError:
-            pass
+        sock.close()
         return False
 
 
@@ -219,11 +239,33 @@ def run_tray() -> None:
         stop_hotkey(_hotkey_listener_ref[0])
         _hotkey_listener_ref[0] = None
 
-    def _on_open_web(icon, item) -> None:
+    def _open_web() -> None:
         import webbrowser
 
         controller.ensure_web()
         webbrowser.open(f"http://{host}:{port}")
+
+    def _on_open_web(icon, item) -> None:
+        _open_web()
+
+    def _on_settings(icon, item) -> None:
+        # Settings live on the web page; the tray menu is just the shortcut.
+        _open_web()
+
+    def _on_check_updates(icon, item) -> None:
+        def _check() -> None:
+            from helpers.updates import check
+
+            try:
+                message = check()
+            except Exception as e:
+                message = f"Update check failed: {e}"
+            try:
+                icon.notify(message[:250], title=f"{assistant_name} — updates")
+            except Exception:
+                print(message)
+
+        threading.Thread(target=_check, daemon=True, name="update-check").start()
 
     def _on_toggle(icon, item) -> None:
         if controller.is_running():
@@ -268,7 +310,7 @@ def run_tray() -> None:
         icon.stop()
 
     menu = pystray.Menu(
-        pystray.MenuItem("Open in web", _on_open_web),
+        pystray.MenuItem("Open in web", _on_open_web, default=True),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Listen now", _on_listen_now),
         pystray.MenuItem("Stop speaking", _on_stop_speaking),
@@ -277,6 +319,8 @@ def run_tray() -> None:
             _wakeword_label, _on_wakeword_toggle, visible=_wakeword_visible
         ),
         pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Settings", _on_settings),
+        pystray.MenuItem("Check for updates", _on_check_updates),
         pystray.MenuItem(_toggle_label, _on_toggle),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Exit", _on_exit),
@@ -290,19 +334,31 @@ def run_tray() -> None:
     )
     _icon_ref[0] = icon
 
-    # Subscribe to state events to update icon color
-    def _on_state_event(payload: dict) -> None:
-        if payload.get("type") != "state":
+    # Colour the icon by state, and surface proactive messages as Windows
+    # toasts — a timer that fires with the browser closed and the speaker muted
+    # was otherwise only visible to someone who went looking for the bell.
+    def _on_event(payload: dict) -> None:
+        kind = payload.get("type")
+        if kind == "state":
+            state = payload.get("state", "idle")
+            _current_state[0] = state
+            if _icon_ref[0] is not None:
+                _icon_ref[0].icon = _make_icon_image(state)
+        elif kind == "notification":
+            _toast(payload.get("text", ""), payload.get("source", ""))
+
+    def _toast(text: str, source: str) -> None:
+        icon_obj = _icon_ref[0]
+        if not text or icon_obj is None:
             return
-        state = payload.get("state", "idle")
-        _current_state[0] = state
-        ic = _icon_ref[0]
-        if ic is not None:
-            ic.icon = _make_icon_image(state)
+        try:
+            icon_obj.notify(text[:250], title=f"{assistant_name} · {source or 'notice'}")
+        except Exception:
+            pass  # some shells have no balloon support; the bell still has it
 
     from helpers.events import subscribe, unsubscribe
 
-    subscribe(_on_state_event)
+    subscribe(_on_event)
 
     # Ensure icon.stop() fires on process exit (e.g., sys.exit from a thread)
     atexit.register(lambda: _icon_ref[0].stop() if _icon_ref[0] else None)
@@ -338,7 +394,7 @@ def run_tray() -> None:
     # icon.run() returned — Exit was clicked (or _tray_exit_hook fired).
     # Run cleanup on the main thread, then force-exit. os._exit bypasses
     # atexit/gc finalizers that can block on audio/C-extension threads.
-    unsubscribe(_on_state_event)
+    unsubscribe(_on_event)
     _stop_hotkey()
     controller.shutdown()
     # os._exit below bypasses atexit — resume paused media explicitly first.

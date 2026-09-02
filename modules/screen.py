@@ -27,18 +27,6 @@ def save_screenshot() -> str:
     This standalone task creates a timestamped image file of whatever is currently displayed
     on the screen and stores it in the screenshots directory for later reference.
 
-    Use this job when the user wants to:
-    - Capture what's currently on screen
-    - Save visual documentation
-    - Create image records of displayed content
-    - Take screenshots for sharing or archiving
-
-    Keywords: screenshot, save, screen capture, take picture, capture screen, save image,
-             screen shot, take screenshot, capture display
-
-    Args:
-        None
-
     Returns:
         str: Confirmation with saved file path.
     """
@@ -58,17 +46,6 @@ def explain_screenshot(user_input: str) -> str:
     [AI VISION JOB] Captures the current screen and provides AI-powered analysis and explanation.
     This intelligent task takes a screenshot and uses computer vision AI to describe, analyze,
     and explain the visual content based on the user's specific question or request.
-
-    Use this job when the user wants to:
-    - Understand what's displayed on screen
-    - Get AI analysis of visual content
-    - Explain complex interfaces or applications
-    - Describe images, text, or UI elements visible on screen
-    - Get contextual help about what they're seeing
-
-    Keywords: explain this, what's this, explain, analyze, screenshot, screen capture,
-             describe screen, what am I looking at, analyze this, tell me about this,
-             screen analysis, visual explanation
 
     Args:
         user_input (str): The user's specific question or request about the screenshot content.

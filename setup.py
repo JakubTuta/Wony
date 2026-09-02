@@ -24,6 +24,7 @@ config.yaml — the actual (multi-hour, WSL/Colab) training step still runs on
 its own.
 """
 
+import io
 import os
 import re
 import subprocess
@@ -149,7 +150,7 @@ FEATURES = [
         "module": "gmail",
         "default": False,
         "desc": "Read, search and watch your inbox.",
-        "needs": "Google OAuth: credentials/google_credentials.json. Sending off until modules.gmail.allow_send: true.",
+        "needs": "Google OAuth: credentials/google_credentials.json. Sending stays off until you allow it in Settings.",
     },
     {
         "key": "calendar",
@@ -158,7 +159,7 @@ FEATURES = [
         "module": "calendar",
         "default": False,
         "desc": "Read events, check availability, find free slots.",
-        "needs": "Google OAuth: credentials/google_credentials.json. Writing off until modules.calendar.allow_write: true.",
+        "needs": "Google OAuth: credentials/google_credentials.json. Writing stays off until you allow it in Settings.",
     },
     {
         "key": "google_accounts",
@@ -185,15 +186,15 @@ FEATURES = [
         "module": "desktop",
         "default": False,
         "desc": "Open apps, manage windows, read/write clipboard, open files.",
-        "needs": "Actions off until modules.desktop.allow_actions: true.",
+        "needs": "Typing and clicking stay off until you allow them in Settings.",
     },
     {
         "key": "league",
-        "label": "League of Legends stats",
+        "label": "League of Legends",
         "reqs": ["automation.txt"],
         "module": "league",
         "default": False,
-        "desc": "Player stats and match history.",
+        "desc": "Launch or close the game, and auto-accept queue pop-ups.",
         "needs": "",
     },
     {
@@ -204,8 +205,8 @@ FEATURES = [
         "default": False,
         "desc": "Control lights, blinds, thermostats, locks, scenes and scripts.",
         "needs": "HOME_ASSISTANT_TOKEN in .env (profile → Security → Long-lived access "
-        "tokens); set modules.home_assistant.base_url in config.yaml. Locks and the "
-        "garage stay off until modules.home_assistant.allow_locks: true.",
+        "tokens); set the Home Assistant address in Settings. Locks and the garage "
+        "stay off until you allow them there.",
     },
     {
         "key": "mcp",
@@ -214,7 +215,7 @@ FEATURES = [
         "module": "mcp",
         "default": False,
         "desc": "Connect external Model Context Protocol tool servers.",
-        "needs": "Configure servers in config.yaml under the mcp module.",
+        "needs": "Add servers by asking Wony, e.g. \"add an MCP server called filesystem\".",
     },
     {
         "key": "semantic",
@@ -547,32 +548,17 @@ def ensure_config():
     return True, True
 
 
-def set_media_pause_enabled(value):
-    """Flip voice.media_pause.enabled in config.yaml. Stdlib-only line edit
-    (matches apply_enabled_modules() below) rather than pulling in a YAML
-    library just for this."""
-    if not os.path.exists(CONFIG):
-        return
-    with open(CONFIG, "r", encoding="utf-8") as fh:
-        lines = fh.readlines()
-    base_indent = None
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if base_indent is None:
-            if stripped == "media_pause:":
-                base_indent = len(line) - len(line.lstrip())
-            continue
-        if stripped == "":
-            continue
-        indent = len(line) - len(line.lstrip())
-        if indent <= base_indent:
-            break  # left the media_pause: block without finding enabled:
-        if stripped.startswith("enabled:"):
-            pad = line[:indent]
-            lines[i] = f"{pad}enabled: {'true' if value else 'false'}\n"
-            with open(CONFIG, "w", encoding="utf-8") as fh:
-                fh.writelines(lines)
-            return
+def write_config(updates):
+    """Set dotted keys in config.yaml, keeping its comments.
+
+    helpers/config_writer.py is the one implementation of this, shared with the
+    web UI's settings page; it is stdlib-only so it works here too, before any
+    dependency has been installed.
+    """
+    sys.path.insert(0, ROOT)
+    from helpers.config_writer import update as _update
+
+    return _update(CONFIG, updates)
 
 
 def ask_media_pause(chosen):
@@ -598,84 +584,18 @@ def ask_media_pause(chosen):
     )
     ans = input("  Enable? [Y/n] ").strip().lower()
     if ans in ("n", "no"):
-        set_media_pause_enabled(False)
+        write_config({"voice.media_pause.enabled": False})
         print(c("  . media pause disabled.", "90"))
 
 
-def _line_key(line):
-    """(indent, key) for a `key: value` / `key:` line, else None (blank/comment)."""
-    stripped = line.rstrip("\n").strip()
-    if not stripped or stripped.startswith("#") or ":" not in stripped:
-        return None
-    indent = len(line) - len(line.lstrip(" "))
-    return indent, stripped.split(":", 1)[0].strip()
-
-
-def _block_end(lines, header_idx, indent):
-    """First line index after header_idx whose indent is <= `indent` (children
-    end there), skipping blank/comment lines. len(lines) if the block runs to EOF."""
-    j = header_idx + 1
-    while j < len(lines):
-        info = _line_key(lines[j])
-        if info is not None and info[0] <= indent:
-            break
-        j += 1
-    return j
-
-
-def _find_key(lines, key, indent, start, end):
-    for i in range(start, end):
-        info = _line_key(lines[i])
-        if info == (indent, key):
-            return i
-    return None
-
-
 def set_wake_word_config(phrase, model_path, threshold=0.5):
-    """Write voice.wake_word.{enabled,phrase,model_path,threshold} into
-    config.yaml, inserting the block if missing — it ships absent from
-    config.example.yaml since wake word is opt-in (see Config philosophy in
-    CLAUDE.md: not a setting a first-time user needs to see)."""
-    if not os.path.exists(CONFIG):
-        return
-    with open(CONFIG, "r", encoding="utf-8") as fh:
-        lines = fh.readlines()
-
-    voice_i = _find_key(lines, "voice", 0, 0, len(lines))
-    if voice_i is None:
-        print(
-            c(
-                "  ! No 'voice:' section in config.yaml — add wake word settings manually.",
-                "33",
-            )
-        )
-        return
-    voice_end = _block_end(lines, voice_i, 0)
-
-    wanted = {
-        "enabled": "true",
-        "phrase": f'"{phrase}"',
-        "model_path": f'"{model_path}"',
-        "threshold": str(threshold),
-    }
-
-    ww_i = _find_key(lines, "wake_word", 2, voice_i + 1, voice_end)
-    if ww_i is None:
-        block = ["  wake_word:\n"] + [f"    {k}: {v}\n" for k, v in wanted.items()]
-        lines[voice_end:voice_end] = block
-    else:
-        ww_end = _block_end(lines, ww_i, 2)
-        for key, value in wanted.items():
-            k_i = _find_key(lines, key, 4, ww_i + 1, ww_end)
-            line = f"    {key}: {value}\n"
-            if k_i is not None:
-                lines[k_i] = line
-            else:
-                lines.insert(ww_end, line)
-                ww_end += 1
-
-    with open(CONFIG, "w", encoding="utf-8") as fh:
-        fh.writelines(lines)
+    """Point config.yaml at a freshly trained wake-word model."""
+    write_config({
+        "voice.wake_word.enabled": True,
+        "voice.wake_word.phrase": phrase,
+        "voice.wake_word.model_path": model_path,
+        "voice.wake_word.threshold": threshold,
+    })
     print(c(f'  ✓ voice.wake_word.phrase = "{phrase}" in config.yaml', "32"))
 
 
@@ -743,33 +663,11 @@ def apply_enabled_modules(chosen):
     if not ok:
         return
     wanted = list(ALWAYS_ON) + [f["module"] for f in chosen if f["module"]]
-    with open(CONFIG, "r", encoding="utf-8") as fh:
-        lines = fh.readlines()
-    with open(CONFIG + ".bak", "w", encoding="utf-8") as bk:
-        bk.writelines(lines)
-
-    out, i, replaced = [], 0, False
-    while i < len(lines):
-        line = lines[i]
-        if line.rstrip("\n").startswith("enabled_modules:") and not replaced:
-            out.append("enabled_modules:\n")
-            out.extend(f"  - {m}\n" for m in wanted)
-            replaced = True
-            i += 1
-            while i < len(lines):
-                s = lines[i]
-                if s.strip() == "" or s.startswith(("  ", "\t", "#")):
-                    i += 1
-                    continue
-                break
-            continue
-        out.append(line)
-        i += 1
-    if not replaced:
-        out.append("\nenabled_modules:\n")
-        out.extend(f"  - {m}\n" for m in wanted)
-    with open(CONFIG, "w", encoding="utf-8") as fh:
-        fh.writelines(out)
+    with io.open(CONFIG, "r", encoding="utf-8") as fh:
+        backup = fh.read()
+    with io.open(CONFIG + ".bak", "w", encoding="utf-8") as bk:
+        bk.write(backup)
+    write_config({"enabled_modules": wanted})
     print(c(f"  ✓ enabled_modules = {', '.join(wanted)}", "32"))
 
 

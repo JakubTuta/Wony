@@ -150,17 +150,6 @@ class Desktop:
         """
         [DESKTOP JOB] Lists all currently open application windows on the desktop.
 
-        Use this job when the user wants to:
-        - See what windows/apps are open
-        - Find which app to focus
-        - List running windows
-
-        Keywords: list windows, show windows, open windows, what's open, running apps,
-                 what apps are open
-
-        Args:
-            None
-
         Returns:
             str: Names of all visible windows.
         """
@@ -176,17 +165,6 @@ class Desktop:
     def get_clipboard(self) -> str:
         """
         [DESKTOP JOB] Reads and returns the current clipboard content.
-
-        Use this job when the user wants to:
-        - See what's in the clipboard
-        - Read copied text
-        - Get clipboard contents
-
-        Keywords: clipboard, what's in clipboard, read clipboard, paste, copied text,
-                 get clipboard
-
-        Args:
-            None
 
         Returns:
             str: Current clipboard text content.
@@ -206,13 +184,6 @@ class Desktop:
         """
         [DESKTOP JOB] Searches for files matching a name or pattern on the filesystem.
         Searches from the user's home directory by default, or a configured/specified path.
-
-        Use this job when the user wants to:
-        - Find a file by name
-        - Locate a document or folder
-        - Search for files matching a pattern
-
-        Keywords: find file, search file, where is, locate file, look for file, find document
 
         Args:
             name (str): Filename or partial name to search for (case-insensitive). (required)
@@ -280,13 +251,6 @@ class Desktop:
         [DESKTOP JOB] Brings a window to the foreground and gives it focus.
         Matches by partial title (case-insensitive).
 
-        Use this job when the user wants to:
-        - Switch to an application window
-        - Bring a window to the front
-        - Focus a specific app
-
-        Keywords: focus, switch to, bring to front, activate window, open app window
-
         Args:
             title (str): Partial window title to match (case-insensitive). (required)
 
@@ -324,13 +288,6 @@ class Desktop:
         Works for app names known to Windows (e.g. 'notepad', 'chrome', 'spotify', 'calculator').
         Requires modules.desktop.allow_actions to be enabled in config.
 
-        Use this job when the user wants to:
-        - Open an application
-        - Launch a program
-        - Start an app
-
-        Keywords: open, launch, start, run app, open program, open application, start app
-
         Args:
             name (str): Application name or executable path to open. (required)
 
@@ -367,13 +324,6 @@ class Desktop:
         """
         [DESKTOP JOB] Opens a file with its default application (like double-clicking it).
         Requires modules.desktop.allow_actions to be enabled in config.
-
-        Use this job when the user wants to:
-        - Open a specific file
-        - View a document or image
-        - Open a file with its default program
-
-        Keywords: open file, view file, open document, open image, open with
 
         Args:
             path (str): Full path OR just a filename (with or without extension).
@@ -417,13 +367,6 @@ class Desktop:
         [DESKTOP JOB] Sets the clipboard to the given text.
         Requires modules.desktop.allow_actions to be enabled in config.
 
-        Use this job when the user wants to:
-        - Copy text to clipboard
-        - Set clipboard content
-        - Prepare text for pasting
-
-        Keywords: copy to clipboard, set clipboard, put in clipboard, clipboard copy
-
         Args:
             text (str): Text to place in the clipboard. (required)
 
@@ -447,13 +390,6 @@ class Desktop:
         [DESKTOP JOB] Types text into the currently focused application as keyboard input.
         Requires modules.desktop.allow_actions to be enabled in config.
         Note: works best with ASCII text; unicode characters are handled via clipboard paste.
-
-        Use this job when the user wants to:
-        - Type text into the active window
-        - Input text automatically
-        - Autofill a field
-
-        Keywords: type, input text, write in, type into, keyboard input, autotype
 
         Args:
             text (str): Text to type into the active window. (required)
@@ -484,13 +420,6 @@ class Desktop:
         [DESKTOP JOB] Clicks the mouse at the specified screen coordinates.
         Requires modules.desktop.allow_actions to be enabled in config.
         Use with caution — coordinates are absolute screen pixels.
-
-        Use this job when the user wants to:
-        - Click a specific position on screen
-        - Interact with a UI element at known coordinates
-        - Automate a click action
-
-        Keywords: click, click at, mouse click, press, tap coordinates
 
         Args:
             x (int): Horizontal pixel coordinate. (required)

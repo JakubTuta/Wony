@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { Send, Trash2, Database, ChevronDown, ChevronRight, Loader2, Bot, User, Square, Mic, X } from 'lucide-react';
 import { clearChat, wipeData, fetchHistory, connectChatSocket, transcribeAudio, fetchConfig } from '../api';
 import type { AppConfig, ChatCall, HistoryTurn, AssistantState } from '../api';
+import { Markdown } from './Markdown';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -449,13 +450,19 @@ export function ChatPanel() {
             <div className={`flex flex-col gap-1 max-w-[85%] ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
               {/* Bubble */}
               <div
-                className={`rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap ${
+                className={`rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${
                   msg.role === 'user'
-                    ? 'bg-violet-600 text-white rounded-tr-sm'
+                    ? 'bg-violet-600 text-white rounded-tr-sm whitespace-pre-wrap'
                     : 'bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100 rounded-tl-sm'
                 }`}
               >
-                {msg.text || (!msg.streamKey && <span className="italic text-gray-400">Empty response</span>)}
+                {msg.role === 'user' ? (
+                  msg.text
+                ) : msg.text ? (
+                  <Markdown text={msg.text} />
+                ) : (
+                  !msg.streamKey && <span className="italic text-gray-400">Empty response</span>
+                )}
               </div>
 
               {/* Tool calls trace */}

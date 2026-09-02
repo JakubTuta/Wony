@@ -29,6 +29,9 @@ _MAX_BODY_CHARS = 1500
 _AI_SUMMARY_MAX_EMAILS = 30
 # How often "check my email every so often" polls when no interval is given.
 _DEFAULT_POLL_INTERVAL_MINUTES = 15
+# Unread messages a poll tick scans. Above the display default so a burst of new
+# mail between two ticks is announced in full rather than partly missed.
+_POLL_SCAN_LIMIT = 100
 
 
 @dataclasses.dataclass
@@ -215,6 +218,15 @@ class Gmail:
 
     def _ai_summary_max_emails(self) -> int:
         return _AI_SUMMARY_MAX_EMAILS
+
+    def _write_allowed(self) -> bool:
+        return bool(Config.module_settings("gmail").get("allow_write", False))
+
+    def _write_disabled_note(self, what: str) -> str:
+        return (
+            f"{what} is disabled. To allow it, set modules.gmail.allow_write: true "
+            "in config.yaml (or switch it on in the web UI under Settings)."
+        )
 
     # ------------------------------------------------------------------
     # Raw API helpers
@@ -534,16 +546,59 @@ class Gmail:
         date filters re-announcing the same mail every interval."""
         name = GoogleAccounts.resolve(account or None)
         cache_key = f"announced_email_ids_{name}"
-        messages = self._fetch(self._scope("is:unread"), self._default_max(), name)
+        messages = self._fetch(self._scope("is:unread"), _POLL_SCAN_LIMIT, name)
         announced: typing.List[str] = Cache.get_value(cache_key) or []
         new = [m for m in messages if m.id not in announced]
         if new:
-            Cache.set_value(cache_key, (announced + [m.id for m in new])[-200:])
+            Cache.set_value(cache_key, (announced + [m.id for m in new])[-500:])
         return new
 
     def _search(self, query: str, max_results: int = 0, account: str = "") -> typing.List[Msg]:
         """Public search helper returning Msg list (for external callers)."""
         return self._fetch(self._scope(query), max_results, account)
+
+    @staticmethod
+    def _locator(query: str, sender: str, subject: str) -> str:
+        """The query fragment every "find the one they mean" job builds."""
+        parts = []
+        if query:
+            parts.append(query)
+        if sender:
+            parts.append(f"from:{sender}")
+        if subject:
+            parts.append(f"subject:{subject}")
+        return " ".join(parts)
+
+    def _find_latest(
+        self, scoped_query: str, account: str
+    ) -> typing.Optional[typing.Tuple[str, Msg]]:
+        """Newest match across the target account(s), with the account holding it.
+
+        Write jobs must act on that account: an unspecified account searches
+        every one, so replying via the primary account would answer an email
+        the primary account never received.
+        """
+        best: typing.Optional[typing.Tuple[str, Msg]] = None
+        for name in self._accounts(account):
+            svc = self._svc(name)
+            refs = self._list_ids(svc, scoped_query, 10)
+            msgs = self._sort_desc(self._batch_get(svc, refs, "full", self._label_map(name)))
+            if not msgs:
+                continue
+            if best is None or Gmail._parse_date(msgs[0]) > Gmail._parse_date(best[1]):
+                best = (name, msgs[0])
+        return best
+
+    def _find_ids(
+        self, scoped_query: str, account: str, cap: int
+    ) -> typing.List[typing.Tuple[str, typing.List[str]]]:
+        """(account, message ids) per account, for a bulk operation."""
+        found = []
+        for name in self._accounts(account):
+            refs = self._list_ids(self._svc(name), scoped_query, cap)
+            if refs:
+                found.append((name, [r["id"] for r in refs]))
+        return found
 
     # ------------------------------------------------------------------
     # Jobs — read
@@ -579,12 +634,6 @@ class Gmail:
         starred, important, or with attachments. Combine filters freely; with no filters
         it lists recent inbox mail. Returns headers and previews, not full bodies —
         use read_email for the body of one message.
-
-        Use this job when the user wants to:
-        - Check new/unread email ("any new mail?", "check my email")
-        - See recent mail, or mail from the last N days
-        - Find mail from a person, about a subject, or matching a search
-        - Browse a label, starred, important, or attachment-bearing mail
 
         Args:
             query (str): Raw Gmail search syntax, e.g. 'from:boss subject:report'. Use
@@ -669,11 +718,6 @@ class Gmail:
         "read my last email" / "what was the last thing I sent". Use find_emails to
         list several; use this to actually read one.
 
-        Use this job when the user wants to:
-        - Read what an email says
-        - Open the latest email, or the latest from someone
-        - See the last message they sent
-
         Args:
             query (str): Raw Gmail search syntax to locate the email.
             sender (str): Only mail from this name or address.
@@ -685,16 +729,7 @@ class Gmail:
             str: Full email body and headers.
         """
         audio = Cache.get_audio()
-
-        if query:
-            scoped = self._scope(query, folder=folder)
-        else:
-            parts = []
-            if sender:
-                parts.append(f"from:{sender}")
-            if subject:
-                parts.append(f"subject:{subject}")
-            scoped = self._scope(" ".join(parts), folder=folder)
+        scoped = self._scope(self._locator(query, sender, subject), folder=folder)
 
         messages = self._fetch(scoped, 10, account)
         if not messages:
@@ -705,48 +740,60 @@ class Gmail:
 
     @capture_response
     @method_job
-    def get_unread_count(self, account: str = "") -> str:
+    def inbox_overview(self, detailed: bool = False, account: str = "") -> str:
         """
-        [EMAIL MANAGEMENT JOB] Returns the count of unread emails in the inbox.
-
-        Use this job when the user wants to:
-        - Know how many unread emails they have
-        - Check if there is new mail
-        - Get a quick inbox status
-
-        Keywords: how many unread, unread count, unread emails, do I have new mail,
-                 how many emails, new email count, unread messages, inbox count
+        [EMAIL MANAGEMENT JOB] Summarises the state of the inbox: how many unread
+        emails there are, and — with detailed=true — who they are from and how much
+        recent mail carries attachments. Answers "how many unread do I have" and
+        "what's in my inbox" alike. Use find_emails to actually list the messages.
 
         Args:
-            account (str): Google account to use (default: primary).
+            detailed (bool): Add top unread senders and the recent attachment count.
+            account (str): Google account to use (default: every configured account).
 
         Returns:
-            str: Number of unread emails.
+            str: Unread counts, plus the extra breakdown when detailed is set.
         """
         names = self._accounts(account)
-        total = 0
-        per: typing.List[str] = []
+        unread_total = 0
+        per_account: typing.List[str] = []
+        attachments = 0
+        senders: typing.Dict[str, int] = {}
+
         for name in names:
-            n = self._label_counts(self._svc(name), "INBOX").get("messagesUnread", 0)
-            total += n
-            per.append(f"{name}: {n}")
+            svc = self._svc(name)
+            count = self._label_counts(svc, "INBOX").get("messagesUnread", 0)
+            unread_total += count
+            per_account.append(f"{name}: {count}")
+            if not detailed:
+                continue
+            attachments += self._count(svc, self._scope("has:attachment newer_than:7d"))
+            refs = self._list_ids(svc, self._scope("is:unread"), 50)
+            for msg in self._batch_get(svc, refs, "metadata", self._label_map(name)):
+                who = self._format_sender(msg.sender or "Unknown")
+                senders[who] = senders.get(who, 0) + 1
+
+        headline = f"You have {unread_total} unread email(s)"
         if len(names) > 1:
-            return f"You have {total} unread email(s) — " + ", ".join(per) + "."
-        return f"You have {total} unread email(s)."
+            headline += " — " + ", ".join(per_account)
+        headline += "."
+        if not detailed:
+            return headline
+
+        lines = [headline, f"With attachments (last 7 days): {attachments}"]
+        top = sorted(senders.items(), key=lambda item: item[1], reverse=True)[:5]
+        if top:
+            lines.append(
+                "Top unread senders: "
+                + ", ".join(f"{who} ({count})" for who, count in top)
+            )
+        return "\n".join(lines)
 
     @capture_response
     @method_job
     def list_labels(self, account: str = "") -> str:
         """
         [EMAIL MANAGEMENT JOB] Lists all Gmail labels and folders.
-
-        Use this job when the user wants to:
-        - See all Gmail labels or categories
-        - Browse email folders
-        - Check what labels exist in their mailbox
-
-        Keywords: gmail labels, list labels, email folders, email categories,
-                 my labels, show labels, inbox folders, gmail folders
 
         Args:
             account (str): Google account to use (default: primary).
@@ -794,15 +841,8 @@ class Gmail:
     @method_job
     def get_email_thread(self, query: str = "", subject: str = "", account: str = "") -> str:
         """
-        [EMAIL MANAGEMENT JOB] Retrieves and displays a full email conversation thread.
-
-        Use this job when the user wants to:
-        - Read an entire email conversation
-        - See all replies in an email thread
-        - Review the full exchange of messages
-
-        Keywords: email thread, email conversation, full exchange, email replies,
-                 read thread, show conversation, email chain, all replies, thread
+        [EMAIL MANAGEMENT JOB] Retrieves a full email conversation thread, oldest
+        message first.
 
         Args:
             query (str): Search query to find the thread (sender, subject, keywords).
@@ -851,125 +891,62 @@ class Gmail:
             lines.append(self._format_message(message, verbose=True, max_body=max_body))
         return "\n".join(lines)
 
-    @capture_response
-    @method_job
-    def summarize_inbox(self, account: str = "") -> str:
-        """
-        [EMAIL MANAGEMENT JOB] Provides a summary overview of the inbox status.
-
-        Use this job when the user wants to:
-        - Get a quick overview of their inbox
-        - See inbox statistics at a glance
-        - Know who is sending the most emails
-
-        Keywords: inbox summary, inbox overview, email summary, what is in my inbox,
-                 inbox status, email stats, how is my inbox, inbox report
-
-        Args:
-            account (str): Google account to use (default: primary).
-
-        Returns:
-            str: Inbox summary including unread count, attachments, top senders.
-        """
-        unread_count = 0
-        att_count = 0
-        sender_counts: typing.Dict[str, int] = {}
-        for name in self._accounts(account):
-            svc = self._svc(name)
-            label_map = self._label_map(name)
-            unread_count += self._label_counts(svc, "INBOX").get("messagesUnread", 0)
-            att_count += self._count(svc, self._scope("has:attachment newer_than:7d"))
-            unread_refs = self._list_ids(svc, self._scope("is:unread"), 50)
-            for m in self._batch_get(svc, unread_refs, "metadata", label_map):
-                s = self._format_sender(m.sender or "Unknown")
-                sender_counts[s] = sender_counts.get(s, 0) + 1
-        top_senders = sorted(sender_counts.items(), key=lambda x: x[1], reverse=True)[:5]
-
-        lines = [
-            "Inbox summary:",
-            f"Unread emails: {unread_count}",
-            f"Emails with attachments (last 7 days): {att_count}",
-        ]
-        if top_senders:
-            lines.append(f"Top senders (unread): {', '.join(f'{s} ({c})' for s, c in top_senders)}")
-        return "\n".join(lines)
-
     # ------------------------------------------------------------------
     # Jobs — background polling
     # ------------------------------------------------------------------
 
     @capture_response
     @method_job
-    def start_checking_emails(self, interval_minutes: int = 0, account: str = "") -> str:
+    def watch_inbox(self, action: str = "start", interval_minutes: int = 0, account: str = "") -> str:
         """
-        [EMAIL MANAGEMENT JOB] Starts a background job that checks for new emails periodically.
-        Announces new messages when they arrive. Stop with 'stop checking new emails'.
-
-        Use this job when the user wants to:
-        - Get automatic email notifications
-        - Monitor inbox in the background
-        - Start periodic email polling
-
-        Keywords: start checking emails, monitor emails, watch inbox, email notifications,
-                 background email, auto check email, email alerts, notify new email
+        [EMAIL MANAGEMENT JOB] Starts or stops background inbox monitoring. While it
+        runs, new mail is announced as it arrives.
 
         Args:
-            interval_minutes (int): How often to check in minutes (defaults to 15).
-            account (str): Google account to monitor (default: primary).
+            action (str): "start" (the default) or "stop".
+            interval_minutes (int): How often to check when starting (defaults to 15).
+            account (str): Google account to watch. Stopping with no account stops all.
 
         Returns:
-            str: Confirmation that background polling started.
+            str: Confirmation of what is now running.
         """
+        wanted = (action or "start").strip().lower()
+
+        if wanted in ("stop", "off", "cancel"):
+            if account:
+                name = GoogleAccounts.resolve(account)
+                stopped = BackgroundJobs.stop(_gmail_job_name(name))
+                return (f"Stopped watching '{name}'." if stopped
+                        else f"'{name}' was not being watched.")
+            watched = [j for j in BackgroundJobs.list_jobs() if j.startswith("gmail_polling_")]
+            stopped_any = any(BackgroundJobs.stop(job) for job in watched)
+            return "Stopped watching the inbox." if stopped_any else "The inbox was not being watched."
+
+        if wanted not in ("start", "on", "watch"):
+            return f"Unknown action '{action}'. Use start or stop."
+
         name = GoogleAccounts.resolve(account or None)
         job_name = _gmail_job_name(name)
-
         if BackgroundJobs.is_running(job_name):
-            return f"Email polling for '{name}' is already running."
+            return f"Already watching '{name}'."
 
         if not interval_minutes or interval_minutes <= 0:
             interval_minutes = _DEFAULT_POLL_INTERVAL_MINUTES
 
-        def _poll():
+        def _poll() -> None:
             messages = self._get_new_messages(name)
             if not messages:
                 return
-            msg = f"You have {len(messages)} new email(s) in {name}."
-            logger.log_system_event("gmail_poll", msg)
-            notifications = [msg] + [self._format_message(m, verbose=False) for m in messages]
-            notify(notifications, kind="alert", source="gmail")
+            headline = f"You have {len(messages)} new email(s) in {name}."
+            logger.log_system_event("gmail_poll", headline)
+            notify(
+                [headline] + [self._format_message(m, verbose=False) for m in messages],
+                kind="alert",
+                source="gmail",
+            )
 
         BackgroundJobs.start(job_name, _poll, interval=interval_minutes * 60)
-        return f"Checking '{name}' emails every {interval_minutes} minutes."
-
-    @capture_response
-    @method_job
-    def stop_checking_emails(self, account: str = "") -> str:
-        """
-        [EMAIL MANAGEMENT JOB] Stops the background email polling job.
-
-        Use this job when the user wants to:
-        - Stop automatic email notifications
-        - Cancel background email monitoring
-        - Turn off email alerts
-
-        Keywords: stop checking emails, stop email notifications, cancel email monitoring,
-                 stop email polling, disable email alerts, stop watching inbox
-
-        Args:
-            account (str): Account to stop (default: stop all gmail polling).
-
-        Returns:
-            str: Confirmation that email polling was stopped.
-        """
-        if account:
-            name = GoogleAccounts.resolve(account)
-            stopped = BackgroundJobs.stop(_gmail_job_name(name))
-            return (f"Email polling for '{name}' stopped."
-                    if stopped else f"Email polling for '{name}' was not running.")
-        all_jobs = BackgroundJobs.list_jobs()
-        gmail_jobs = [j for j in all_jobs if j.startswith("gmail_polling_")]
-        stopped_any = any(BackgroundJobs.stop(j) for j in gmail_jobs)
-        return "Email polling stopped." if stopped_any else "Email polling was not running."
+        return f"Watching '{name}' — checking every {interval_minutes} minutes."
 
     # ------------------------------------------------------------------
     # Jobs — write
@@ -985,15 +962,8 @@ class Gmail:
         account: str = "",
     ) -> str:
         """
-        [EMAIL MANAGEMENT JOB] Composes and sends a new email from a Gmail account.
-        When allow_send is disabled, saves the email as a draft in Gmail instead.
-
-        Use this job when the user wants to:
-        - Send an email to someone
-        - Compose and send a message
-        - Email someone
-
-        Keywords: send email, send message, compose email, email to, write email, draft and send
+        [EMAIL MANAGEMENT JOB] Composes and sends a new email. While sending is
+        switched off it saves the message as a Gmail draft instead, so nothing is lost.
 
         Args:
             to (str): Recipient email address. (required)
@@ -1009,24 +979,22 @@ class Gmail:
         if not subject and not body:
             return "Error: Email must have a subject or body."
 
-        cfg = Config.module_settings("gmail")
         subj = subject or "(no subject)"
 
-        if not cfg.get("allow_send", False):
+        if not self._write_allowed():
             try:
                 self._save_draft(account, to, subj, body or "")
             except Exception as e:
-                return f"Sending disabled; also failed to save draft: {e}"
+                return f"Sending is switched off; saving a draft also failed: {e}"
             return (
-                f"Sending is disabled (allow_send: false). "
-                f"Email saved as draft in Gmail — To: {to}, Subject: '{subj}'.\n"
-                "To send directly, set modules.gmail.allow_send: true in config.yaml."
+                f"Saved as a draft instead — To: {to}, Subject: '{subj}'.\n"
+                + self._write_disabled_note("Sending email")
             )
 
         try:
-            sender_email = GoogleAccounts.record(GoogleAccounts.resolve(account or None)).get("email", "")
-            svc = self._svc(account)
-            svc.users().messages().send(
+            name = GoogleAccounts.resolve(account or None)
+            sender_email = GoogleAccounts.record(name).get("email", "")
+            self._svc(name).users().messages().send(
                 userId="me",
                 body=_build_mime_raw(sender_email, to, subj, body or ""),
             ).execute()
@@ -1045,22 +1013,15 @@ class Gmail:
         account: str = "",
     ) -> str:
         """
-        [EMAIL MANAGEMENT JOB] Replies to an existing email thread.
-        When allow_send is disabled, saves the reply as a draft in Gmail instead.
-
-        Use this job when the user wants to:
-        - Reply to an email
-        - Respond to a message
-        - Send a reply
-
-        Keywords: reply, reply to email, respond to email, answer email, reply to message
+        [EMAIL MANAGEMENT JOB] Replies to an existing email thread. While sending is
+        switched off it saves the reply as a Gmail draft instead.
 
         Args:
             query (str): Gmail search query to find the email to reply to.
             sender (str): Filter by sender address or name to find the email.
             subject (str): Subject or partial subject to find the email.
             reply_body (str): Text of the reply. (required) Provide at least one of query/sender/subject to identify which email.
-            account (str): Google account to use (default: primary).
+            account (str): Google account to use (default: search every account).
 
         Returns:
             str: Confirmation that the reply was sent or saved as draft.
@@ -1068,48 +1029,32 @@ class Gmail:
         if not reply_body:
             return "Error: reply_body is required."
 
-        svc = self._svc(account)
-        label_map = self._label_map(account)
-
-        q_parts = []
-        if query:
-            q_parts.append(query)
-        if sender:
-            q_parts.append(f"from:{sender}")
-        if subject:
-            q_parts.append(f"subject:{subject}")
-        search_q = self._scope(" ".join(q_parts))
-
         try:
-            refs = self._list_ids(svc, search_q, 10)
+            found = self._find_latest(
+                self._scope(self._locator(query, sender, subject)), account
+            )
         except Exception as e:
             return f"Error searching for message: {e}"
 
-        if not refs:
+        if found is None:
             return "No matching email found to reply to."
 
-        msgs = self._sort_desc(self._batch_get(svc, refs, "full", label_map))
-        if not msgs:
-            return "No matching email found to reply to."
-
-        msg = msgs[0]
+        name, msg = found
         reply_subject = msg.subject if msg.subject.startswith("Re:") else f"Re: {msg.subject}"
-        cfg = Config.module_settings("gmail")
 
-        if not cfg.get("allow_send", False):
+        if not self._write_allowed():
             try:
-                self._save_draft(account, msg.sender, reply_subject, reply_body, thread_id=msg.thread_id)
+                self._save_draft(name, msg.sender, reply_subject, reply_body, thread_id=msg.thread_id)
             except Exception as e:
-                return f"Sending disabled; also failed to save draft: {e}"
+                return f"Sending is switched off; saving a draft also failed: {e}"
             return (
-                f"Sending is disabled (allow_send: false). "
-                f"Reply saved as draft — To: {msg.sender}, Subject: '{reply_subject}'.\n"
-                "To send directly, set modules.gmail.allow_send: true in config.yaml."
+                f"Saved as a draft instead — To: {msg.sender}, Subject: '{reply_subject}'.\n"
+                + self._write_disabled_note("Sending email")
             )
 
         try:
-            sender_email = GoogleAccounts.record(GoogleAccounts.resolve(account or None)).get("email", "")
-            svc.users().messages().send(
+            sender_email = GoogleAccounts.record(name).get("email", "")
+            self._svc(name).users().messages().send(
                 userId="me",
                 body=_build_mime_raw(sender_email, msg.sender, reply_subject, reply_body, msg.thread_id),
             ).execute()
@@ -1127,44 +1072,34 @@ class Gmail:
         account: str = "",
     ) -> str:
         """
-        [EMAIL MANAGEMENT JOB] Marks one or more emails as read.
-
-        Use this job when the user wants to:
-        - Mark emails as read
-        - Clear the unread indicator on messages
-        - Mark a specific email as read
-
-        Keywords: mark as read, mark read, clear unread, read email, mark message read
+        [EMAIL MANAGEMENT JOB] Marks matching unread emails as read.
 
         Args:
             query (str): Gmail search query to find emails to mark as read.
             sender (str): Filter by sender address or name.
             subject (str): Subject or partial subject to filter.
-            account (str): Google account to use (default: primary).
+            account (str): Google account to use (default: every configured account).
 
         Returns:
             str: Confirmation with count of messages marked as read.
         """
-        svc = self._svc(account)
-
-        q_parts = ["is:unread"]
-        if query:
-            q_parts.append(query)
-        if sender:
-            q_parts.append(f"from:{sender}")
-        if subject:
-            q_parts.append(f"subject:{subject}")
-
+        locator = " ".join(
+            part for part in ("is:unread", self._locator(query, sender, subject)) if part
+        )
         try:
-            refs = self._list_ids(svc, self._scope(" ".join(q_parts)), 500)
+            per_account = self._find_ids(self._scope(locator), account, 500)
         except Exception as e:
             return f"Error searching for messages: {e}"
 
-        if not refs:
+        if not per_account:
             return "No unread messages matched."
 
-        count = self._batch_modify(svc, [r["id"] for r in refs], add_labels=[], remove_labels=["UNREAD"])
-        return f"Marked {count} message(s) as read."
+        marked = 0
+        for name, ids in per_account:
+            marked += self._batch_modify(
+                self._svc(name), ids, add_labels=[], remove_labels=["UNREAD"]
+            )
+        return f"Marked {marked} message(s) as read."
 
     @capture_response
     @method_job
@@ -1176,234 +1111,154 @@ class Gmail:
         account: str = "",
     ) -> str:
         """
-        [EMAIL MANAGEMENT JOB] Moves matching emails to Trash.
-
-        Use this job when the user wants to:
-        - Delete an email
-        - Move a message to trash
-        - Remove emails matching a search
-
-        Keywords: delete email, trash email, remove email, move to trash, delete message,
-                 discard email, throw away email
+        [EMAIL MANAGEMENT JOB] Moves matching emails to Trash, where Gmail keeps them
+        for 30 days.
 
         Args:
             query (str): Gmail search query to find emails to delete.
             sender (str): Filter by sender address or name.
             subject (str): Subject or partial subject to filter.
-            account (str): Google account to use (default: primary).
+            account (str): Google account to use (default: every configured account).
 
         Returns:
             str: Confirmation with count of messages moved to trash.
         """
-        if not query and not sender and not subject:
+        locator = self._locator(query, sender, subject)
+        if not locator:
             return "Error: Provide at least one of query, sender, or subject."
 
-        cfg = Config.module_settings("gmail")
-        if not cfg.get("allow_send", False):
-            return (
-                "Email deletion is disabled (allow_send: false). "
-                "Set modules.gmail.allow_send: true in config.yaml to enable write operations."
-            )
-
-        svc = self._svc(account)
-        q_parts = []
-        if query:
-            q_parts.append(query)
-        if sender:
-            q_parts.append(f"from:{sender}")
-        if subject:
-            q_parts.append(f"subject:{subject}")
+        if not self._write_allowed():
+            return self._write_disabled_note("Deleting email")
 
         try:
-            refs = self._list_ids(svc, self._scope(" ".join(q_parts)), 100)
+            per_account = self._find_ids(self._scope(locator), account, 100)
         except Exception as e:
             return f"Error searching for messages: {e}"
 
-        if not refs:
+        if not per_account:
             return "No messages matched."
 
-        count = 0
-        for ref in refs:
-            try:
-                svc.users().messages().trash(userId="me", id=ref["id"]).execute()
-                count += 1
-            except Exception:
-                pass
-        return f"Moved {count} message(s) to trash."
-
-    # ------------------------------------------------------------------
-    # Jobs — draft CRUD
-    # ------------------------------------------------------------------
+        trashed = 0
+        for name, ids in per_account:
+            svc = self._svc(name)
+            for message_id in ids:
+                try:
+                    svc.users().messages().trash(userId="me", id=message_id).execute()
+                    trashed += 1
+                except Exception:
+                    pass
+        return f"Moved {trashed} message(s) to trash."
 
     @capture_response
     @method_job
-    def list_drafts(self, account: str = "") -> str:
-        """
-        [EMAIL MANAGEMENT JOB] Lists all Gmail drafts.
-
-        Use this job when the user wants to:
-        - See saved email drafts
-        - Review unsent emails
-        - Check what drafts exist
-
-        Keywords: list drafts, show drafts, my drafts, email drafts, saved drafts, unsent emails
-
-        Args:
-            account (str): Google account to use (default: primary).
-
-        Returns:
-            str: All drafts with id, subject, and recipient.
-        """
-        svc = self._svc(account)
-        try:
-            result = svc.users().drafts().list(userId="me", maxResults=20).execute()
-        except Exception as e:
-            return f"Error listing drafts: {e}"
-
-        drafts = result.get("drafts", [])
-        if not drafts:
-            return "No drafts found."
-
-        lines = [f"Drafts ({len(drafts)}):"]
-        for d in drafts:
-            draft_id = d.get("id", "")
-            try:
-                detail = svc.users().drafts().get(userId="me", id=draft_id, format="metadata").execute()
-                msg = detail.get("message", {})
-                headers = {h["name"].lower(): h["value"] for h in msg.get("payload", {}).get("headers", [])}
-                subj = headers.get("subject", "(no subject)")
-                to = headers.get("to", "")
-                lines.append(f"  [{draft_id}] To: {to}  Subject: {subj}")
-            except Exception:
-                lines.append(f"  [{draft_id}]")
-        return "\n".join(lines)
-
-    @capture_response
-    @method_job
-    def create_draft(
+    def manage_drafts(
         self,
-        to: str,
-        subject: str = "",
-        body: str = "",
-        account: str = "",
-    ) -> str:
-        """
-        [EMAIL MANAGEMENT JOB] Creates a new Gmail draft.
-
-        Use this job when the user wants to:
-        - Save an email as a draft without sending
-        - Create a draft to review later
-        - Start composing an email
-
-        Keywords: create draft, save draft, new draft, compose draft, write draft, draft email
-
-        Args:
-            to (str): Recipient email address. (required)
-            subject (str): Email subject line.
-            body (str): Plain text body of the email.
-            account (str): Google account to use (default: primary).
-
-        Returns:
-            str: Confirmation with the draft id.
-        """
-        if not to:
-            return "Error: Recipient address (to) is required."
-        if not subject and not body:
-            return "Error: Draft must have a subject or body."
-        try:
-            draft_id = self._save_draft(account, to, subject or "(no subject)", body or "")
-        except Exception as e:
-            return f"Failed to create draft: {e}"
-        return f"Draft created (id: {draft_id}) — To: {to}, Subject: '{subject or '(no subject)'}'."
-
-    @capture_response
-    @method_job
-    def edit_draft(
-        self,
-        draft_id: str,
+        action: str = "list",
+        draft_id: str = "",
         to: str = "",
         subject: str = "",
         body: str = "",
         account: str = "",
     ) -> str:
         """
-        [EMAIL MANAGEMENT JOB] Updates an existing Gmail draft.
-
-        Use this job when the user wants to:
-        - Edit a saved draft
-        - Change the recipient, subject, or body of a draft
-        - Update an unsent email
-
-        Keywords: edit draft, update draft, change draft, modify draft, revise draft
+        [EMAIL MANAGEMENT JOB] Works with Gmail drafts: list them, create one, edit one,
+        or delete one. Editing keeps any field left empty as it was.
 
         Args:
-            draft_id (str): The id of the draft to edit (from list_drafts). (required)
-            to (str): New recipient (leave empty to keep current).
-            subject (str): New subject (leave empty to keep current).
-            body (str): New body (leave empty to keep current).
+            action (str): "list" (the default), "create", "edit" or "delete".
+            draft_id (str): Which draft to edit or delete, as shown by the list action.
+            to (str): Recipient address. (required when creating)
+            subject (str): Subject line.
+            body (str): Plain text body.
             account (str): Google account to use (default: primary).
 
         Returns:
-            str: Confirmation of the update.
+            str: The draft list, or confirmation of the change.
         """
-        if not draft_id:
-            return "Error: draft_id is required."
-
+        wanted = (action or "list").strip().lower()
         svc = self._svc(account)
-        try:
-            # format="full" so an edit that keeps the body can carry it forward
-            existing = svc.users().drafts().get(userId="me", id=draft_id, format="full").execute()
-            msg = existing.get("message", {})
-            payload = msg.get("payload", {})
-            headers = {h["name"].lower(): h["value"] for h in payload.get("headers", [])}
-            current_to = headers.get("to", "")
-            current_subject = headers.get("subject", "")
-            current_body, current_html, _ = _walk_parts(payload)
-            if not current_body and current_html:
-                current_body = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", current_html)).strip()
-        except Exception as e:
-            return f"Failed to fetch draft: {e}"
 
-        new_to = to.strip() or current_to
-        new_subject = subject.strip() or current_subject
-        new_body = body if body.strip() else current_body
+        if wanted == "list":
+            try:
+                result = svc.users().drafts().list(userId="me", maxResults=20).execute()
+            except Exception as e:
+                return f"Error listing drafts: {e}"
+            drafts = result.get("drafts", [])
+            if not drafts:
+                return "No drafts found."
+            lines = [f"Drafts ({len(drafts)}):"]
+            for entry in drafts:
+                entry_id = entry.get("id", "")
+                try:
+                    detail = svc.users().drafts().get(
+                        userId="me", id=entry_id, format="metadata"
+                    ).execute()
+                    headers = {
+                        h["name"].lower(): h["value"]
+                        for h in detail.get("message", {}).get("payload", {}).get("headers", [])
+                    }
+                    subject_line = headers.get("subject", "(no subject)")
+                    lines.append(
+                        f"  [{entry_id}] To: {headers.get('to', '')}  Subject: {subject_line}"
+                    )
+                except Exception:
+                    lines.append(f"  [{entry_id}]")
+            return "\n".join(lines)
 
-        sender_email = GoogleAccounts.record(GoogleAccounts.resolve(account or None)).get("email", "")
-        msg_dict = _build_mime_raw(sender_email, new_to, new_subject or "(no subject)", new_body)
+        if wanted == "create":
+            if not to:
+                return "Error: Recipient address (to) is required."
+            if not subject and not body:
+                return "Error: A draft needs a subject or a body."
+            try:
+                new_id = self._save_draft(account, to, subject or "(no subject)", body or "")
+            except Exception as e:
+                return f"Failed to create draft: {e}"
+            return f"Draft created (id: {new_id}) — To: {to}, Subject: '{subject or '(no subject)'}'."
 
-        try:
-            svc.users().drafts().update(
-                userId="me", id=draft_id, body={"message": msg_dict}
-            ).execute()
-        except Exception as e:
-            return f"Failed to update draft: {e}"
-        return f"Draft [{draft_id}] updated — To: {new_to}, Subject: '{new_subject}'."
+        if wanted == "edit":
+            if not draft_id:
+                return "Error: draft_id is required — use action 'list' to see them."
+            try:
+                # format="full" so an edit that keeps the body can carry it forward
+                existing = svc.users().drafts().get(
+                    userId="me", id=draft_id, format="full"
+                ).execute()
+                payload = existing.get("message", {}).get("payload", {})
+                headers = {h["name"].lower(): h["value"] for h in payload.get("headers", [])}
+                plain, html, _ = _walk_parts(payload)
+                current_body = plain or self._strip_html(html)
+            except Exception as e:
+                return f"Failed to fetch draft: {e}"
 
-    @capture_response
-    @method_job
-    def delete_draft(self, draft_id: str, account: str = "") -> str:
-        """
-        [EMAIL MANAGEMENT JOB] Deletes a Gmail draft permanently.
+            new_to = to.strip() or headers.get("to", "")
+            new_subject = subject.strip() or headers.get("subject", "")
+            new_body = body if body.strip() else current_body
+            sender_email = GoogleAccounts.record(
+                GoogleAccounts.resolve(account or None)
+            ).get("email", "")
 
-        Use this job when the user wants to:
-        - Delete a draft
-        - Remove an unsent email
-        - Discard a saved draft
+            try:
+                svc.users().drafts().update(
+                    userId="me",
+                    id=draft_id,
+                    body={
+                        "message": _build_mime_raw(
+                            sender_email, new_to, new_subject or "(no subject)", new_body
+                        )
+                    },
+                ).execute()
+            except Exception as e:
+                return f"Failed to update draft: {e}"
+            return f"Draft [{draft_id}] updated — To: {new_to}, Subject: '{new_subject}'."
 
-        Keywords: delete draft, remove draft, discard draft, trash draft, cancel draft
+        if wanted == "delete":
+            if not draft_id:
+                return "Error: draft_id is required — use action 'list' to see them."
+            try:
+                svc.users().drafts().delete(userId="me", id=draft_id).execute()
+            except Exception as e:
+                return f"Failed to delete draft: {e}"
+            return f"Draft [{draft_id}] deleted."
 
-        Args:
-            draft_id (str): The id of the draft to delete (from list_drafts). (required)
-            account (str): Google account to use (default: primary).
-
-        Returns:
-            str: Confirmation of deletion.
-        """
-        if not draft_id:
-            return "Error: draft_id is required."
-        svc = self._svc(account)
-        try:
-            svc.users().drafts().delete(userId="me", id=draft_id).execute()
-        except Exception as e:
-            return f"Failed to delete draft: {e}"
-        return f"Draft [{draft_id}] deleted."
+        return f"Unknown action '{action}'. Use list, create, edit or delete."

@@ -116,7 +116,7 @@ class WeatherSettings(BaseModel):
 
 
 class GmailSettings(BaseModel):
-    allow_send: bool = False
+    allow_write: bool = False
     use_ai: bool = False
 
 

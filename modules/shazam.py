@@ -31,15 +31,6 @@ def identify_song() -> str:
     speakers or headphones by recording a few seconds of system audio and matching
     it against Shazam.
 
-    Use this job when the user wants to:
-    - Know the name of the song that is currently playing
-    - Find the artist of music they are hearing on this computer
-    - Identify what track is playing right now
-
-    Keywords: what song, what's playing, name this song, identify music, shazam,
-              who sings this, what is this song, recognize song, what track,
-              tell me the song, song name
-
     Returns:
         str: "<title> by <artist>" or a not-found / error message.
     """

@@ -146,6 +146,7 @@ class TestPanels(unittest.TestCase):
             "calendar": "agenda_snapshot",
             "spotify": "playback_snapshot",
             "google_accounts": "accounts_snapshot",
+            "scheduler": "reminders_snapshot",
         }
 
         checked = 0

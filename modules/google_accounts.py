@@ -151,19 +151,6 @@ class GoogleAccountsService:
         """
         [GOOGLE ACCOUNTS JOB] Lists all configured Google accounts with their status.
 
-        Use this job when the user wants to:
-        - See which Google accounts are set up
-        - Check which account is the primary/default
-        - View all available email or calendar accounts
-
-        Keywords: google accounts, list accounts, my accounts, which accounts,
-                 show accounts, configured accounts, email accounts, account list,
-                 available accounts, list all accounts, all accounts, all google accounts,
-                 show all accounts, get accounts, fetch accounts, display accounts
-
-        Args:
-            None
-
         Returns:
             str: All configured accounts, marking the primary.
         """
@@ -191,16 +178,6 @@ class GoogleAccountsService:
         """
         [GOOGLE ACCOUNTS JOB] Adds a new Google account for Gmail and Calendar access.
         Opens browser for OAuth consent. The first account added becomes the primary.
-
-        Use this job when the user wants to:
-        - Add a new Google or Gmail account
-        - Connect another email or calendar
-        - Set up a work or secondary account
-        - Link a new Google account
-
-        Keywords: add google account, connect account, new account, add email account,
-                 link account, setup google account, add work account, add second account,
-                 new google account
 
         Args:
             name (str): A short label for the account (e.g. 'work', 'personal'). (required)
@@ -243,15 +220,6 @@ class GoogleAccountsService:
         [GOOGLE ACCOUNTS JOB] Signs in to an already-added Google account again.
         Opens a browser for consent. Use this when an account has stopped working.
 
-        Use this job when the user wants to:
-        - Fix an account that says its access expired or was revoked
-        - Sign in again after changing their Google password
-        - Finish authorizing an account that was added but never signed in
-
-        Keywords: authorize account, reauthorize, re-authorize, sign in again,
-                 reconnect account, fix account, account expired, invalid grant,
-                 access revoked, login again, refresh account access, grant access
-
         Args:
             name (str): The account name to authorize (e.g. 'work'). (required)
 
@@ -283,15 +251,6 @@ class GoogleAccountsService:
         """
         [GOOGLE ACCOUNTS JOB] Removes a configured Google account and deletes its tokens.
 
-        Use this job when the user wants to:
-        - Remove a Google account
-        - Delete an account configuration
-        - Disconnect an email or calendar account
-
-        Keywords: remove google account, delete account, disconnect account,
-                 remove email account, unlink account, remove work account,
-                 delete google account
-
         Args:
             name (str): The account name to remove (e.g. 'work'). (required)
 
@@ -314,14 +273,6 @@ class GoogleAccountsService:
     def edit_google_account(self, name: str, new_name: str = "", set_primary: bool = False) -> str:
         """
         [GOOGLE ACCOUNTS JOB] Edits a Google account — rename it or make it the primary.
-
-        Use this job when the user wants to:
-        - Rename a Google account label
-        - Change the default account to a specific one
-        - Update account settings
-
-        Keywords: rename account, edit account, update account, change account name,
-                 make primary, set primary, rename google account
 
         Args:
             name (str): The account name to edit. (required)
@@ -358,34 +309,3 @@ class GoogleAccountsService:
                 return str(e)
 
         return " ".join(messages) if messages else "No changes made."
-
-    @capture_response
-    @method_job
-    def set_primary_account(self, name: str) -> str:
-        """
-        [GOOGLE ACCOUNTS JOB] Sets the primary (default) Google account used when
-        no specific account is mentioned.
-
-        Use this job when the user wants to:
-        - Change the default Google account
-        - Switch primary email or calendar
-        - Set a specific account as the default
-
-        Keywords: set primary account, change default account, switch primary,
-                 use account as default, make default account, primary google account,
-                 set default account
-
-        Args:
-            name (str): The account name to make primary. (required)
-
-        Returns:
-            str: Confirmation that the primary account was updated.
-        """
-        if not name:
-            return "Please specify which account to set as primary."
-
-        try:
-            GoogleAccounts.set_primary(name)
-            return f"Primary account set to '{name}'."
-        except ValueError as e:
-            return str(e)

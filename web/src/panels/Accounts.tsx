@@ -185,7 +185,11 @@ function Row({
             <Action
               busy={busy}
               onClick={() =>
-                onRun('set_primary_account', { name: account.name }, 'Setting default…')
+                onRun(
+                  'edit_google_account',
+                  { name: account.name, set_primary: 'true' },
+                  'Setting default…',
+                )
               }
             >
               Make this the default account

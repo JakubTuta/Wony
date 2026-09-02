@@ -241,6 +241,69 @@ export interface AppConfig {
   voice: { stt: { silence_ms: number; start_timeout: number; max_seconds: number } };
 }
 
+// ── Settings ───────────────────────────────────────────────────────────────
+// Everything a user may change without opening config.yaml. The server owns
+// the list; the UI only renders what it is given.
+
+export interface SettingField {
+  key: string;
+  label: string;
+  kind: 'text' | 'longtext' | 'number' | 'toggle' | 'choice';
+  help: string;
+  choices: string[];
+  min: number | null;
+  max: number | null;
+  step: number | null;
+  restart: boolean;
+  value: string | number | boolean | null;
+}
+
+export interface SettingsResponse {
+  sections: { title: string; fields: SettingField[] }[];
+  modules: { key: string; label: string; help: string; enabled: boolean }[];
+  config_file: string;
+}
+
+export interface SettingsSaveResult {
+  written: string[];
+  restart_required: boolean;
+}
+
+export async function fetchSettings(): Promise<SettingsResponse> {
+  const res = await fetch(`${BASE}/settings`);
+  if (!res.ok) throw new Error(`Could not load settings: ${res.status}`);
+  return res.json();
+}
+
+export async function saveSettings(
+  updates: Record<string, unknown>,
+  modules?: string[],
+): Promise<SettingsSaveResult> {
+  const res = await fetch(`${BASE}/settings`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ updates, modules: modules ?? null }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.detail ?? 'Could not save settings.');
+  }
+  return res.json();
+}
+
+export interface Reminder {
+  id: string;
+  text: string;
+  action_job: string;
+  when_str: string;
+  repeating: boolean;
+  next_run: string | null;
+}
+
+export interface RemindersPanel {
+  reminders: Reminder[];
+}
+
 export async function fetchConfig(): Promise<AppConfig> {
   const res = await fetch(`${BASE}/config`);
   if (!res.ok) throw new Error(`Config fetch failed: ${res.status}`);
