@@ -10,9 +10,12 @@ import { useEffect } from 'react'
  *  The lock is dropped whenever the page is hidden, so it has to be retaken on
  *  visibilitychange. Unsupported browsers degrade to nothing; the fallback is
  *  the documented `xset s off -dpms`.
+ *
+ *  `enabled` is false during deep sleep, when the panel is off on purpose.
  */
-export function useWakeLock(): void {
+export function useWakeLock(enabled: boolean = true): void {
   useEffect(() => {
+    if (!enabled) return
     if (!('wakeLock' in navigator)) return
 
     let sentinel: WakeLockSentinel | null = null
@@ -43,5 +46,5 @@ export function useWakeLock(): void {
       window.removeEventListener('pointerdown', acquire)
       void sentinel?.release().catch(() => {})
     }
-  }, [])
+  }, [enabled])
 }

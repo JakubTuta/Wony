@@ -5,9 +5,11 @@ import {
   ackNotification,
   clearChat as clearChatRequest,
   connectSocket,
+  endSleep,
   fetchConfig,
   fetchHistory,
   fetchNotifications,
+  fetchSleep,
 } from '../api'
 import type {
   AppConfig,
@@ -15,6 +17,7 @@ import type {
   ChatSocket,
   HistoryTurn,
   NotificationRecord,
+  SleepState,
   WsEvent,
 } from '../api'
 import { WonyContext } from './wony-context'
@@ -25,6 +28,15 @@ import type { WonyContextValue } from './wony-context'
  *  session feel slow on a Pi. */
 const MAX_TRANSCRIPT_TURNS = 40
 
+const AWAKE: SleepState = {
+  asleep: false,
+  since: null,
+  wake_at: null,
+  display: '',
+  paused_jobs: [],
+  last_wake: null,
+}
+
 export function WonyProvider({ children }: { children: ReactNode }) {
   const [config, setConfig] = useState<AppConfig | null>(null)
   const [connected, setConnected] = useState(false)
@@ -34,6 +46,7 @@ export function WonyProvider({ children }: { children: ReactNode }) {
   const [lastError, setLastError] = useState<string | null>(null)
   const [notifications, setNotifications] = useState<NotificationRecord[]>([])
   const [arrival, setArrival] = useState<NotificationRecord | null>(null)
+  const [sleep, setSleep] = useState<SleepState>(AWAKE)
 
   const socket = useRef<ChatSocket | null>(null)
   // Which request the deltas currently arriving belong to. Turn frames are
@@ -80,6 +93,10 @@ export function WonyProvider({ children }: { children: ReactNode }) {
         setLastError(event.data)
         break
 
+      case 'sleep':
+        setSleep(event)
+        break
+
       case 'notification': {
         const record = event as NotificationRecord
         setNotifications((current) => [record, ...current])
@@ -105,6 +122,10 @@ export function WonyProvider({ children }: { children: ReactNode }) {
         // database, and so is anything another client said.
         fetchNotifications().then(setNotifications).catch(() => {})
         fetchHistory(MAX_TRANSCRIPT_TURNS).then(setTurns).catch(() => {})
+        // A screen that reloaded — or was opened second — has to find out it
+        // is meant to be dark. The sleep event only reaches clients that were
+        // connected when it fired.
+        fetchSleep().then(setSleep).catch(() => {})
       },
       onDisconnect: () => {
         setConnected(false)
@@ -167,6 +188,14 @@ export function WonyProvider({ children }: { children: ReactNode }) {
     )
   }, [])
 
+  /** Optimistic: the overlay comes off on the touch, not on the round trip,
+   *  because the panel is already lighting up by then and a screen that stays
+   *  black for another 200ms reads as a device that did not hear you. */
+  const wakeUp = useCallback(() => {
+    setSleep(AWAKE)
+    endSleep().then(setSleep).catch(() => {})
+  }, [])
+
   const dismissArrival = useCallback(() => setArrival(null), [])
   const dismissError = useCallback(() => setLastError(null), [])
 
@@ -189,6 +218,8 @@ export function WonyProvider({ children }: { children: ReactNode }) {
       ack,
       ackAll,
       noteLocalAnswer,
+      sleep,
+      wakeUp,
     }),
     [
       config,
@@ -207,6 +238,8 @@ export function WonyProvider({ children }: { children: ReactNode }) {
       ack,
       ackAll,
       noteLocalAnswer,
+      sleep,
+      wakeUp,
     ],
   )
 

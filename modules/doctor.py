@@ -73,6 +73,8 @@ def run_doctor() -> str:
 
     lines.append(_screen_line())
 
+    lines.append(_sleep_line())
+
     raspotify = _raspotify_line()
     if raspotify:
         lines.append(raspotify)
@@ -90,6 +92,28 @@ def _screen_line() -> str:
     return (
         "  ✗ Screen bundle missing — the API works but the display will be blank.\n"
         "    Fix: cd kiosk && npm install && npm run build"
+    )
+
+
+def _sleep_line() -> str:
+    """Whether the Sleep tile will actually darken this panel.
+
+    Worth its own line because the failure is invisible until someone tries it
+    at bedtime: the page goes black, the backlight stays on all night, and
+    nothing anywhere says why.
+    """
+    from helpers import display
+
+    usable = display.probe()
+    if usable:
+        return f"  ✓ Sleep: can switch the panel off with {usable[0]}."
+
+    return (
+        "  ! Sleep: nothing here can switch the panel off, so sleeping will only\n"
+        "    black out the page. On Raspberry Pi OS Bookworm the screen runs on\n"
+        "    Wayland, where xset and vcgencmd do nothing.\n"
+        "    Fix: sudo apt install wlopm — and run Wony in the same session as "
+        "the desktop."
     )
 
 

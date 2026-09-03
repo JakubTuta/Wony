@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { fetchHealth } from './api'
+import { SleepOverlay } from './components/SleepOverlay'
 import { StatusBar } from './components/StatusBar'
 import { Toast } from './components/Toast'
 import { Accounts } from './screens/Accounts'
@@ -13,6 +14,7 @@ import { Music } from './screens/Music'
 import { Notifications } from './screens/Notifications'
 import { Reminders } from './screens/Reminders'
 import { Settings } from './screens/Settings'
+import { Sleep } from './screens/Sleep'
 import { Weather } from './screens/Weather'
 import { useIdle } from './state/useIdle'
 import { useTheme } from './state/useTheme'
@@ -33,6 +35,7 @@ type Screen =
   | 'devices'
   | 'reminders'
   | 'settings'
+  | 'sleep'
 
 const TITLES: Record<Screen, string> = {
   home: '',
@@ -46,6 +49,7 @@ const TITLES: Record<Screen, string> = {
   devices: 'Devices',
   reminders: 'Timers',
   settings: 'Settings',
+  sleep: 'Sleep',
 }
 
 /** Screens a tile is allowed to open. A tile naming anything else is ignored
@@ -60,6 +64,7 @@ const TILE_SCREENS = new Set<Screen>([
   'notifications',
   'reminders',
   'settings',
+  'sleep',
   'weather',
 ])
 
@@ -76,9 +81,13 @@ export default function App() {
 }
 
 function Shell() {
-  const { config, assistantState, send, arrival, dismissArrival } = useWony()
+  const { config, assistantState, send, arrival, dismissArrival, sleep, wakeUp } =
+    useWony()
   const { theme, toggle } = useTheme()
-  useWakeLock()
+  // Dropped while asleep: the lock exists to stop the compositor blanking a
+  // screen we want lit, and holding it through a deliberate blackout would be
+  // arguing with ourselves.
+  useWakeLock(!sleep.asleep)
 
   const [screen, setScreen] = useState<Screen>('home')
   const [draft, setDraft] = useState('')
@@ -159,6 +168,7 @@ function Shell() {
       {screen === 'devices' && <Devices />}
       {screen === 'reminders' && <Reminders />}
       {screen === 'settings' && <Settings />}
+      {screen === 'sleep' && <Sleep onSleeping={() => go('home')} />}
 
       {/* Nothing to interrupt with if the list is already what you are reading. */}
       {arrival && screen !== 'notifications' && (
@@ -173,7 +183,18 @@ function Shell() {
       )}
 
       {/* Never over a reply in progress: someone is watching that. */}
-      {idle && assistantState === 'idle' && <Ambient onWake={wake} />}
+      {idle && assistantState === 'idle' && !sleep.asleep && <Ambient onWake={wake} />}
+
+      {/* Above everything, including the clock — asleep outranks idle. */}
+      {sleep.asleep && (
+        <SleepOverlay
+          state={sleep}
+          onWake={() => {
+            wakeUp()
+            wake()
+          }}
+        />
+      )}
     </div>
   )
 }

@@ -25,9 +25,14 @@ class TileSettings(BaseModel):
     icon: str = ""
     # "job" runs a registered job directly (instant, no AI involved).
     # "prompt" sends a canned sentence through the assistant.
+    # "screen" opens a page in the UI and runs nothing at all.
     kind: str = "job"
     job: typing.Optional[str] = None
     prompt: typing.Optional[str] = None
+    # Which page a screen tile opens. Absent here until now, which meant a
+    # hand-written screen tile — documented in config.example.yaml — had its
+    # destination dropped by the schema and opened nothing.
+    screen: typing.Optional[str] = None
     args: typing.Dict[str, typing.Any] = Field(default_factory=dict)
 
 

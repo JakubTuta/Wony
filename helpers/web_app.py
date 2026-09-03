@@ -23,6 +23,9 @@ from helpers.registry import ServiceRegistry
 _DESTRUCTIVE_JOBS: typing.Set[str] = {
     "exit",
     "power_device",
+    # Reversible, but it blanks the display: worth a confirmation, because if
+    # the touchscreen does not wake it the way back is an SSH session.
+    "sleep_device",
     "background_jobs",
     "send_email",
     "reply_to_email",
@@ -122,6 +125,12 @@ class DeviceControlRequest(BaseModel):
     entity_id: str
     action: str = "toggle"
     brightness_percent: typing.Optional[int] = None
+
+
+class SleepRequest(BaseModel):
+    # "07:00", "8h", "90m", an ISO datetime, or blank for "until someone
+    # touches the screen".
+    wake_at: str = ""
 
 
 class SettingsRequest(BaseModel):
@@ -345,6 +354,31 @@ def build_app() -> FastAPI:
         from helpers.kiosk import ambient
 
         return {"cards": ambient()}
+
+    @app.get("/api/sleep")
+    def sleep_status() -> typing.Dict[str, typing.Any]:
+        """Whether the device is asleep, and when it plans to wake."""
+        from helpers import lowpower
+
+        return lowpower.status()
+
+    @app.post("/api/sleep")
+    def sleep_start(req: SleepRequest) -> typing.Dict[str, typing.Any]:
+        """Go dark. The processes behind this response keep running."""
+        from helpers import lowpower
+
+        try:
+            return lowpower.enter(wake_at=req.wake_at, reason="screen")
+        except lowpower.WakeTimeError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+
+    @app.post("/api/wake")
+    def sleep_end() -> typing.Dict[str, typing.Any]:
+        """Come back. The screen posts this on any touch while asleep, so it is
+        deliberately harmless to call when nothing is asleep."""
+        from helpers import lowpower
+
+        return lowpower.wake(reason="touch")
 
     @app.get("/api/panels")
     def list_panels() -> typing.Dict[str, typing.Any]:

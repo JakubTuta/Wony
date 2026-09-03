@@ -70,6 +70,7 @@ below. Some answer on the spot; others open a page:
 | Devices | Every smart device you have, by room, with switches and dimmers |
 | Music | Cover art, play controls and volume |
 | Accounts | Add, sign in to and switch Google accounts |
+| Sleep | Sends the screen dark for the night |
 
 You can still ask Wony any of this in words — the tiles are the quicker way,
 not the only one.
@@ -85,6 +86,12 @@ is missed while you are out of the room.
 **The clock screen** takes over when nobody has touched anything for a while. It
 shows the time, the date, what is next in your calendar, and anything waiting
 for you. Touch anywhere to go back.
+
+**The Sleep tile** is for the end of the day. Pick a wake time or "until I
+touch the screen", and the display goes dark — but nothing shuts down, so your
+timers still go off overnight and waking is instant. Touch anywhere to come
+back, or ask her ("go to sleep until seven"). Whatever you picked is what it
+offers you tomorrow night.
 
 **Two looks**, light and dark. Tap the sun or moon in the top bar to switch. The
 screen remembers your choice.
@@ -279,6 +286,7 @@ You can also just ask Wony "check setup" on the screen.
 | The screen is blank | The screen was never built: `cd kiosk && npm install && npm run build` |
 | You rebuilt, but the screen looks the same | Press Ctrl+Shift+R once to refresh it properly |
 | "AI provider not ready" | Add an API key to `.env`, then restart |
+| The screen stays lit after Sleep | `sudo apt install wlopm`, then check with `python wony.py doctor` |
 | Nothing happens after a reboot | Run `python wony.py autostart install` again |
 | The screen never appears at boot | `systemctl --user status wony-kiosk` |
 | "Port already in use" | Wony is already running: `systemctl --user stop wony` |

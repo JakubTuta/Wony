@@ -171,12 +171,15 @@ class TestKioskManifests(unittest.TestCase):
     def test_screen_tiles_name_a_registered_panel(self) -> None:
         """A tile opening a screen whose data never loads is a dead end. Every
         screen tile that reads a panel must name one that exists; the screens
-        with nothing to fetch (notifications, commands) are listed here so
-        adding a third kind cannot pass unnoticed."""
+        that read no panel are listed here so adding another cannot pass
+        unnoticed."""
         from helpers.kiosk import _DEFAULT_TILES
         from helpers.panels import _PANELS
 
-        self_contained = {"notifications", "commands"}
+        # notifications and commands fetch nothing; sleep has its own endpoints
+        # (/api/sleep, /api/wake) because it writes device state rather than
+        # reading a module's data.
+        self_contained = {"notifications", "commands", "sleep"}
         checked = 0
         for tile in _DEFAULT_TILES:
             if tile["kind"] != "screen":

@@ -61,3 +61,7 @@ def notify(
         logger.log_system_event("notification", f"[{source or kind}] {combined}")
     except Exception:
         pass
+
+    # Nothing here wakes a sleeping screen. A message that arrives overnight is
+    # recorded, pushed to a client that is painting itself black, and still
+    # waiting in the list in the morning — which is the point of sleeping.

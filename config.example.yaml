@@ -99,6 +99,10 @@ kiosk:
   # clock. Touching it anywhere brings the home screen back.
   idle_minutes: 15
 
+  # The Sleep tile has nothing to configure. It asks for a wake time when you
+  # tap it and remembers what you answered; how this particular screen is
+  # switched off is worked out on the device. See the README.
+
 server:
   # Keep this at 127.0.0.1 unless the screen and Wony run on different machines.
   # The web API has no password, and it can run every command Wony has — send

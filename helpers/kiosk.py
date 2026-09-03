@@ -58,6 +58,11 @@ _DEFAULT_TILES: typing.List[typing.Dict[str, typing.Any]] = [
     # sentence — it needs a browser and a name field — so it gets a screen.
     {"id": "accounts", "label": "Accounts", "icon": "👤", "kind": "screen",
      "screen": "accounts", "module": "google_accounts"},
+    # Last, and a screen rather than a job: sending the device dark is the one
+    # tile you must not be able to hit by accident, so it asks for a wake time
+    # and a confirmation first.
+    {"id": "sleep", "label": "Sleep", "icon": "🌙", "kind": "screen",
+     "screen": "sleep", "module": "basics"},
 ]
 
 # What the screen shows itself once nobody has touched it. The clock and date

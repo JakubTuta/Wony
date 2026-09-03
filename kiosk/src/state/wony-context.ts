@@ -1,5 +1,11 @@
 import { createContext, useContext } from 'react'
-import type { AppConfig, AssistantState, HistoryTurn, NotificationRecord } from '../api'
+import type {
+  AppConfig,
+  AssistantState,
+  HistoryTurn,
+  NotificationRecord,
+  SleepState,
+} from '../api'
 
 export interface WonyContextValue {
   config: AppConfig | null
@@ -20,6 +26,10 @@ export interface WonyContextValue {
   ack: (id: number) => Promise<void>
   ackAll: () => Promise<void>
   noteLocalAnswer: (question: string, answer: string) => void
+  /** Deep sleep, kept here because every client is asleep together — the
+   *  server broadcasts it, and a second screen must not stay lit. */
+  sleep: SleepState
+  wakeUp: () => void
 }
 
 export const WonyContext = createContext<WonyContextValue | null>(null)

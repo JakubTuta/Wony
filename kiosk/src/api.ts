@@ -238,9 +238,25 @@ export interface InvokeResponse {
   error?: string
 }
 
+/** Deep sleep: panel dark, everything behind it still running. */
+export interface SleepState {
+  asleep: boolean
+  /** ISO datetime it went to sleep, null when awake. */
+  since: string | null
+  /** ISO datetime it will wake by itself, null when it waits for a touch. */
+  wake_at: string | null
+  /** Which backend switched the panel off, or why it could not. */
+  display: string
+  paused_jobs: string[]
+  /** What was chosen last time: "HH:MM", or "" for "until I touch it". null
+   *  when it has never been asked, so nothing is pre-chosen on a first night. */
+  last_wake: string | null
+}
+
 export type AssistantState = 'idle' | 'thinking'
 
 export type WsEvent =
+  | ({ type: 'sleep' } & SleepState)
   | ({ type: 'turn'; session_id?: string } & HistoryTurn)
   | { type: 'delta'; session_id: string; data: string }
   | { type: 'error'; session_id: string; data: string }
@@ -355,6 +371,49 @@ export async function controlDevice(
   } catch {
     return { ok: false, text: 'Wony is not responding.' }
   }
+}
+
+const AWAKE: SleepState = {
+  asleep: false,
+  since: null,
+  wake_at: null,
+  display: '',
+  paused_jobs: [],
+  last_wake: null,
+}
+
+export async function fetchSleep(): Promise<SleepState> {
+  return getJson<SleepState>('/sleep', AWAKE)
+}
+
+/** Go dark. `wakeAt` is "HH:MM", a duration like "8h", or empty for
+ *  "until someone touches the screen". */
+export async function startSleep(
+  wakeAt: string,
+): Promise<{ state: SleepState | null; error: string | null }> {
+  try {
+    const res = await fetch(`${BASE}/sleep`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ wake_at: wakeAt }),
+    })
+    if (res.ok) return { state: await res.json(), error: null }
+    const body = await res.json().catch(() => ({ detail: res.statusText }))
+    return { state: null, error: body.detail ?? 'That did not work.' }
+  } catch {
+    return { state: null, error: 'Wony is not responding.' }
+  }
+}
+
+/** Harmless when nothing is asleep — the overlay posts it on any touch. */
+export async function endSleep(): Promise<SleepState> {
+  try {
+    const res = await fetch(`${BASE}/wake`, { method: 'POST' })
+    if (res.ok) return res.json()
+  } catch {
+    // The panel is coming back either way; the page stops covering itself.
+  }
+  return AWAKE
 }
 
 export async function fetchJobs(): Promise<Job[]> {

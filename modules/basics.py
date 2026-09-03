@@ -91,6 +91,49 @@ def power_device(action: str = "off") -> str:
     return f"Unknown action '{action}'. Use off or restart."
 
 
+@register_job(module_name="basics", summary="Send the screen to sleep, or wake it")
+@capture_response
+def sleep_device(action: str = "sleep", wake_at: str = "") -> str:
+    """
+    [SYSTEM CONTROL JOB] Puts the display to sleep, or wakes it up again.
+
+    This is not a shutdown and not a suspend — a Raspberry Pi cannot suspend to
+    RAM. The screen goes dark and the pollers stop; every process keeps
+    running, so timers still fire and waking up is instant.
+
+    Args:
+        action (str): "sleep" (the default) or "wake".
+        wake_at (str): When to wake by itself — a clock time like "07:00", or a
+            duration like "8h" or "90m". Empty means it sleeps until someone
+            touches the screen.
+
+    Returns:
+        str: What happened, and when it will wake.
+    """
+    from helpers import lowpower
+
+    wanted = (action or "sleep").strip().lower()
+
+    if wanted in ("wake", "wake up", "on"):
+        if not lowpower.is_asleep():
+            return "The screen is already awake."
+        lowpower.wake(reason="asked")
+        return "Awake. 🤍"
+
+    if wanted not in ("sleep", "off", "doze", "rest"):
+        return f"Unknown action '{action}'. Use sleep or wake."
+
+    try:
+        state = lowpower.enter(wake_at=wake_at, reason="asked")
+    except lowpower.WakeTimeError as e:
+        return str(e)
+
+    when = state.get("wake_at")
+    if when:
+        return f"Going to sleep. I'll wake at {when[11:16]} — or when you touch the screen."
+    return "Going to sleep. Touch the screen when you want me back."
+
+
 # --- greeting ---
 
 

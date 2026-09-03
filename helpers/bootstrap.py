@@ -162,6 +162,16 @@ def bootstrap(
         except Exception:
             pass
 
+    # A crash or a restart during deep sleep leaves the panel switched off with
+    # nothing left that knows it. Turning it back on here is the difference
+    # between a device that looks broken and one that just rebooted.
+    try:
+        from helpers import lowpower
+
+        lowpower.reset_on_start()
+    except Exception:
+        pass
+
     _warn_if_web_exposed(Config)
     _reconnect_mcp_servers(Config, quiet)
     _start_health_watcher(quiet)
