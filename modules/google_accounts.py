@@ -24,38 +24,6 @@ class GoogleAccountsService:
     def __init__(self):
         pass
 
-    def _email_from_gmail(self, gmail_svc, account: str) -> str:
-        try:
-            profile = gmail_svc._svc(account).users().getProfile(userId="me").execute()
-            return (profile or {}).get("emailAddress", "")
-        except Exception as e:
-            logger.log_error(str(e), f"google_account_email.gmail_profile.{account}")
-            return ""
-
-    def _email_from_calendar(self, cal_svc, account: str) -> str:
-        try:
-            primary = (
-                cal_svc._service_for(account)
-                .calendarList()
-                .get(calendarId="primary")
-                .execute()
-            )
-            cal_id = (primary or {}).get("id", "")
-            return cal_id if "@" in cal_id else ""
-        except Exception as e:
-            logger.log_error(str(e), f"google_account_email.calendar_primary.{account}")
-            return ""
-
-    def _sign_in(self, module: str, service: typing.Any, name: str) -> str:
-        """Build the client — which is what triggers consent, since both
-        libraries run the flow on first use — and report the email it belongs to."""
-        if module == "gmail":
-            service._client(name)
-            return self._email_from_gmail(service, name)
-
-        service._service_for(name)
-        return self._email_from_calendar(service, name)
-
     def _forget_cached(self, name: str) -> None:
         """Tell each Google service to drop what it cached for this account —
         its token is about to change or has just been deleted."""
@@ -94,7 +62,7 @@ class GoogleAccountsService:
                     logger.log_system_event(
                         "google_account_auth", f"Authorizing {module} for '{name}'..."
                     )
-                    email = self._sign_in(module, service, name)
+                    email = service.sign_in(name)
                     if email:
                         GoogleAccounts.set_email(name, email)
                     authorized.append(module)

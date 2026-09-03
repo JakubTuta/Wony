@@ -19,6 +19,7 @@ from helpers import config_writer  # noqa: E402
 SAMPLE = """# Wony configuration
 assistant:
   name: "Wony"        # what you call it
+  # how it addresses you
   owner_name: "User"
 
 voice:
@@ -30,7 +31,9 @@ voice:
 enabled_modules:
   - ai
   - basics
+  # - weather        # switch on for forecasts
 
+# where the web page listens
 server:
   # keep this on localhost
   host: "127.0.0.1"
@@ -79,6 +82,23 @@ class TestConfigWriter(unittest.TestCase):
         self.assertIs(data["modules"]["gmail"]["allow_write"], True)
         self.assertEqual(data["voice"]["wake_word"]["threshold"], 0.4)
         self.assertEqual(data["voice"]["wake_word"]["phrase"], "hey jarvis")
+
+    def test_a_scalar_leaves_the_comment_below_it_alone(self) -> None:
+        """The comment under a value documents the key *below* it. Rewriting
+        the value over it strips the file's documentation one setting at a
+        time, and nothing about the write looks wrong when it happens."""
+        config_writer.update(self.path, {"assistant.name": "Jarvis"})
+        text = self._text()
+        self.assertIn("# how it addresses you", text)
+        self.assertIn("# what you call it", text)  # its own trailing comment
+        self.assertEqual(self._load()["assistant"]["owner_name"], "User")
+
+    def test_a_list_leaves_the_next_sections_comment_alone(self) -> None:
+        config_writer.update(self.path, {"enabled_modules": ["ai", "weather"]})
+        text = self._text()
+        self.assertIn("# where the web page listens", text)
+        self.assertIn("# - weather", text)  # the options a user can switch on
+        self.assertEqual(self._load()["enabled_modules"], ["ai", "weather"])
 
     def test_list_is_replaced_wholesale(self) -> None:
         config_writer.update(self.path, {"enabled_modules": ["ai", "status", "weather"]})

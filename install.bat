@@ -46,7 +46,8 @@ if not defined PY (
 )
 
 echo   Using %PY%
-echo   Starting setup. It will ask which features you want.
+echo   Starting setup. It asks which features you want, then for the keys
+echo   and sign-ins those features need.
 echo.
 %PY% setup.py
 set "RESULT=%ERRORLEVEL%"

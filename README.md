@@ -28,13 +28,23 @@ handy, or have it start by itself when you log in:
 python wony.py autostart install
 ```
 
-You need one AI key. The installer asks for it and writes it to `.env`:
+After the packages are installed, the installer asks for everything the features
+you ticked need — API keys, the Google credentials file, permissions — checks
+each key against the service, and opens the browser for the Spotify and Google
+sign-ins. Press Enter to skip anything you do not have yet; it lists what is
+left and how to come back to it:
 
-| Provider | Where to get a key | Cost |
-| --- | --- | --- |
-| Anthropic (Claude) | [console.anthropic.com](https://console.anthropic.com) | paid |
-| Google Gemini | [aistudio.google.com](https://aistudio.google.com/apikey) | free tier |
-| Ollama | nothing to get — it runs on your own PC | free, slower |
+```powershell
+python setup.py configure     # just the keys and sign-ins, any time later
+```
+
+You need one AI key:
+
+| Provider           | Where to get a key                                        | Cost         |
+| ------------------ | --------------------------------------------------------- | ------------ |
+| Anthropic (Claude) | [console.anthropic.com](https://console.anthropic.com)    | paid         |
+| Google Gemini      | [aistudio.google.com](https://aistudio.google.com/apikey) | free tier    |
+| Ollama             | nothing to get — it runs on your own PC                   | free, slower |
 
 Prefer the terminal? `python setup.py`, then `python wony.py`.
 
@@ -47,39 +57,39 @@ fixes, or ask Wony "check setup".
 
 **Type** in the chat page, or **talk**:
 
-| Way in | How |
-| --- | --- |
+| Way in    | How                                                                 |
+| --------- | ------------------------------------------------------------------- |
 | Wake word | Say the wake phrase, then your request. Off until you switch it on. |
-| Hotkey | `Ctrl + Alt + W` anywhere in Windows. |
-| Tray icon | Right-click → **Listen now**. |
-| Browser | The microphone button in the chat page. |
+| Hotkey    | `Ctrl + Alt + W` anywhere in Windows.                               |
+| Tray icon | Right-click → **Listen now**.                                       |
+| Browser   | The microphone button in the chat page.                             |
 
-Things to try: *"what's the weather"*, *"set a timer for 10 minutes"*, *"read my
-last email"*, *"what's on my calendar tomorrow"*, *"play some jazz"*, *"turn off
-the kitchen light"*, *"remember I prefer metric"*, *"what did we talk about on
-Monday"*.
+Things to try: _"what's the weather"_, _"set a timer for 10 minutes"_, _"read my
+last email"_, _"what's on my calendar tomorrow"_, _"play some jazz"_, _"turn off
+the kitchen light"_, _"remember I prefer metric"_, _"what did we talk about on
+Monday"_.
 
 A timer can also run something else when it fires, which is how you get a daily
-briefing: *"every weekday at 8am run greeting"* reads out the time, weather,
-unread email and today's meetings. Others: *"in 10 minutes pause the music"*,
-*"every day at 7am turn on the bedroom light"*.
+briefing: _"every weekday at 8am run greeting"_ reads out the time, weather,
+unread email and today's meetings. Others: _"in 10 minutes pause the music"_,
+_"every day at 7am turn on the bedroom light"_.
 
-Say *"thanks"*, *"stop"* or *"that's all"* to end a spoken conversation.
+Say _"thanks"_, _"stop"_ or _"that's all"_ to end a spoken conversation.
 
 ### The chat page
 
 Two halves: the conversation on the left, and on the right the things worth
 looking at rather than asking about.
 
-| Panel | Appears when you enable | Shows |
-| --- | --- | --- |
-| Weather | Weather | Temperature, wind, humidity, sunrise and sunset |
-| Today | Google Calendar | Today's and tomorrow's events |
-| Timers | Timers & reminders | Everything counting down, with a cancel button |
-| Devices | Home Assistant | Every smart device by room, with switches and dimmers |
-| Music | Spotify | Cover art, transport and volume |
-| Accounts | Google accounts | Add, sign in to and switch Google accounts |
-| Settings | always | Everything below, without touching a config file |
+| Panel    | Appears when you enable | Shows                                                 |
+| -------- | ----------------------- | ----------------------------------------------------- |
+| Weather  | Weather                 | Temperature, wind, humidity, sunrise and sunset       |
+| Today    | Google Calendar         | Today's and tomorrow's events                         |
+| Timers   | Timers & reminders      | Everything counting down, with a cancel button        |
+| Devices  | Home Assistant          | Every smart device by room, with switches and dimmers |
+| Music    | Spotify                 | Cover art, transport and volume                       |
+| Accounts | Google accounts         | Add, sign in to and switch Google accounts            |
+| Settings | always                  | Everything below, without touching a config file      |
 
 The **bell** in the header holds anything Wony said while you were away — a
 timer that fired, new email it spotted. **All commands** at the bottom opens
@@ -91,7 +101,7 @@ Right-click it for: **Open in web**, **Listen now**, **Stop speaking**,
 **Mute**, **Wake word on/off**, **Settings**, **Check for updates**,
 **Pause assistant**, **Exit**.
 
-To start Wony automatically when you log in:
+Setup offers to start Wony when you log in. To change your mind later:
 
 ```powershell
 python wony.py autostart install     # undo with: autostart uninstall
@@ -112,12 +122,12 @@ are switched on.
 
 These four start **off**. Nothing else can turn them on.
 
-| Switch | Off (the default) | On |
-| --- | --- | --- |
-| Send and delete email | Writes a draft in Gmail for you to send | Sends and deletes for you |
-| Change my calendar | Tells you what to add | Creates, edits and deletes events |
-| Unlock doors and open the garage | Lights and blinds still work | Locks, garage and alarms too |
-| Type and click for me | Can look at the screen | Can type, click and open files |
+| Switch                           | Off (the default)                       | On                                |
+| -------------------------------- | --------------------------------------- | --------------------------------- |
+| Send and delete email            | Writes a draft in Gmail for you to send | Sends and deletes for you         |
+| Change my calendar               | Tells you what to add                   | Creates, edits and deletes events |
+| Unlock doors and open the garage | Lights and blinds still work            | Locks, garage and alarms too      |
+| Type and click for me            | Can look at the screen                  | Can type, click and open files    |
 
 They are `modules.gmail.allow_write`, `modules.calendar.allow_write`,
 `modules.home_assistant.allow_locks` and `modules.desktop.allow_actions` in
@@ -131,49 +141,48 @@ They are `modules.gmail.allow_write`, `modules.calendar.allow_write`,
 
 ## Features you can switch on
 
-Tick these during `install.bat`, or on the Settings page. Anything whose setup
-is incomplete simply stays off — nothing crashes, and `doctor` says what is
-missing.
+Tick these during `install.bat`, or on the Settings page. The installer then
+asks for whatever the ticked ones need. Anything left incomplete simply stays
+off — nothing crashes, and `doctor` says what is missing.
 
-| Feature | Extra setup |
-| --- | --- |
-| Everyday basics — time, date, daily briefing | none |
-| Timers, alarms and reminders | none |
-| Weather | free key from [openweathermap.org/api](https://openweathermap.org/api) |
-| Web search and page reading | none (optional `TAVILY_API_KEY` for better results) |
-| Voice — speech in and out | none; downloads its speech models once |
-| Wake word | needs Voice |
-| Spotify | a free app at [developer.spotify.com](https://developer.spotify.com/dashboard) |
-| Gmail | Google OAuth file (below) |
-| Google Calendar | the same OAuth file |
-| Multiple Google accounts | needs Gmail or Calendar |
-| Home Assistant | a long-lived token from your Home Assistant profile |
-| Desktop control | none |
-| Screen reading | none; downloads OCR models once |
-| Song recognition | none |
-| League of Legends | none |
-| MCP tool servers | none; add servers by asking Wony |
+| Feature                                      | What you need to bring                                                         |
+| -------------------------------------------- | ------------------------------------------------------------------------------ |
+| Everyday basics — time, date, daily briefing | none                                                                           |
+| Timers, alarms and reminders                 | none                                                                           |
+| Weather                                      | free key from [openweathermap.org/api](https://openweathermap.org/api)         |
+| Web search and page reading                  | none (optional `TAVILY_API_KEY` for better results)                            |
+| Voice — speech in and out                    | none; downloads its speech models once                                         |
+| Wake word                                    | needs Voice                                                                    |
+| Spotify                                      | a free app at [developer.spotify.com](https://developer.spotify.com/dashboard) |
+| Gmail                                        | Google OAuth file (below)                                                      |
+| Google Calendar                              | the same OAuth file                                                            |
+| Multiple Google accounts                     | needs Gmail or Calendar                                                        |
+| Home Assistant                               | a long-lived token from your Home Assistant profile                            |
+| Desktop control                              | none                                                                           |
+| Screen reading                               | none; downloads OCR models once                                                |
+| Song recognition                             | none                                                                           |
+| League of Legends                            | none                                                                           |
+| MCP tool servers                             | none; add servers by asking Wony                                               |
 
 ### Spotify
 
 1. Create an app at [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard).
 2. Set the Redirect URI to `http://127.0.0.1:8888/callback`.
-3. Put the id and secret in `.env`:
-   ```env
-   SPOTIFY_CLIENT_ID="..."
-   SPOTIFY_CLIENT_SECRET="..."
-   ```
+3. Paste the client ID and secret when setup asks for them.
 
-A browser opens once to connect your account. Spotify must be open somewhere for
-playback to have a target; if it was closed, open it and ask again.
+Setup then opens a browser once to connect your account. Spotify must be open
+somewhere for playback to have a target; if it was closed, open it and ask again.
 
 ### Gmail and Google Calendar
 
 1. In [Google Cloud Console](https://console.cloud.google.com/), create an OAuth
-   client of type **Desktop**, with the Gmail and Calendar APIs enabled.
-2. Download it and save it as `credentials/google_credentials.json`.
-3. Tick Gmail and/or Calendar in `install.bat`.
-4. Say **"add google account work"** — a browser opens for consent.
+   client of type **Desktop**, with the Gmail and Calendar APIs enabled, and add
+   your own address as a test user on the consent screen.
+2. Download the JSON. Setup offers the one it finds in your Downloads folder, or
+   takes the path — it files it away and opens the browser for consent.
+
+Want a second mailbox? Say **"add google account work"** — the same consent, and
+you can then ask for one by name.
 
 Google expires tokens on its own, and changing your password expires all of
 them. Say **"authorize work"** to sign in again. You can connect several
@@ -183,12 +192,11 @@ accounts; ask for one by name ("what's in my work inbox") or let it search all.
 
 1. Home Assistant → your profile → **Security** → **Long-lived access tokens** →
    create one.
-2. Put it in `.env` as `HOME_ASSISTANT_TOKEN="..."`.
-3. Set the Home Assistant address on the Settings page — the same address you
-   open in a browser.
+2. Paste it when setup asks, along with the address you open Home Assistant at.
+   Setup checks both before saving them.
 
-Then: *"dim the bedroom lamp to 30"*, *"close the blinds"*, *"is the garage
-open"*. Locks, alarms and the garage stay refused until you allow them.
+Then: _"dim the bedroom lamp to 30"_, _"close the blinds"_, _"is the garage
+open"_. Locks, alarms and the garage stay refused until you allow them.
 
 ### Ollama — no API key, runs locally
 
@@ -196,7 +204,8 @@ open"*. Locks, alarms and the garage stay refused until you allow them.
 ollama serve
 ```
 
-Then set the AI provider to `ollama` on the Settings page. Replies are slower
+Pick **Ollama** when setup asks which service should answer — it lists the
+models you have pulled — or set the provider on the Settings page. Replies are slower
 and less capable than Claude or Gemini, but nothing leaves your machine.
 
 ### Voice
@@ -235,18 +244,18 @@ stay mixed in.
 
 ## When something goes wrong
 
-| Problem | Fix |
-| --- | --- |
-| Tray icon never appears | Run `python wony.py tray` in a terminal and read the error |
-| "AI provider not ready" | Put a key in `.env`, or set the provider to `ollama` |
-| It answers but never speaks | Check **Mute** in the tray menu, and Voice is installed |
-| It mishears or cuts you off | Raise **Pause before answering** in Settings |
-| Wake word fires on its own | Raise **Wake sensitivity** in Settings |
-| Wake word never fires | Lower it; check the mic in `python wony.py doctor` |
-| Music commands fail | Open Spotify on some device, then ask again |
-| "Google access expired" | Say "authorize <account name>" |
-| Second copy exits silently | Only one Wony runs at a time — check the tray |
-| Started at login but nothing happens | Task Scheduler → `WonyAssistant` → Last Run Result |
+| Problem                              | Fix                                                        |
+| ------------------------------------ | ---------------------------------------------------------- |
+| Tray icon never appears              | Run `python wony.py tray` in a terminal and read the error |
+| "AI provider not ready"              | `python setup.py configure` and give it a key              |
+| It answers but never speaks          | Check **Mute** in the tray menu, and Voice is installed    |
+| It mishears or cuts you off          | Raise **Pause before answering** in Settings               |
+| Wake word fires on its own           | Raise **Wake sensitivity** in Settings                     |
+| Wake word never fires                | Lower it; check the mic in `python wony.py doctor`         |
+| Music commands fail                  | Open Spotify on some device, then ask again                |
+| "Google access expired"              | Say "authorize <account name>"                             |
+| Second copy exits silently           | Only one Wony runs at a time — check the tray              |
+| Started at login but nothing happens | Task Scheduler → `WonyAssistant` → Last Run Result         |
 
 `python wony.py doctor` checks all of it at once and tells you what to fix.
 
@@ -262,6 +271,7 @@ python wony.py text       # plain text conversation in the terminal
 python wony.py voice      # voice only, no tray
 python wony.py web        # web page only
 python wony.py doctor     # check the setup and exit
+python setup.py configure # add a key or sign in again, without installing
 ```
 
 Re-run `install.bat` (or `python setup.py`) any time to add or remove features.
@@ -275,5 +285,3 @@ Conversations, remembered facts and reminders are stored in `wony.db` in this
 folder. Nothing is uploaded anywhere except the text of your requests, which
 goes to the AI provider you chose (nowhere at all with Ollama). **Wipe data** in
 the chat page deletes all of it. Speech recognition and speech are local.
-
-Building on this? See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
