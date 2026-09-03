@@ -197,6 +197,20 @@ class Gmail:
         """Auto-refreshing raw googleapiclient Gmail resource."""
         return self._client(account).service
 
+    def sign_in(self, account: str) -> str:
+        """Sign `account` in and report the address it belongs to.
+
+        Building the client is what triggers OAuth consent. The accounts job
+        and setup.py both come here, so there is one sign-in path.
+        """
+        self._client(account)
+        try:
+            profile = self._svc(account).users().getProfile(userId="me").execute()
+            return (profile or {}).get("emailAddress", "")
+        except Exception as e:
+            logger.log_error(str(e), f"gmail.sign_in.{account}")
+            return ""
+
     def forget_account(self, name: str) -> None:
         """Drop cached state for an account whose token changed or went away —
         both caches are keyed by name, so a re-auth would reuse the old client."""

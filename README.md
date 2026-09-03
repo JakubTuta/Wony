@@ -26,9 +26,19 @@ python setup.py
 It will:
 
 1. Offer to create a project virtual environment (recommended — say yes)
-2. Create `.env` and `config.yaml`, asking for your AI key
+2. Create `.env` and `config.yaml`
 3. Show a checklist of features — arrow keys to move, space to tick, enter to confirm
 4. Install what you ticked
+5. Ask for the keys, credentials and permissions those features need — checking
+   each key against the service, and opening a browser for the Spotify and
+   Google sign-ins
+
+Press Enter to skip anything you do not have yet; it lists what is left. To come
+back to that part on its own:
+
+```bash
+python setup.py configure
+```
 
 Then build the screen:
 
@@ -50,11 +60,11 @@ your settings and skips anything already installed.
 
 Open `http://localhost:8000` on the device. Other ways to start:
 
-| Command | What it does |
-| --- | --- |
-| `python wony.py` | Normal start — the screen and everything behind it |
-| `python wony.py text` | Type to Wony in a terminal instead |
-| `python wony.py doctor` | Check the setup and exit |
+| Command                 | What it does                                       |
+| ----------------------- | -------------------------------------------------- |
+| `python wony.py`        | Normal start — the screen and everything behind it |
+| `python wony.py text`   | Type to Wony in a terminal instead                 |
+| `python wony.py doctor` | Check the setup and exit                           |
 
 ## Using the screen
 
@@ -62,15 +72,15 @@ Open `http://localhost:8000` on the device. Other ways to start:
 you have enabled, and you can replace them with your own list — see Settings
 below. Some answer on the spot; others open a page:
 
-| Tile | What you get |
-| --- | --- |
-| Weather | Temperature, conditions, wind, humidity, sunrise and sunset |
-| Today | Today's and tomorrow's calendar, as a list |
-| Timers | Everything counting down, with a button to call one off |
-| Devices | Every smart device you have, by room, with switches and dimmers |
-| Music | Cover art, play controls and volume |
-| Accounts | Add, sign in to and switch Google accounts |
-| Sleep | Sends the screen dark for the night |
+| Tile     | What you get                                                    |
+| -------- | --------------------------------------------------------------- |
+| Weather  | Temperature, conditions, wind, humidity, sunrise and sunset     |
+| Today    | Today's and tomorrow's calendar, as a list                      |
+| Timers   | Everything counting down, with a button to call one off         |
+| Devices  | Every smart device you have, by room, with switches and dimmers |
+| Music    | Cover art, play controls and volume                             |
+| Accounts | Add, sign in to and switch Google accounts                      |
+| Sleep    | Sends the screen dark for the night                             |
 
 You can still ask Wony any of this in words — the tiles are the quicker way,
 not the only one.
@@ -99,6 +109,8 @@ screen remembers your choice.
 **Settings** are behind the cog in the top bar — see below.
 
 ## Start at boot
+
+Setup offers this at the end. To do it later:
 
 ```bash
 python wony.py autostart install
@@ -131,18 +143,18 @@ assistant:
   name: "Wony"
   owner_name: "Jakub"
   personality: "Friendly and concise."
-  language: "en"        # "en", "pl", ...
+  language: "en" # "en", "pl", ...
 
 ai:
-  provider: null        # leave empty to pick automatically
+  provider: null # leave empty to pick automatically
   ollama_model: "llama3.1"
 
 # Only what is listed here is switched on.
 enabled_modules:
   - ai
   - status
-  - basics             # time, date, daily briefing
-  - scheduler          # timers, alarms, reminders
+  - basics # time, date, daily briefing
+  - scheduler # timers, alarms, reminders
   - weather
   - gmail
   - calendar
@@ -160,37 +172,38 @@ tiles:
     prompt: "What's on my calendar today?"
 
 kiosk:
-  idle_minutes: 15      # minutes untouched before the clock screen appears
+  idle_minutes: 15 # minutes untouched before the clock screen appears
 ```
 
 A few things are switched off until you say otherwise, so nothing surprising can
 happen by accident. All four are on the settings screen too:
 
-| Setting | Allows |
-| --- | --- |
-| `modules.basics.allow_power_off` | Switching the device off or restarting it from the screen |
-| `modules.gmail.allow_write` | Sending, replying to and deleting email. Off, Wony saves a draft instead |
-| `modules.calendar.allow_write` | Creating, changing and deleting events |
-| `modules.home_assistant.allow_locks` | Unlocking doors, opening the garage, disarming alarms |
+| Setting                              | Allows                                                                   |
+| ------------------------------------ | ------------------------------------------------------------------------ |
+| `modules.basics.allow_power_off`     | Switching the device off or restarting it from the screen                |
+| `modules.gmail.allow_write`          | Sending, replying to and deleting email. Off, Wony saves a draft instead |
+| `modules.calendar.allow_write`       | Creating, changing and deleting events                                   |
+| `modules.home_assistant.allow_locks` | Unlocking doors, opening the garage, disarming alarms                    |
 
 ## Connecting your services
 
 ### Weather
 
 1. Get a free key at [openweathermap.org/api](https://openweathermap.org/api)
-2. Add to `.env`: `WEATHER_API_KEY="..."`
+2. Paste it when setup asks. A brand-new key can take up to two hours to work.
 
 ### Gmail and Calendar
 
-1. Follow the [simplegmail setup guide](https://pypi.org/project/simplegmail/) to
-   create Google credentials
-2. Save the file as `google_credentials.json` inside `credentials/`
-3. Enable `gmail`, `calendar` and `google_accounts` in `config.yaml`
+1. In [Google Cloud Console](https://console.cloud.google.com/), create an OAuth
+   client of type **Desktop** with the Gmail and Calendar APIs enabled, and add
+   your own address as a test user on the consent screen
+2. Download the JSON. Setup offers the one it finds in your Downloads folder, or
+   takes the path — it files it away and opens the browser for consent
 
-Then tap **Accounts** on the home screen and add one. Give it a short name —
-"work", "personal" — and a browser opens for you to sign in with Google. Add as
-many as you like; the one marked with a star is the one Wony uses when you don't
-say which.
+Want a second mailbox? Tap **Accounts** on the home screen and add one. Give it a
+short name — "work", "personal" — and a browser opens for you to sign in with
+Google. Add as many as you like; the one marked with a star is the one Wony uses
+when you don't say which.
 
 Signing in has to happen on the Pi's own screen, or on another computer with the
 `credentials/` folder copied across afterwards.
@@ -203,12 +216,8 @@ again**.
 
 1. Create an app at [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard)
 2. Set the Redirect URI to `http://127.0.0.1:8888/callback`
-3. Add to `.env`:
-
-   ```env
-   SPOTIFY_CLIENT_ID="..."
-   SPOTIFY_CLIENT_SECRET="..."
-   ```
+3. Paste the client ID and secret when setup asks — it opens a browser once to
+   connect your account
 
 You get a music screen with cover art, play controls and volume. The sound comes
 out of whichever speaker Spotify is playing on.
@@ -231,15 +240,9 @@ thermostats, media players, locks, scenes — by name or by room. Try "dim the
 bedroom lamp to 30", "close the blinds", "is the garage open".
 
 1. In Home Assistant: your profile → **Security** → **Long-lived access tokens**
-   → *Create token*
-2. Add it to `.env`:
-
-   ```env
-   HOME_ASSISTANT_TOKEN="..."
-   ```
-
-3. Put your Home Assistant address in `config.yaml` under
-   `modules.home_assistant.base_url`, and enable `home_assistant`
+   → _Create token_
+2. Paste it when setup asks, along with the address you open Home Assistant at.
+   Setup checks both before saving them.
 
 The **Devices** tile then lists everything by room, with a switch on each and a
 slider on any light that is on. Doors, garages and alarms are shown but stay
@@ -268,8 +271,8 @@ if the device is short on it.
 
 ### Connecting other tools (MCP)
 
-Tick `mcp` during setup, then ask Wony in plain words, for example: *"Add an MCP
-server called filesystem at command npx -y @modelcontextprotocol/server-filesystem"*.
+Tick `mcp` during setup, then ask Wony in plain words, for example: _"Add an MCP
+server called filesystem at command npx -y @modelcontextprotocol/server-filesystem"_.
 
 ## If something goes wrong
 
@@ -281,16 +284,16 @@ python wony.py doctor
 
 You can also just ask Wony "check setup" on the screen.
 
-| Problem | Fix |
-| --- | --- |
-| The screen is blank | The screen was never built: `cd kiosk && npm install && npm run build` |
-| You rebuilt, but the screen looks the same | Press Ctrl+Shift+R once to refresh it properly |
-| "AI provider not ready" | Add an API key to `.env`, then restart |
-| The screen stays lit after Sleep | `sudo apt install wlopm`, then check with `python wony.py doctor` |
-| Nothing happens after a reboot | Run `python wony.py autostart install` again |
-| The screen never appears at boot | `systemctl --user status wony-kiosk` |
-| "Port already in use" | Wony is already running: `systemctl --user stop wony` |
-| Something else | `journalctl --user -u wony -f` shows what she is doing |
+| Problem                                    | Fix                                                                    |
+| ------------------------------------------ | ---------------------------------------------------------------------- |
+| The screen is blank                        | The screen was never built: `cd kiosk && npm install && npm run build` |
+| You rebuilt, but the screen looks the same | Press Ctrl+Shift+R once to refresh it properly                         |
+| "AI provider not ready"                    | `python setup.py configure` and give it a key, then restart            |
+| The screen stays lit after Sleep           | `sudo apt install wlopm`, then check with `python wony.py doctor`      |
+| Nothing happens after a reboot             | Run `python wony.py autostart install` again                           |
+| The screen never appears at boot           | `systemctl --user status wony-kiosk`                                   |
+| "Port already in use"                      | Wony is already running: `systemctl --user stop wony`                  |
+| Something else                             | `journalctl --user -u wony -f` shows what she is doing                 |
 
 Logs are also kept in the `logs/` folder, and tidied up automatically.
 

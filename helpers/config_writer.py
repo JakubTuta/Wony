@@ -23,7 +23,12 @@ def _line_key(line: str) -> typing.Optional[typing.Tuple[int, str]]:
 
 
 def _block_end(lines: typing.List[str], header: int, indent: int) -> int:
-    """Index just past the last non-blank child of the block headed at `header`."""
+    """Index just past the last real child of the block headed at `header`.
+
+    Trailing comments are left out: a comment sitting at the bottom of a block
+    introduces whatever comes next, and rewriting the block over it deletes
+    documentation the user never asked to lose.
+    """
     cursor = header + 1
     end = cursor
     while cursor < len(lines):
@@ -33,9 +38,25 @@ def _block_end(lines: typing.List[str], header: int, indent: int) -> int:
         if stripped and not stripped.startswith("#") and own_indent <= indent:
             break
         cursor += 1
-        if stripped:
+        if stripped and not stripped.startswith("#"):
             end = cursor
     return end
+
+
+def _entry_end(
+    lines: typing.List[str], at: int, indent: int, value: typing.Any
+) -> int:
+    """Index just past what a new value at `at` should replace.
+
+    A scalar owns exactly its own line — the comments under it belong to the
+    next key. Anything with children (a list, a nested block) owns them, and a
+    new value replaces the lot.
+    """
+    _, _, after = lines[at].partition(":")
+    heads_a_block = not after.strip() or after.strip().startswith("#")
+    if isinstance(value, (list, tuple)) or heads_a_block:
+        return _block_end(lines, at, indent)
+    return at + 1
 
 
 def _find_key(
@@ -100,7 +121,7 @@ def set_value(lines: typing.List[str], dotted_key: str, value: typing.Any) -> No
             if at is None:
                 lines[end:end] = block
             else:
-                lines[at : _block_end(lines, at, indent)] = block
+                lines[at : _entry_end(lines, at, indent, value)] = block
             return
 
         if at is None:

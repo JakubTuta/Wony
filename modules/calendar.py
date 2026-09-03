@@ -69,6 +69,21 @@ class Calendar:
         away, so the next call builds one from the token now on disk."""
         self._services.pop(name, None)
 
+    def sign_in(self, account: str) -> str:
+        """Sign `account` in and report the address it belongs to.
+
+        Building the service is what triggers OAuth consent. The accounts job
+        and setup.py both come here, so there is one sign-in path.
+        """
+        service = self._service_for(account)
+        try:
+            primary = service.calendarList().get(calendarId="primary").execute()
+            calendar_id = (primary or {}).get("id", "")
+            return calendar_id if "@" in calendar_id else ""
+        except Exception as e:
+            logger.log_error(str(e), f"calendar.sign_in.{account}")
+            return ""
+
     def _accounts(self, account: str) -> typing.List[str]:
         """Accounts to operate on: the named one if given, else every configured
         account (so an unspecified account searches all)."""

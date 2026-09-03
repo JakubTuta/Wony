@@ -124,14 +124,33 @@ class GoogleAccounts:
         cls._save()
 
     @staticmethod
-    def _delete_token_files(rec: dict) -> None:
+    def _remove_token(path: str) -> None:
+        path = _abs(path)
+        if path and os.path.exists(path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+    @classmethod
+    def _delete_token_files(cls, rec: dict) -> None:
         for key in _TOKEN_KEYS:
-            path = _abs(rec.get(key, ""))
-            if path and os.path.exists(path):
-                try:
-                    os.remove(path)
-                except OSError:
-                    pass
+            cls._remove_token(rec.get(key, ""))
+
+    @classmethod
+    def clear_token(cls, name: str, service: str) -> None:
+        """Delete one service's stored token so its next use re-runs OAuth.
+
+        Per service, not per account: a stale Gmail token must not take a
+        working Calendar sign-in down with it.
+        """
+        data = cls._load()
+        if name not in data["accounts"]:
+            raise ValueError(f"Account '{name}' not found.")
+        key = f"{service}_token"
+        if key not in _TOKEN_KEYS:
+            raise ValueError(f"Unknown service '{service}'.")
+        cls._remove_token(data["accounts"][name].get(key, ""))
 
     @classmethod
     def clear_tokens(cls, name: str) -> None:
