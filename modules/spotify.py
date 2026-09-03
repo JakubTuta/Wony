@@ -188,26 +188,101 @@ class Spotify:
     def _transport(self, verb: str, path: str, sep: str = "?") -> None:
         self._device_call(verb, path, sep)
 
-    @retry_on_unauthorized("_refresh_access_token")
-    def _apply_volume(self, volume: int) -> str:
-        if not 0 <= volume <= 100:
-            raise Exception("Volume must be between 0 and 100.")
-        self._device_call(
-            "put",
-            f"https://api.spotify.com/v1/me/player/volume?volume_percent={volume}",
-            "&",
-        )
-        return f"Volume set to {volume}%."
+    # Spotify's state endpoint lags a beat behind a volume write, so a
+    # confirmation read gets a couple of chances before the write counts as
+    # not having landed.
+    _VOLUME_CONFIRM_TRIES = 3
+    _VOLUME_CONFIRM_DELAY = 0.35
+    _VOLUME_STEP = 10
 
-    def _current_volume(self) -> int:
-        state = self._get_playback_state()
-        if not state:
-            # A helper returning an int has no way to say "no device" other
-            # than raising; capture_response turns it into a message.
+    def _volume_device(self) -> typing.Dict[str, typing.Any]:
+        """The device volume commands must read from and write to.
+
+        Resolved live every time: self.device_id is cached for the whole
+        session, so once playback moves to another Spotify device a relative
+        change would read the new device's level and write it back to the old
+        one — the request succeeds and nothing gets louder.
+        """
+        device = (self._get_playback_state() or {}).get("device") or {}
+        if not device.get("id"):
+            # A helper with nothing to return has no way to say "no device"
+            # other than raising; capture_response turns it into a message.
             raise Exception(
                 "Nothing is playing — open Spotify on your phone or computer and try again."
             )
-        return int(state.get("device", {}).get("volume_percent", 50))
+        self.device_id = device["id"]
+        return device
+
+    def _adjust_volume(self, delta: int) -> str:
+        """Relative change, read and written on the same live device."""
+        device = self._volume_device()
+        current = device.get("volume_percent")
+        if current is None:
+            raise Exception(
+                f"{device.get('name') or 'That device'} does not report its volume, "
+                "so it cannot be turned up or down — say an exact level instead."
+            )
+        return self._apply_volume(max(0, min(int(current) + delta, 100)), device)
+
+    def _report_volume(self) -> str:
+        device = self._volume_device()
+        current = device.get("volume_percent")
+        if current is None:
+            return f"{device.get('name') or 'That device'} does not report a volume."
+        name = device.get("name")
+        return f"Spotify volume is {int(current)}%" + (f" on {name}." if name else ".")
+
+    @retry_on_unauthorized("_refresh_access_token")
+    def _apply_volume(
+        self, volume: int, device: typing.Optional[typing.Dict[str, typing.Any]] = None
+    ) -> str:
+        if not 0 <= volume <= 100:
+            raise Exception("Volume must be between 0 and 100.")
+
+        if device is None:
+            device = self._volume_device()
+        if device.get("supports_volume") is False:
+            name = device.get("name") or "That device"
+            raise Exception(
+                f"{name} does not accept volume changes from Spotify — "
+                "use its own volume control."
+            )
+
+        before = device.get("volume_percent")
+        # Pinned to the device we just read, not _device_call's cached id: its
+        # 404 retry can re-target another device, which would leave `before`
+        # and the confirmation below describing something else.
+        self._make_spotify_request(
+            "put",
+            "https://api.spotify.com/v1/me/player/volume"
+            f"?volume_percent={volume}&device_id={device['id']}",
+        )
+
+        landed = self._confirm_volume(volume)
+        if landed is None or landed == volume:
+            return f"Volume set to {volume}%."
+        if before is not None and landed != int(before):
+            # Some speakers snap to their own steps — it moved, just not exactly.
+            return f"Volume set to {landed}%."
+        raise Exception(
+            f"Spotify would not change the volume — {device.get('name') or 'the device'} "
+            f"is still at {landed}%."
+        )
+
+    def _confirm_volume(self, expected: int) -> typing.Optional[int]:
+        """Volume Spotify reports after a write, or None if it reports none."""
+        level: typing.Optional[int] = None
+        for attempt in range(self._VOLUME_CONFIRM_TRIES):
+            if attempt:
+                time.sleep(self._VOLUME_CONFIRM_DELAY)
+            device = (self._get_playback_state() or {}).get("device") or {}
+            raw = device.get("volume_percent")
+            if raw is None:
+                return None
+            level = int(raw)
+            if level == expected:
+                return level
+        return level
 
     @retry_on_unauthorized("_refresh_access_token")
     def _set_liked(self, liked: bool) -> str:
@@ -273,21 +348,29 @@ class Spotify:
     @method_job
     def set_volume(self, level: int = -1, direction: str = "") -> str:
         """
-        [SPOTIFY JOB] Sets or adjusts the Spotify playback volume.
+        [SPOTIFY JOB] Sets, adjusts, or reports the Spotify playback volume. Call this
+        for anything about volume, every time, even if the volume was already discussed:
+        the user can change it in the Spotify app between messages, so a level mentioned
+        earlier in the conversation is not the current one. For a relative change pass
+        direction and let this job read the real level — never work out the target
+        number yourself.
 
         Args:
             level (int): Target volume 0-100. Use this for "set volume to 40".
             direction (str): Relative change instead of a level: up or down (10%
-                steps), max (100), min (0).
+                steps), max (100), min (0), or get to report the current volume
+                without changing it.
 
         Returns:
-            str: The new volume.
+            str: The new volume, or the current one for "get".
         """
         move = (direction or "").strip().lower()
+        if move in ("get", "check", "current", "status", "read"):
+            return self._report_volume()
         if move in ("up", "louder", "increase"):
-            return self._apply_volume(min(self._current_volume() + 10, 100))
+            return self._adjust_volume(self._VOLUME_STEP)
         if move in ("down", "quieter", "decrease", "lower"):
-            return self._apply_volume(max(self._current_volume() - 10, 0))
+            return self._adjust_volume(-self._VOLUME_STEP)
         if move in ("max", "maximum", "full"):
             return self._apply_volume(100)
         if move in ("min", "minimum", "mute"):
