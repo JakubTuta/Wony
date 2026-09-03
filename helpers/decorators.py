@@ -53,6 +53,24 @@ def turn_is_quiet_success() -> bool:
     return all(quiet and ok for _, quiet, _one_message, ok in _tool_outcomes)
 
 
+# Set from inside a job when this particular call reports a value instead of
+# performing the action the job is normally muted for. Consumed (and cleared)
+# by capture_response. Only ever touched while agent_lock is held, like
+# _tool_outcomes above.
+_answering: bool = False
+
+
+def treat_as_answer() -> None:
+    """From inside a job: this call reports a value rather than doing something.
+
+    A spoken answer has no audible equivalent, so the result is vocalized and
+    the voice session stays open even when the job is declared mute /
+    one_message for its normal action.
+    """
+    global _answering
+    _answering = True
+
+
 def turn_wants_one_message() -> bool:
     """True if any tool called this turn is flagged one_message=True and
     succeeded — the voice conversation loop ends the session after this turn
@@ -83,6 +101,8 @@ def capture_response(
     def decorator(f: typing.Callable[..., typing.Any]) -> typing.Callable[..., typing.Optional[str]]:
         @functools.wraps(f)
         def wrapper(*args, **kwargs) -> typing.Optional[str]:
+            global _answering
+
             # Lazy imports to avoid circular dependencies
             try:
                 from helpers.audio import Audio
@@ -100,9 +120,11 @@ def capture_response(
                 else "Unknown"
             )
 
+            _answering = False
             try:
                 response = f(*args, **kwargs)
             except Exception as e:
+                _answering = False
                 error_msg = f"Error ({class_name}.{function_name}): {e}"
                 print(error_msg)
 
@@ -119,12 +141,17 @@ def capture_response(
 
             str_response = str(response) if response is not None else ""
 
+            answered = _answering
+            _answering = False
+            quiet = mute and not answered
+            ends_session = one_message and not answered
+
             # Suppress per-tool output while the agent loop is running;
             # the agent will narrate the final answer once.
             if _agent_active:
-                record_tool_outcome(function_name, mute, True, one_message)
+                record_tool_outcome(function_name, quiet, True, ends_session)
             else:
-                if not mute and Cache and Audio and Cache.get_audio():
+                if not quiet and Cache and Audio and Cache.get_audio():
                     Audio.text_to_speech(str_response)
                 print(str_response)
 

@@ -143,6 +143,10 @@ def build_agent_system_prompt() -> typing.List[str]:
         " actual result. Do not say something was done, or give a number or status, unless"
         " a tool call in this turn returned it — a plausible-sounding guess is worse than"
         " asking a clarifying question or saying you're not sure."
+        " A setting the user can also change outside Wony — playback volume, a light's"
+        " brightness, a thermostat — is one of those live values: call the tool again"
+        " even if it was set or read earlier in this conversation, and never compute a"
+        " relative change ('a bit louder') from the number you saw last time."
         "\nReply in plain prose. No bullet points unless listing multiple items."
     )
     return [stable, volatile]
