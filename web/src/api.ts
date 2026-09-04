@@ -113,16 +113,27 @@ export interface AgendaPanel {
   timezone: string;
 }
 
-export interface Device {
+// One entity, already decided to be exactly one widget.
+export interface Control {
   entity_id: string;
   name: string;
   domain: string;
   state: string;
   on: boolean;
   available: boolean;
-  brightness: number | null;
-  dimmable: boolean;
+  level: number | null;
+  options: string[];
+  press: boolean;
+  number: boolean;
+  toggle: boolean;
+  slider: boolean;
   guarded: boolean;
+}
+
+export interface Device {
+  name: string;
+  primary: Control;
+  extras: Control[];
 }
 
 export interface DevicesPanel {
@@ -187,13 +198,14 @@ export async function fetchPanel<T>(key: string): Promise<PanelResult<T>> {
 export async function controlDevice(
   entity_id: string,
   action: string,
-  brightness_percent?: number,
+  value?: number,
+  option?: string,
 ): Promise<{ ok: boolean; text: string }> {
   try {
     const res = await fetch(`${BASE}/devices/control`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ entity_id, action, brightness_percent }),
+      body: JSON.stringify({ entity_id, action, value, option }),
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));

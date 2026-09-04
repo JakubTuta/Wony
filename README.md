@@ -86,7 +86,7 @@ looking at rather than asking about.
 | Weather  | Weather                 | Temperature, wind, humidity, sunrise and sunset       |
 | Today    | Google Calendar         | Today's and tomorrow's events                         |
 | Timers   | Timers & reminders      | Everything counting down, with a cancel button        |
-| Devices  | Home Assistant          | Every smart device by room, with switches and dimmers |
+| Devices  | Home Assistant          | Every device by room, one card each, with its switches and settings |
 | Music    | Spotify                 | Cover art, transport and volume                       |
 | Accounts | Google accounts         | Add, sign in to and switch Google accounts            |
 | Settings | always                  | Everything below, without touching a config file      |
@@ -196,7 +196,16 @@ accounts; ask for one by name ("what's in my work inbox") or let it search all.
    Setup checks both before saving them.
 
 Then: _"dim the bedroom lamp to 30"_, _"close the blinds"_, _"is the garage
-open"_. Locks, alarms and the garage stay refused until you allow them.
+open"_, _"start the vacuum"_, _"send the vacuum home"_, _"set the suction to
+turbo"_, _"turn all the lights off"_. Anything your Home Assistant can do, Wony
+can ask it to do — including devices added through HACS. Ask _"what can the
+vacuum do"_ if a device does not respond to the word you used.
+
+A room or a device type has to be named before Wony will change a whole set of
+things at once, and anything you have hidden in Home Assistant stays hidden
+here.
+
+Locks, alarms and the garage stay refused until you allow them.
 
 ### Ollama — no API key, runs locally
 
