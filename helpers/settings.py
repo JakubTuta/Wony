@@ -27,7 +27,7 @@ MODULES: typing.List[typing.Tuple[str, str, str]] = [
     ("gmail", "Gmail", "Read, search and watch your inbox."),
     ("calendar", "Google Calendar", "Events, availability and free slots."),
     ("google_accounts", "Google accounts", "Use more than one Google account."),
-    ("home_assistant", "Home Assistant", "Lights, blinds, thermostats, scenes."),
+    ("home_assistant", "Home Assistant", "Lights, blinds, thermostats, vacuums, scenes."),
     ("mcp", "MCP tool servers", "Connect external Model Context Protocol servers."),
 ]
 

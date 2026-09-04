@@ -124,7 +124,9 @@ class ChatRequest(BaseModel):
 class DeviceControlRequest(BaseModel):
     entity_id: str
     action: str = "toggle"
-    brightness_percent: typing.Optional[int] = None
+    # A slider position, or a named mode picked from the device's own options.
+    value: typing.Optional[float] = None
+    option: str = ""
 
 
 class SleepRequest(BaseModel):
@@ -425,7 +427,7 @@ def build_app() -> FastAPI:
         )
         try:
             ok, text = home_assistant.control(
-                req.entity_id, req.action, req.brightness_percent
+                req.entity_id, req.action, req.value, req.option
             )
         except Exception as e:
             logger.log_error(str(e), "web_control_device")

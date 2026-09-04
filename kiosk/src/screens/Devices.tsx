@@ -1,13 +1,13 @@
 import { useEffect, useState } from 'react'
 import { Lightbulb, Lock } from 'lucide-react'
 import { controlDevice, fetchDevices } from '../api'
-import type { Device, DevicesPanel } from '../api'
+import type { Control, Device, DevicesPanel } from '../api'
 
 // Someone else flips a switch, or an automation runs. Long enough not to
 // hammer Home Assistant from a screen left open all day.
 const REFRESH_MS = 30 * 1000
 
-// Home Assistant will happily report a hundred entities. A filter row is the
+// Home Assistant will happily report a hundred devices. A filter row is the
 // difference between a usable screen and a very long scroll.
 const DOMAIN_LABELS: Record<string, string> = {
   light: 'Lights',
@@ -20,17 +20,22 @@ const DOMAIN_LABELS: Record<string, string> = {
   script: 'Scripts',
   fan: 'Fans',
   vacuum: 'Vacuum',
+  lawn_mower: 'Mowers',
+  button: 'Buttons',
 }
 
 function label(domain: string): string {
   return DOMAIN_LABELS[domain] ?? domain.replace(/_/g, ' ')
 }
 
-/** Every controllable device in the house, grouped by room.
+type Act = (control: Control, action: string, value?: number, option?: string) => void
+
+/** Every controllable device in the house, one card each, grouped by room.
  *
- *  This used to ask the agent "which lights are on?" and read back a
- *  paragraph you could not press. The states were always structured, and
- *  Home Assistant was always one call away.
+ *  A card is a device, not an entity: a robot vacuum is a vacuum with a
+ *  suction setting and three buttons, not six switches in a row. What a
+ *  device reports — battery, filter life — is not here; the screen is for
+ *  changing things, and asking is what the chat is for.
  */
 export function Devices() {
   const [panel, setPanel] = useState<DevicesPanel | null>(null)
@@ -53,10 +58,10 @@ export function Devices() {
     return () => clearInterval(timer)
   }, [])
 
-  const act = async (device: Device, action: string, brightness?: number) => {
-    setBusy(device.entity_id)
+  const act: Act = async (control, action, value, option) => {
+    setBusy(control.entity_id)
     setNote(null)
-    const result = await controlDevice(device.entity_id, action, brightness)
+    const result = await controlDevice(control.entity_id, action, value, option)
     // Home Assistant confirms the service call before the state settles, so
     // the list is re-read rather than guessed at.
     const next = await fetchDevices()
@@ -83,13 +88,15 @@ export function Devices() {
   }
 
   const domains = [
-    ...new Set(panel.areas.flatMap((a) => a.devices.map((d) => d.domain))),
+    ...new Set(panel.areas.flatMap((a) => a.devices.map((d) => d.primary.domain))),
   ].sort()
 
   const areas = panel.areas
     .map((area) => ({
       ...area,
-      devices: domain ? area.devices.filter((d) => d.domain === domain) : area.devices,
+      devices: domain
+        ? area.devices.filter((d) => d.primary.domain === domain)
+        : area.devices,
     }))
     .filter((area) => area.devices.length > 0)
 
@@ -120,10 +127,10 @@ export function Devices() {
               </div>
               <div className="flex flex-col gap-1.5">
                 {area.devices.map((device) => (
-                  <Row
-                    key={device.entity_id}
+                  <Card
+                    key={device.primary.entity_id}
                     device={device}
-                    busy={busy === device.entity_id}
+                    busy={busy}
                     locksAllowed={panel.locks_allowed}
                     onAct={act}
                   />
@@ -168,62 +175,249 @@ function Chip({
   )
 }
 
-function Row({
+function Card({
   device,
   busy,
   locksAllowed,
   onAct,
 }: {
   device: Device
-  busy: boolean
+  busy: string | null
   locksAllowed: boolean
-  onAct: (device: Device, action: string, brightness?: number) => void
+  onAct: Act
 }) {
+  const main = device.primary
   // A lock or a garage door is shown either way — hiding the front door makes
   // the screen look broken. It just refuses until config says otherwise.
-  const blocked = device.guarded && !locksAllowed
-  const disabled = busy || !device.available || blocked
+  const blocked = main.guarded && !locksAllowed
+  const disabled = busy === main.entity_id || !main.available || blocked
 
   return (
-    <div className="list-row flex items-center gap-3 px-4 py-3 rounded-xl bg-surface border border-line">
-      <div className="flex-1 min-w-0">
-        <div className="t-body truncate flex items-center gap-1.5">
-          {device.guarded && <Lock size={13} className="text-muted shrink-0" />}
-          {device.name}
-        </div>
-        <div className="t-small text-muted truncate">
-          {blocked
-            ? 'Locked off in config.yaml'
-            : !device.available
-              ? 'Unavailable'
-              : device.brightness !== null
-                ? `${device.state} · ${device.brightness}%`
-                : device.state}
+    // No list-row here: its contain-intrinsic-size guesses a uniform 84px row,
+    // and a card carrying settings and buttons is several times that, so the
+    // scroll height would jump on first paint. The list is short now anyway —
+    // one card per device, not one row per entity.
+    <div className="px-4 py-3 rounded-xl bg-surface border border-line">
+      <div className="flex items-center gap-3">
+        <div className="flex-1 min-w-0">
+          <div className="t-body truncate flex items-center gap-1.5">
+            {main.guarded && <Lock size={13} className="text-muted shrink-0" />}
+            {device.name}
+          </div>
+          <div className="t-small text-muted truncate">
+            {blocked
+              ? 'Locked off in config.yaml'
+              : !main.available
+                ? 'Unavailable'
+                : main.level !== null
+                  ? `${main.state} · ${main.level}%`
+                  : main.state}
+          </div>
+
+          {main.slider && !disabled && (
+            <input
+              type="range"
+              min={0}
+              max={100}
+              defaultValue={main.level ?? 100}
+              aria-label={`${device.name} level`}
+              // On change, not input: dragging fires input continuously, and
+              // every one of those would be a service call.
+              onChange={(e) => onAct(main, 'on', Number(e.target.value))}
+              className="w-full mt-2 accent-[var(--wony-accent)]"
+            />
+          )}
         </div>
 
-        {device.dimmable && device.on && !disabled && (
-          <input
-            type="range"
-            min={1}
-            max={100}
-            defaultValue={device.brightness ?? 100}
-            aria-label={`${device.name} brightness`}
-            // On change, not input: dragging fires input continuously, and
-            // every one of those would be a service call.
-            onChange={(e) => onAct(device, 'on', Number(e.target.value))}
-            className="w-full mt-2 accent-[var(--wony-accent)]"
-          />
+        {main.press ? (
+          <PressButton control={main} label={device.name} disabled={disabled} onAct={onAct} />
+        ) : (
+          main.toggle && (
+            <Toggle
+              on={main.on}
+              disabled={disabled}
+              busy={busy === main.entity_id}
+              label={device.name}
+              onPress={() => onAct(main, 'toggle')}
+            />
+          )
         )}
       </div>
 
-      <Toggle
-        on={device.on}
-        disabled={disabled}
-        busy={busy}
-        label={device.name}
-        onPress={() => onAct(device, 'toggle')}
-      />
+      {/* The device's own modes, unlabelled: the card is already its name. */}
+      {main.options.length > 0 && (
+        <div className="mt-3">
+          <Choices control={main} disabled={disabled} onAct={onAct} />
+        </div>
+      )}
+
+      {device.extras.length > 0 && (
+        <div className="mt-3 pt-3 border-t border-line flex flex-col gap-3">
+          {device.extras.map((extra) => (
+            <Extra
+              key={extra.entity_id}
+              control={extra}
+              busy={busy}
+              locksAllowed={locksAllowed}
+              onAct={onAct}
+            />
+          ))}
+        </div>
+      )}
     </div>
+  )
+}
+
+function Extra({
+  control,
+  busy,
+  locksAllowed,
+  onAct,
+}: {
+  control: Control
+  busy: string | null
+  locksAllowed: boolean
+  onAct: Act
+}) {
+  const blocked = control.guarded && !locksAllowed
+  const disabled = busy === control.entity_id || !control.available || blocked
+
+  // A press button says what it does, so it needs no second label.
+  if (control.press) {
+    return (
+      <div className="flex">
+        <PressButton
+          control={control}
+          label={control.name}
+          disabled={disabled}
+          onAct={onAct}
+        />
+      </div>
+    )
+  }
+
+  if (control.options.length > 0) {
+    return (
+      <div className="flex flex-col gap-2">
+        <span className="t-small text-muted">{control.name}</span>
+        <Choices control={control} disabled={disabled} onAct={onAct} />
+      </div>
+    )
+  }
+
+  if (control.number) {
+    return (
+      <div className="flex items-center gap-3">
+        <span className="t-small text-muted min-w-0 truncate">{control.name}</span>
+        <div className="ml-auto flex items-center gap-2 shrink-0">
+          <Stepper
+            label="−"
+            disabled={disabled}
+            onPress={() => onAct(control, 'set', Number(control.state) - 1)}
+          />
+          <span className="t-body w-16 text-center tabular-nums">{control.state}</span>
+          <Stepper
+            label="+"
+            disabled={disabled}
+            onPress={() => onAct(control, 'set', Number(control.state) + 1)}
+          />
+        </div>
+      </div>
+    )
+  }
+
+  if (control.toggle) {
+    return (
+      <div className="flex items-center gap-3">
+        <span className="t-small text-muted min-w-0 truncate">{control.name}</span>
+        <div className="ml-auto shrink-0">
+          <Toggle
+            on={control.on}
+            disabled={disabled}
+            busy={busy === control.entity_id}
+            label={control.name}
+            onPress={() => onAct(control, 'toggle')}
+          />
+        </div>
+      </div>
+    )
+  }
+
+  return null
+}
+
+/** A row of buttons, not a <select>: a native dropdown on a 7" touch screen
+ *  opens a list too small to hit reliably. */
+function Choices({
+  control,
+  disabled,
+  onAct,
+}: {
+  control: Control
+  disabled: boolean
+  onAct: Act
+}) {
+  return (
+    <div className="flex flex-wrap gap-2">
+      {control.options.map((option) => (
+        <button
+          key={option}
+          onClick={() => onAct(control, 'set', undefined, option)}
+          disabled={disabled}
+          className={`px-4 py-2 rounded-xl border t-body active:scale-95 disabled:opacity-40 ${
+            control.state === option
+              ? 'border-accent text-accent'
+              : 'border-line text-muted'
+          }`}
+        >
+          {option}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function PressButton({
+  control,
+  label,
+  disabled,
+  onAct,
+}: {
+  control: Control
+  label: string
+  disabled: boolean
+  onAct: Act
+}) {
+  return (
+    <button
+      onClick={() => onAct(control, 'toggle')}
+      disabled={disabled}
+      className="press shrink-0 px-4 h-10 rounded-xl border border-line
+                 t-body text-muted disabled:opacity-40"
+    >
+      {label}
+    </button>
+  )
+}
+
+function Stepper({
+  label,
+  disabled,
+  onPress,
+}: {
+  label: string
+  disabled: boolean
+  onPress: () => void
+}) {
+  return (
+    <button
+      onClick={onPress}
+      disabled={disabled}
+      className="w-11 h-11 rounded-xl border border-line grid place-items-center
+                 t-body active:scale-95 disabled:opacity-40"
+    >
+      {label}
+    </button>
   )
 }
 

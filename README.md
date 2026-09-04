@@ -77,7 +77,7 @@ below. Some answer on the spot; others open a page:
 | Weather  | Temperature, conditions, wind, humidity, sunrise and sunset     |
 | Today    | Today's and tomorrow's calendar, as a list                      |
 | Timers   | Everything counting down, with a button to call one off         |
-| Devices  | Every smart device you have, by room, with switches and dimmers |
+| Devices  | Every device you have, by room, one card each, with its controls |
 | Music    | Cover art, play controls and volume                             |
 | Accounts | Add, sign in to and switch Google accounts                      |
 | Sleep    | Sends the screen dark for the night                             |
@@ -236,16 +236,22 @@ personal use only.
 ### Home Assistant
 
 Controls whatever Home Assistant controls — lights, switches, blinds,
-thermostats, media players, locks, scenes — by name or by room. Try "dim the
-bedroom lamp to 30", "close the blinds", "is the garage open".
+thermostats, media players, vacuums, locks, scenes — by name or by room,
+including devices added through HACS. Try "dim the bedroom lamp to 30", "close
+the blinds", "is the garage open", "start the vacuum", "set the suction to
+turbo", "turn all the lights off".
+
+A room or a device type has to be named before Wony will change a whole set of
+things at once, and anything you have hidden in Home Assistant stays hidden
+here.
 
 1. In Home Assistant: your profile → **Security** → **Long-lived access tokens**
    → _Create token_
 2. Paste it when setup asks, along with the address you open Home Assistant at.
    Setup checks both before saving them.
 
-The **Devices** tile then lists everything by room, with a switch on each and a
-slider on any light that is on. Doors, garages and alarms are shown but stay
+The **Devices** tile then lists your devices by room, one card each, with its
+switch, slider and settings on it. Doors, garages and alarms are shown but stay
 locked until you set `modules.home_assistant.allow_locks: true`.
 
 ### Web search

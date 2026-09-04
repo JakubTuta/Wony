@@ -109,18 +109,32 @@ export interface RemindersPanel {
   reminders: Reminder[]
 }
 
-export interface Device {
+/** One entity, already decided to be exactly one widget. */
+export interface Control {
   entity_id: string
   name: string
   domain: string
   state: string
   on: boolean
   available: boolean
-  brightness: number | null
-  dimmable: boolean
+  level: number | null
+  options: string[]
+  /** Momentary — a button or a scene, which nothing turns off again. */
+  press: boolean
+  number: boolean
+  toggle: boolean
+  slider: boolean
   /** Locks, alarms and garage doors. Shown, but refused unless
    *  modules.home_assistant.allow_locks is on. */
   guarded: boolean
+}
+
+/** One physical thing: a vacuum with its suction setting and its buttons,
+ *  not six unrelated switches. */
+export interface Device {
+  name: string
+  primary: Control
+  extras: Control[]
 }
 
 export interface DevicesPanel {
@@ -357,13 +371,14 @@ export async function fetchNowPlaying(): Promise<NowPlaying | null> {
 export async function controlDevice(
   entity_id: string,
   action: string,
-  brightness_percent?: number,
+  value?: number,
+  option?: string,
 ): Promise<{ ok: boolean; text: string }> {
   try {
     const res = await fetch(`${BASE}/devices/control`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ entity_id, action, brightness_percent }),
+      body: JSON.stringify({ entity_id, action, value, option }),
     })
     if (res.ok) return res.json()
     const body = await res.json().catch(() => ({ detail: res.statusText }))
