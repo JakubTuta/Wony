@@ -32,18 +32,6 @@ def _calendar_job_name(account_name: str) -> str:
     return f"calendar_polling_{account_name}"
 
 
-@register_service(
-    module_name="calendar",
-    requires=Requirement(
-        files=[CREDENTIALS_FILE],
-        pip_modules=["googleapiclient", "google_auth_oauthlib", "google.auth"],
-        setup_hint=(
-            "Create an OAuth client (Desktop) in Google Cloud Console with Calendar API "
-            "and Gmail API enabled, download it to credentials/google_credentials.json, "
-            "then run: pip install -r requirements/calendar.txt"
-        ),
-    ),
-)
 def _other_attendees(event: dict) -> typing.List[str]:
     """Everyone on the invite except the user, by name where Google has one.
 
@@ -60,6 +48,18 @@ def _other_attendees(event: dict) -> typing.List[str]:
     return people
 
 
+@register_service(
+    module_name="calendar",
+    requires=Requirement(
+        files=[CREDENTIALS_FILE],
+        pip_modules=["googleapiclient", "google_auth_oauthlib", "google.auth"],
+        setup_hint=(
+            "Create an OAuth client (Desktop) in Google Cloud Console with Calendar API "
+            "and Gmail API enabled, download it to credentials/google_credentials.json, "
+            "then run: pip install -r requirements/calendar.txt"
+        ),
+    ),
+)
 class Calendar:
     """Google Calendar service for reading and managing events. Supports multiple Google accounts."""
 

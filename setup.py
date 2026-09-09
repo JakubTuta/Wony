@@ -1397,6 +1397,21 @@ def _node_too_old():
     return "" if supported else version
 
 
+def _web_built() -> bool:
+    """True when web/dist/index.html exists *and* has content.
+
+    Existence alone is not enough: a build killed partway through (running out
+    of memory is the usual way) leaves a zero-byte index.html behind. That file
+    passes an isfile() check, so setup calls the build done and skips it forever
+    after, while the server happily serves `200 OK` with an empty body — a blank
+    page, with no error anywhere to explain it.
+    """
+    try:
+        return os.path.getsize(WEB_INDEX) > 0
+    except OSError:
+        return False
+
+
 def build_web(chosen):
     """Build the web chat UI, and return what is still missing.
 
@@ -1409,7 +1424,7 @@ def build_web(chosen):
         return []
 
     section("The web chat UI")
-    built = os.path.isfile(WEB_INDEX)
+    built = _web_built()
     if built:
         note("Already built (web/dist).")
         note("Rebuild it after every 'git pull' — the UI is not in the repo.")
@@ -1442,9 +1457,16 @@ def build_web(chosen):
             )
             return [f"Web UI: build failed — {BUILD_BY_HAND}"]
 
-    if os.path.isfile(WEB_INDEX):
+    if _web_built():
         ok("built web/dist — the chat UI has something to show.")
         return []
+    if os.path.isfile(WEB_INDEX):
+        warn("The build left web/dist/index.html empty — the page will be blank.")
+        note(
+            "That is what a build killed partway through looks like: add swap, or "
+            "build elsewhere and copy web/dist across."
+        )
+        return [f"Web UI: web/dist/index.html is empty — {BUILD_BY_HAND}"]
     warn("The build finished but web/dist/index.html is not there.")
     return [f"Web UI: build produced no web/dist/index.html — {BUILD_BY_HAND}"]
 
@@ -1658,7 +1680,7 @@ def next_steps(chosen, use_venv, pending):
     tray = any(f["key"] == "tray" for f in chosen)
     # The web UI is a built artifact, and skipping the build is silent: the API
     # answers fine and the browser is told the page does not exist.
-    if tray and not os.path.isfile(WEB_INDEX):
+    if tray and not _web_built():
         print(c("\n  Build the web UI: ", "1") + BUILD_BY_HAND)
 
     py = os.path.relpath(sys.executable, ROOT) if use_venv else "python"
@@ -1682,7 +1704,7 @@ def cmd_configure():
     pending = configure([f for f in FEATURES if f["key"] in detected])
     # Nothing is installed here, so the UI is not built either — but it is
     # still the reason a finished-looking install shows nothing.
-    if "tray" in detected and not os.path.isfile(WEB_INDEX):
+    if "tray" in detected and not _web_built():
         pending.append(f"Web UI: not built — {BUILD_BY_HAND}")
     section("Done")
     show_pending(pending)
