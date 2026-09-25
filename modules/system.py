@@ -34,7 +34,9 @@ _GIB = 1024 ** 3
     summary="Battery, disk, memory and network",
 )
 @capture_response
-def computer_health(what: str = "all") -> str:
+def computer_health(
+    what: typing.Literal["all", "battery", "disk", "memory", "cpu", "network"] = "all",
+) -> str:
     """
     [SYSTEM JOB] Reports how this computer is doing: battery level and whether it is
     charging, free disk space, memory and processor load, and network status.

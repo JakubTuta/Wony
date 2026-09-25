@@ -38,6 +38,12 @@ def _weather() -> typing.Dict[str, typing.Any]:
     return weather.snapshot()
 
 
+def _forecast() -> typing.Dict[str, typing.Any]:
+    from modules import weather
+
+    return weather.forecast()
+
+
 def _agenda() -> typing.Dict[str, typing.Any]:
     return _service("calendar").agenda_snapshot()
 
@@ -54,6 +60,10 @@ def _music() -> typing.Dict[str, typing.Any]:
 
 def _accounts() -> typing.Dict[str, typing.Any]:
     return _service("google_accounts").accounts_snapshot()
+
+
+def _inbox() -> typing.Dict[str, typing.Any]:
+    return _service("gmail").inbox_snapshot()
 
 
 def _reminders() -> typing.Dict[str, typing.Any]:
@@ -80,6 +90,7 @@ class _Panel(typing.NamedTuple):
 
 _PANELS: typing.Dict[str, _Panel] = {
     "weather": _Panel("weather", "Weather", _weather),
+    "forecast": _Panel("weather", "Forecast", _forecast),
     "agenda": _Panel("calendar", "Today", _agenda),
     "reminders": _Panel("scheduler", "Timers", _reminders),
     "notes": _Panel("notes", "Lists", _notes),
@@ -87,6 +98,7 @@ _PANELS: typing.Dict[str, _Panel] = {
     "devices": _Panel("home_assistant", "Devices", _devices),
     "music": _Panel("spotify", "Music", _music),
     "accounts": _Panel("google_accounts", "Accounts", _accounts),
+    "inbox": _Panel("gmail", "Inbox", _inbox),
 }
 
 

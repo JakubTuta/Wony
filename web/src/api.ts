@@ -2,14 +2,19 @@ export interface JobParameter {
   type: string;
   description: string;
   items?: { type: string };
+  enum?: (string | number | boolean)[];
 }
+
+/** `true` = always confirms, `false` = never, a list = confirms when its
+ * `action` argument matches one of these words (see helpers/confirm.py). */
+export type Confirms = boolean | string[];
 
 export interface Job {
   name: string;
   module: string;
   summary: string;
   description: string;
-  destructive: boolean;
+  confirms: Confirms;
   parameters: {
     properties: Record<string, JobParameter>;
     required: string[];
@@ -44,6 +49,7 @@ export interface HealthResponse {
   modules: Record<string, HealthModule>;
   compute?: Compute;
   diagnostics?: Diagnostic[];
+  background: string[];
 }
 
 export interface JobsResponse {
@@ -60,6 +66,7 @@ export interface ChatCall {
   name: string;
   args: Record<string, unknown>;
   result: string;
+  needs_confirm?: boolean;
 }
 
 export interface ChatResponse {
@@ -93,6 +100,22 @@ export interface WeatherPanel {
   condition: number;
   sunrise: number | null;
   sunset: number | null;
+  error: string | null;
+}
+
+export interface ForecastDay {
+  date: string;
+  label: string;
+  high: number;
+  low: number;
+  description: string;
+}
+
+export interface ForecastPanel {
+  city: string;
+  today: string;
+  unit: string;
+  days: ForecastDay[];
   error: string | null;
 }
 
@@ -167,6 +190,20 @@ export interface AccountsPanel {
   primary: string | null;
   services: { gmail: boolean; calendar: boolean };
   credentials_ready: boolean;
+}
+
+export interface InboxMessage {
+  id: string;
+  sender: string;
+  subject: string;
+  snippet: string;
+  date: string;
+}
+
+export interface InboxPanel {
+  unread_total: number;
+  messages: InboxMessage[];
+  error: string | null;
 }
 
 /** A panel read that never throws — every caller wants to show the failure. */
@@ -270,9 +307,17 @@ export interface SettingField {
   value: string | number | boolean | null;
 }
 
+export interface SettingsModule {
+  key: string;
+  label: string;
+  help: string;
+  enabled: boolean;
+  always_on: boolean;
+}
+
 export interface SettingsResponse {
   sections: { title: string; fields: SettingField[] }[];
-  modules: { key: string; label: string; help: string; enabled: boolean }[];
+  modules: SettingsModule[];
   config_file: string;
 }
 
@@ -307,6 +352,7 @@ export interface Reminder {
   id: string;
   text: string;
   action_job: string;
+  action_args: Record<string, unknown>;
   when_str: string;
   repeating: boolean;
   next_run: string | null;
@@ -354,7 +400,45 @@ export async function fetchJobs(): Promise<Job[]> {
   return data.jobs;
 }
 
-export async function invokeJob(name: string, args: Record<string, string>): Promise<InvokeResponse> {
+// ── Dashboard pins ───────────────────────────────────────────────────────
+// Persisted server-side (memory_db kv) so Customize survives a reload and a
+// second tab, unlike a browser-only setting the model never sees.
+
+export type PinKind = 'run' | 'toggle' | 'presets' | 'slider' | 'input';
+
+export interface Pin {
+  id: string;
+  kind: PinKind;
+  job: string;
+  /** The job's module at pin time, kept even if the job stops being
+   * registered later (module turned off/broken) so the card can still say
+   * what to turn back on. */
+  module: string;
+  title: string;
+  args: Record<string, unknown>;
+}
+
+/** null means nothing saved yet — the caller should seed defaults. */
+export async function fetchPins(): Promise<Pin[] | null> {
+  const res = await fetch(`${BASE}/pins`);
+  if (!res.ok) return null;
+  const data = await res.json();
+  return data.pins ?? null;
+}
+
+export async function savePins(pins: Pin[]): Promise<void> {
+  const res = await fetch(`${BASE}/pins`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pins }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.detail ?? 'Could not save your dashboard.');
+  }
+}
+
+export async function invokeJob(name: string, args: Record<string, unknown> = {}): Promise<InvokeResponse> {
   const res = await fetch(`${BASE}/invoke`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -427,61 +511,15 @@ export async function transcribeAudio(blob: Blob): Promise<TranscribeResult> {
   return { text: data.text ?? '', warning: data.warning };
 }
 
-export function connectEventSocket(handlers: {
+/** One socket for the whole app: chat streaming, the notification bell and
+ * the diagnostics feed all ride it, so a lost connection is one reconnect
+ * instead of three racing ones. */
+export function connectSocket(handlers: {
   onTurn?: (turn: HistoryTurn, sessionId?: string) => void;
   onDelta?: (chunk: string, sessionId: string) => void;
   onError?: (message: string, sessionId: string) => void;
   onDiagnostic?: (d: Diagnostic) => void;
   onNotification?: (n: Notification) => void;
-}): () => void {
-  const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws`;
-  let ws: WebSocket | null = null;
-  let closed = false;
-  let retryTimeout: ReturnType<typeof setTimeout> | null = null;
-
-  function connect() {
-    if (closed) return;
-    ws = new WebSocket(wsUrl);
-    ws.onmessage = (ev) => {
-      try {
-        const data = JSON.parse(ev.data) as WsEvent;
-        if (data.type === 'diagnostic') {
-          handlers.onDiagnostic?.(data as Diagnostic);
-        } else if (data.type === 'delta') {
-          handlers.onDelta?.(data.data, data.session_id);
-        } else if (data.type === 'error') {
-          handlers.onError?.(data.data, data.session_id);
-        } else if (data.type === 'notification') {
-          handlers.onNotification?.(data as Notification);
-        } else if (data.type === 'turn') {
-          handlers.onTurn?.(data as HistoryTurn, (data as { session_id?: string }).session_id);
-        }
-      } catch {
-        // ignore malformed
-      }
-    };
-    ws.onclose = () => {
-      if (!closed) {
-        retryTimeout = setTimeout(connect, 3000);
-      }
-    };
-    ws.onerror = () => ws?.close();
-  }
-
-  connect();
-
-  return () => {
-    closed = true;
-    if (retryTimeout) clearTimeout(retryTimeout);
-    ws?.close();
-  };
-}
-
-export function connectChatSocket(handlers: {
-  onTurn?: (turn: HistoryTurn, sessionId?: string) => void;
-  onDelta?: (chunk: string, sessionId: string) => void;
-  onError?: (message: string, sessionId: string) => void;
-  onDiagnostic?: (d: Diagnostic) => void;
   onState?: (state: AssistantState) => void;
   onConnect?: () => void;
   onDisconnect?: () => void;
@@ -514,11 +552,8 @@ export function connectChatSocket(handlers: {
         } else if (data.type === 'state') {
           handlers.onState?.((data as { type: 'state'; state: AssistantState }).state);
         } else if (data.type === 'notification') {
-          // Swallowed here on purpose: the header owns notifications through
-          // connectEventSocket. Without this branch it falls through and lands
-          // in the transcript as a turn.
+          handlers.onNotification?.(data as Notification);
         } else if (data.type === 'turn') {
-          // 'cancel'/'state' broadcasts must not fall through as phantom turns
           handlers.onTurn?.(data as HistoryTurn, (data as { session_id?: string }).session_id);
         }
       } catch {

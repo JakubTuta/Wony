@@ -555,7 +555,12 @@ class Calendar:
 
     @capture_response
     @method_job
-    def watch_calendar(self, action: str = "start", interval_minutes: int = 0, account: str = "") -> str:
+    def watch_calendar(
+        self,
+        action: typing.Literal["start", "stop"] = "start",
+        interval_minutes: int = 0,
+        account: str = "",
+    ) -> str:
         """
         [CALENDAR JOB] Starts or stops background calendar monitoring. While it runs,
         newly added events are announced as they appear.
@@ -797,7 +802,7 @@ class Calendar:
     @method_job(confirms=True)
     def manage_event(
         self,
-        action: str = "create",
+        action: typing.Literal["create", "edit", "delete"] = "create",
         title: str = "",
         query: str = "",
         date: str = "",

@@ -293,7 +293,7 @@ class Employer:
     @register_job(module_name="employer", confirms={"stop", "cancel", "stop all"})
     @capture_response
     @staticmethod
-    def background_jobs(action: str = "list") -> str:
+    def background_jobs(action: typing.Literal["list", "stop"] = "list") -> str:
         """
         [SYSTEM CONTROL JOB] Lists what is running in the background — inbox and
         calendar watchers and the like — or stops all of it. This is not about timers

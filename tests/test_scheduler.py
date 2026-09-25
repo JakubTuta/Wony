@@ -166,6 +166,20 @@ class TestReminders(unittest.TestCase):
         self._add(when="in 5 minutes", action_job="_fake_device", action_args={})
         self.assertIn("Cancelled", Scheduler.manage_reminders(self.sched, "cancel", "_fake_device"))
 
+    def test_snapshot_carries_action_args(self) -> None:
+        """The Macros view matches a routine to its schedule by action_args.name —
+        without it, a scheduled routine cannot show when it will next run."""
+        from modules.scheduler import Scheduler
+
+        self._add(
+            when="in 5 minutes",
+            action_job="_fake_device",
+            action_args={"target": "lamp", "action": "on"},
+        )
+        rows = Scheduler.reminders_snapshot(self.sched)["reminders"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["action_args"], {"target": "lamp", "action": "on"})
+
     def test_action_waits_for_the_agent_lock(self) -> None:
         from helpers.decorators import agent_lock
 

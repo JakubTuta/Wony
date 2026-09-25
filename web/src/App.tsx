@@ -1,200 +1,100 @@
-import { useEffect, useState, useCallback } from 'react';
-import { Bot, Cpu, AlertCircle, LayoutGrid, MessageSquare } from 'lucide-react';
-import { fetchConfig, fetchHealth, fetchJobs, connectEventSocket } from './api';
-import type { AppConfig, HealthResponse, Job, Diagnostic } from './api';
+import { useCallback, useEffect, useState } from 'react';
+import { WonyProvider } from './lib/wony';
+import { useWony } from './lib/wonyContext';
+import { TopBar, type View } from './components/TopBar';
 import { ChatPanel } from './components/ChatPanel';
-import { PanelsPane } from './components/PanelsPane';
-import { NotificationBell } from './components/NotificationBell';
-import { DiagnosticsBanner } from './components/DiagnosticsBanner';
+import { ConfirmModal } from './components/ConfirmModal';
+import { Dashboard } from './views/Dashboard';
+import { Modules } from './views/Modules';
+import { Macros } from './views/Macros';
+import { Settings } from './views/Settings';
 
-type Tab = 'chat' | 'panels';
+const TITLES: Record<View, [string, string]> = {
+  dashboard: ['Dashboard', 'Pinned controls and live data'],
+  modules: ['Modules & jobs', 'Run any job directly'],
+  macros: ['Macros', 'Routines in plain words, run on tap or on a schedule'],
+  settings: ['Settings', 'Voice, integrations, accounts, and what Wony may do on its own'],
+};
+
+function parseHash(): { view: View; module: string | null } {
+  const raw = location.hash.replace(/^#/, '');
+  const [view, module] = raw.split('/');
+  const known: View[] = ['dashboard', 'modules', 'macros', 'settings'];
+  return {
+    view: known.includes(view as View) ? (view as View) : 'dashboard',
+    module: module ? decodeURIComponent(module) : null,
+  };
+}
+
+function AppShell() {
+  const { jobs, routinesCount, pins } = useWony();
+  const [{ view, module }, setRoute] = useState(parseHash);
+  const [editing, setEditing] = useState(false);
+
+  useEffect(() => {
+    const onHashChange = () => setRoute(parseHash());
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
+
+  const navigate = useCallback((next: View) => {
+    location.hash = next;
+  }, []);
+
+  const openModule = useCallback((key: string) => {
+    location.hash = `modules/${encodeURIComponent(key)}`;
+  }, []);
+
+  const [title, subtitle] = TITLES[view];
+
+  return (
+    <div className="h-screen grid min-w-0" style={{ gridTemplateColumns: 'minmax(0,1fr) minmax(360px,500px)' }}>
+      <main className="overflow-auto min-w-0">
+        <TopBar
+          view={view}
+          onNavigate={navigate}
+          onOpenModule={openModule}
+          counts={{ dashboard: pins?.length ?? 0, modules: jobs.length, macros: routinesCount }}
+        />
+
+        <header className="flex items-end justify-between gap-4 flex-wrap px-8 pt-6.5 pb-4.5">
+          <div className="flex flex-col gap-0.5">
+            <h1 className="m-0 text-[28px] font-bold tracking-tight">{title}</h1>
+            <span className="text-sm text-muted">{subtitle}</span>
+          </div>
+          {view === 'dashboard' && (
+            <button
+              onClick={() => setEditing((v) => !v)}
+              className="border rounded-full px-4 py-2 text-sm font-semibold"
+              style={{
+                borderColor: 'var(--color-pink-border-2)',
+                background: editing ? 'var(--color-pink-soft)' : 'var(--color-surface)',
+                color: 'var(--color-red)',
+              }}
+            >
+              {editing ? 'Done' : 'Customize'}
+            </button>
+          )}
+        </header>
+
+        {view === 'dashboard' && <Dashboard editing={editing} />}
+        {view === 'modules' && (
+          <Modules selectedModule={module} onSelectModule={(key) => (location.hash = `modules/${encodeURIComponent(key)}`)} />
+        )}
+        {view === 'macros' && <Macros />}
+        {view === 'settings' && <Settings />}
+      </main>
+
+      <ChatPanel />
+      <ConfirmModal />
+    </div>
+  );
+}
 
 export default function App() {
-  const [health, setHealth] = useState<HealthResponse | null>(null);
-  const [healthError, setHealthError] = useState(false);
-  const [jobs, setJobs] = useState<Job[]>([]);
-  const [jobsLoading, setJobsLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<Tab>('chat');
-  const [diagnostics, setDiagnostics] = useState<Diagnostic[]>([]);
-  const [config, setConfig] = useState<AppConfig | null>(null);
-
-  useEffect(() => {
-    fetchConfig().then(setConfig).catch(() => {});
-    fetchHealth()
-      .then((h) => {
-        setHealth(h);
-        if (h.diagnostics && h.diagnostics.length > 0) {
-          setDiagnostics(h.diagnostics);
-        }
-      })
-      .catch(() => setHealthError(true));
-
-    fetchJobs()
-      .then(setJobs)
-      .catch(() => {})
-      .finally(() => setJobsLoading(false));
-  }, []);
-
-  // Merge incoming live diagnostics (dedup by source+message).
-  const handleDiagnostic = useCallback((d: Diagnostic) => {
-    setDiagnostics((prev) => {
-      const key = `${d.source}:${d.message}`;
-      if (prev.some((x) => `${x.source}:${x.message}` === key)) return prev;
-      return [...prev, d];
-    });
-  }, []);
-
-  useEffect(() => {
-    return connectEventSocket({ onDiagnostic: handleDiagnostic });
-  }, [handleDiagnostic]);
-
-  const compute = health?.compute;
-  const hasCpuFallback = compute && !compute.cuda_ok;
-
-  const providerLabel = health?.provider
-    ? `${health.provider}${health.model ? ` · ${health.model}` : ''}`
-    : null;
-
-  const enabledCount = health
-    ? Object.values(health.modules).filter(m => m.status === 'enabled').length
-    : 0;
-
-  const computeLabel = compute
-    ? `STT:${compute.stt_device} TTS:${compute.tts_device}`
-    : null;
-
-  const locale = config?.assistant.language || 'en';
-
   return (
-    <div className="h-screen overflow-hidden bg-gray-50 dark:bg-gray-950 flex flex-col">
-      {/* Header */}
-      <header className="sticky top-0 z-40 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 px-4 py-3 flex items-center gap-3">
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-lg bg-violet-600 flex items-center justify-center">
-            <Bot size={18} className="text-white" />
-          </div>
-          <span className="font-semibold text-gray-900 dark:text-gray-100 text-base">Wony</span>
-        </div>
-
-        <div className="flex-1" />
-
-        {/* Provider/status pill */}
-        {healthError ? (
-          <div className="flex items-center gap-1.5 text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700 rounded-full px-3 py-1">
-            <AlertCircle size={12} />
-            Server unreachable
-          </div>
-        ) : health ? (
-          <div className="flex items-center gap-3">
-            <div className={`hidden sm:flex items-center gap-1.5 text-xs rounded-full px-3 py-1 ${
-              hasCpuFallback
-                ? 'text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700'
-                : 'text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-800'
-            }`}>
-              <Cpu size={12} />
-              <span>{providerLabel ?? 'Unknown provider'}</span>
-              {computeLabel && (
-                <span className="opacity-70 ml-1">· {computeLabel}</span>
-              )}
-            </div>
-            <div className="text-xs text-gray-400 dark:text-gray-500">
-              {enabledCount} module{enabledCount !== 1 ? 's' : ''} active
-            </div>
-          </div>
-        ) : (
-          <div className="h-6 w-32 bg-gray-100 dark:bg-gray-800 rounded-full animate-pulse" />
-        )}
-
-        <NotificationBell />
-      </header>
-
-      {/* Diagnostics banner — amber/red alerts with fix hints */}
-      <DiagnosticsBanner diagnostics={diagnostics} />
-
-      {/* Mobile tab bar */}
-      <div className="lg:hidden flex border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900">
-        <TabButton active={activeTab === 'chat'} onClick={() => setActiveTab('chat')}>
-          <MessageSquare size={14} />
-          Chat
-        </TabButton>
-        <TabButton active={activeTab === 'panels'} onClick={() => setActiveTab('panels')}>
-          <LayoutGrid size={14} />
-          Panels
-        </TabButton>
-      </div>
-
-      {/* Main content */}
-      <main className="flex-1 flex overflow-hidden">
-        {/* Desktop: two-pane side by side */}
-        <div className="hidden lg:flex w-full h-full">
-          <Pane title="Chat" icon={<MessageSquare size={15} />} className="w-[45%] min-w-0 border-r border-gray-200 dark:border-gray-800">
-            <ChatPanel />
-          </Pane>
-          <Pane title="Panels" icon={<LayoutGrid size={15} />} className="flex-1 min-w-0">
-            <PanelsPane jobs={jobs} jobsLoading={jobsLoading} locale={locale} />
-          </Pane>
-        </div>
-
-        {/* Mobile: single active tab */}
-        <div className="lg:hidden w-full h-full">
-          {activeTab === 'chat' ? (
-            <Pane title="Chat" icon={<MessageSquare size={15} />} className="h-full">
-              <ChatPanel />
-            </Pane>
-          ) : (
-            <Pane title="Panels" icon={<LayoutGrid size={15} />} className="h-full">
-              <PanelsPane jobs={jobs} jobsLoading={jobsLoading} locale={locale} />
-            </Pane>
-          )}
-        </div>
-      </main>
-    </div>
-  );
-}
-
-function Pane({
-  title,
-  icon,
-  children,
-  className = '',
-}: {
-  title: string;
-  icon: React.ReactNode;
-  children: React.ReactNode;
-  className?: string;
-}) {
-  return (
-    <div className={`flex flex-col bg-white dark:bg-gray-900 ${className}`}>
-      <div className="px-4 py-2.5 border-b border-gray-100 dark:border-gray-800 flex items-center gap-2">
-        <span className="text-gray-400 dark:text-gray-500">{icon}</span>
-        <span className="text-sm font-medium text-gray-600 dark:text-gray-400">{title}</span>
-      </div>
-      <div className="flex-1 overflow-hidden flex flex-col">
-        {children}
-      </div>
-    </div>
-  );
-}
-
-function TabButton({
-  active,
-  onClick,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 text-sm font-medium transition-colors border-b-2 ${
-        active
-          ? 'border-violet-500 text-violet-600 dark:text-violet-400'
-          : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
-      }`}
-    >
-      {children}
-    </button>
+    <WonyProvider>
+      <AppShell />
+    </WonyProvider>
   );
 }

@@ -35,6 +35,8 @@ _POLL_SCAN_LIMIT = 100
 # Unread messages the overview reads headers for to work out who they are from.
 # Enough to make "top senders" meaningful without a slow batch on a big backlog.
 _OVERVIEW_SENDER_SCAN = 50
+# Rows the inbox panel shows — a widget, not an inbox browser.
+_INBOX_PANEL_LIMIT = 8
 
 
 @dataclasses.dataclass
@@ -157,6 +159,14 @@ def _build_mime_raw(
 
 def _gmail_job_name(account_name: str) -> str:
     return f"gmail_polling_{account_name}"
+
+
+def _sender_name(raw: str) -> str:
+    """'Marta K. <marta@x.com>' -> 'Marta K.'; falls back to the bare address."""
+    from email.utils import parseaddr
+
+    name, address = parseaddr(raw)
+    return name or address or raw
 
 
 @register_service(
@@ -586,6 +596,34 @@ class Gmail:
         """
         return self._fetch(self._scope(query, folder), max_results, account)
 
+    def inbox_snapshot(self, account: str = "") -> typing.Dict[str, typing.Any]:
+        """Unread mail as data, for the inbox panel.
+
+        Not a job: find_emails writes a sentence, which has nowhere to put a
+        per-message sender/subject row. Same search, structure kept.
+        """
+        try:
+            svc = self._svc(account)
+            unread_total = self._count(svc, self._scope("is:unread"))
+            messages = self._fetch(self._scope("is:unread"), _INBOX_PANEL_LIMIT, account)
+        except Exception as e:
+            return {"unread_total": 0, "messages": [], "error": str(e)}
+
+        return {
+            "unread_total": unread_total,
+            "messages": [
+                {
+                    "id": m.id,
+                    "sender": _sender_name(m.sender),
+                    "subject": m.subject.strip() or "(no subject)",
+                    "snippet": m.snippet,
+                    "date": m.date,
+                }
+                for m in messages
+            ],
+            "error": None,
+        }
+
     @staticmethod
     def _locator(query: str, sender: str, subject: str) -> str:
         """The query fragment every "find the one they mean" job builds."""
@@ -655,7 +693,7 @@ class Gmail:
         important: bool = False,
         has_attachment: bool = False,
         max_results: int = 0,
-        view: str = "list",
+        view: typing.Literal["list", "full", "thread", "overview"] = "list",
         account: str = "",
     ) -> str:
         """
@@ -908,7 +946,12 @@ class Gmail:
 
     @capture_response
     @method_job
-    def watch_inbox(self, action: str = "start", interval_minutes: int = 0, account: str = "") -> str:
+    def watch_inbox(
+        self,
+        action: typing.Literal["start", "stop"] = "start",
+        interval_minutes: int = 0,
+        account: str = "",
+    ) -> str:
         """
         [EMAIL MANAGEMENT JOB] Starts or stops background inbox monitoring. While it
         runs, new mail is announced as it arrives.
@@ -1074,7 +1117,9 @@ class Gmail:
     @method_job(confirms=True)
     def modify_emails(
         self,
-        action: str = "read",
+        action: typing.Literal[
+            "read", "unread", "star", "unstar", "archive", "label", "unlabel", "delete"
+        ] = "read",
         query: str = "",
         sender: str = "",
         subject: str = "",
@@ -1200,7 +1245,7 @@ class Gmail:
     @method_job(confirms={"delete"})
     def manage_drafts(
         self,
-        action: str = "list",
+        action: typing.Literal["list", "create", "edit", "delete"] = "list",
         draft_id: str = "",
         to: str = "",
         subject: str = "",

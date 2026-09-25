@@ -289,7 +289,7 @@ class AI:
     @register_job(module_name="ai", confirms={"forget", "remove", "delete"})
     @capture_response
     @staticmethod
-    def remember(action: str = "save", fact: str = "", topic: str = "") -> str:
+    def remember(action: typing.Literal["save", "forget"] = "save", fact: str = "", topic: str = "") -> str:
         """
         [AI SERVICE JOB] Stores something about the user for every future session — a
         preference, a name, a fact they stated — or forgets one again. Reading back what
@@ -339,7 +339,12 @@ class AI:
     @register_job(module_name="ai")
     @capture_response
     @staticmethod
-    def recall(query: str = "", scope: str = "all", date: str = "", limit: int = 5) -> str:
+    def recall(
+        query: str = "",
+        scope: typing.Literal["all", "conversations", "facts", "documents"] = "all",
+        date: str = "",
+        limit: int = 5,
+    ) -> str:
         """
         [AI SERVICE JOB] Searches everything Wony remembers — past conversations from
         earlier sessions, saved facts about the user, and indexed documents — and
@@ -477,7 +482,7 @@ class AI:
     @register_job(module_name="ai", confirms={"forget", "remove", "delete"})
     @capture_response
     @staticmethod
-    def manage_documents(action: str = "list", path: str = "") -> str:
+    def manage_documents(action: typing.Literal["list", "add", "forget"] = "list", path: str = "") -> str:
         """
         [AI SERVICE JOB] Manages the personal documents Wony can search: adds a file so
         its contents become searchable, lists what has been added, or forgets one again.

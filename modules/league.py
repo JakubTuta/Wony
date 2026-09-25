@@ -69,7 +69,7 @@ def _drives() -> typing.List[str]:
     confirms={"close", "quit", "exit"},
 )
 @capture_response
-def league(action: str = "launch") -> str:
+def league(action: typing.Literal["launch", "close", "auto_accept"] = "launch") -> str:
     """
     [LEAGUE OF LEGENDS JOB] Starts the League of Legends client, closes it, or watches
     the screen for a queue pop-up and clicks Accept for you. Watching runs in the

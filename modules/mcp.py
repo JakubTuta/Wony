@@ -5,6 +5,7 @@ State is persisted in the mcp_servers table in wony.db; tool wrappers are
 registered/unregistered in ServiceRegistry dynamically without a restart.
 """
 import json
+import typing
 
 from helpers.decorators import capture_response
 from helpers.registry import register_job
@@ -112,9 +113,9 @@ def list_mcp_servers() -> str:
 )
 @capture_response
 def manage_mcp_server(
-    action: str = "add",
+    action: typing.Literal["add", "edit", "remove", "connect", "disconnect"] = "add",
     name: str = "",
-    transport: str = "",
+    transport: typing.Literal["", "stdio", "sse", "http"] = "",
     command: str = "",
     url: str = "",
     args: str = "",

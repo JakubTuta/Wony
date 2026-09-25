@@ -38,6 +38,14 @@ MODULES: typing.List[typing.Tuple[str, str, str]] = [
     ("mcp", "MCP tool servers", "Connect external Model Context Protocol servers."),
 ]
 
+# Always on, whatever config.yaml says (see ALWAYS_ON) — listed separately so
+# the UI can show them without switches instead of hardcoding their names.
+_ALWAYS_ON_MODULES: typing.List[typing.Tuple[str, str, str]] = [
+    ("ai", "AI memory", "Remembers facts about you and searches past conversations."),
+    ("status", "System status", "Reports what Wony can do and what is broken."),
+    ("employer", "Conversation", "Runs your requests through the AI and the other jobs."),
+]
+
 # A field the UI renders. restart=True means the change only takes effect after
 # Wony is restarted, and the UI says so rather than letting it look broken.
 class Field(typing.NamedTuple):
@@ -212,8 +220,11 @@ def describe() -> typing.Dict[str, typing.Any]:
     return {
         "sections": sections,
         "modules": [
-            {"key": key, "label": label, "help": help_text, "enabled": key in enabled}
+            {"key": key, "label": label, "help": help_text, "enabled": key in enabled, "always_on": False}
             for key, label, help_text in MODULES
+        ] + [
+            {"key": key, "label": label, "help": help_text, "enabled": True, "always_on": True}
+            for key, label, help_text in _ALWAYS_ON_MODULES
         ],
         "config_file": CONFIG_FILE,
     }

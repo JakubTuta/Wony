@@ -117,7 +117,9 @@ class GoogleAccountsService:
     @method_job(confirms={"add", "authorize", "remove", "rename", "set_primary"})
     def manage_google_accounts(
         self,
-        action: str = "list",
+        action: typing.Literal[
+            "list", "add", "authorize", "remove", "rename", "set_primary"
+        ] = "list",
         name: str = "",
         new_name: str = "",
     ) -> str:
