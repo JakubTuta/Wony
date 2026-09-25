@@ -80,7 +80,10 @@ def _sanitize_calls(
                 safe_args[k] = v
             except (TypeError, ValueError):
                 safe_args[k] = str(v)
-        safe.append({"name": c.get("name", ""), "args": safe_args, "result": str(c.get("result", ""))})
+        entry = {"name": c.get("name", ""), "args": safe_args, "result": str(c.get("result", ""))}
+        if c.get("needs_confirm"):
+            entry["needs_confirm"] = True
+        safe.append(entry)
     return safe
 
 
@@ -110,6 +113,22 @@ class SettingsRequest(BaseModel):
     updates: typing.Dict[str, typing.Any] = {}
     # None leaves the enabled modules alone; a list replaces them.
     modules: typing.Optional[typing.List[str]] = None
+
+
+class Pin(BaseModel):
+    id: str
+    kind: typing.Literal["run", "toggle", "presets", "slider", "input"]
+    job: str
+    module: str = ""
+    title: str
+    args: typing.Dict[str, typing.Any] = {}
+
+
+class PinsRequest(BaseModel):
+    pins: typing.List[Pin]
+
+
+_PINS_KV_KEY = "web.pins"
 
 
 def build_app() -> FastAPI:
@@ -223,12 +242,20 @@ def build_app() -> FastAPI:
         except Exception:
             pass
 
+        background: typing.List[str] = []
+        try:
+            from helpers.jobs import BackgroundJobs
+            background = BackgroundJobs.list_jobs()
+        except Exception:
+            pass
+
         return {
             "provider": provider,
             "model": model_name,
             "modules": modules_out,
             "compute": compute,
             "diagnostics": diagnostics,
+            "background": background,
         }
 
     @app.get("/api/jobs")
@@ -238,7 +265,7 @@ def build_app() -> FastAPI:
         all_jobs = ServiceRegistry.get_all_jobs()
         job_modules = ServiceRegistry.get_job_modules()
         job_summaries = ServiceRegistry.get_job_summaries()
-        destructive = ServiceRegistry.get_job_confirms()
+        confirms = ServiceRegistry.get_job_confirms()
 
         jobs_out = []
         for name, func in all_jobs.items():
@@ -247,13 +274,19 @@ def build_app() -> FastAPI:
             except Exception:
                 description, properties, required = "", {}, []
 
+            raw_confirms = confirms.get(name)
+            if isinstance(raw_confirms, (set, frozenset, list, tuple)):
+                confirms_out: typing.Union[bool, typing.List[str]] = sorted(raw_confirms)
+            else:
+                confirms_out = bool(raw_confirms)
+
             jobs_out.append(
                 {
                     "name": name,
                     "module": job_modules.get(name, ""),
                     "summary": job_summaries.get(name, ""),
                     "description": description,
-                    "destructive": bool(destructive.get(name)),
+                    "confirms": confirms_out,
                     "parameters": {
                         "properties": properties,
                         "required": required,
@@ -358,6 +391,33 @@ def build_app() -> FastAPI:
         if result["written"]:
             logger.log_system_event("settings_changed", ", ".join(result["written"]))
         return result
+
+    @app.get("/api/pins")
+    def get_pins() -> typing.Dict[str, typing.Any]:
+        from helpers.memory_db import get_kv
+
+        raw = get_kv(_PINS_KV_KEY, "")
+        if not raw:
+            return {"pins": None}
+        try:
+            return {"pins": json.loads(raw)}
+        except (json.JSONDecodeError, ValueError):
+            return {"pins": None}
+
+    @app.post("/api/pins")
+    def save_pins(req: PinsRequest) -> typing.Dict[str, typing.Any]:
+        from helpers.memory_db import set_kv
+
+        all_jobs = ServiceRegistry.get_all_jobs()
+        unknown = sorted({p.job for p in req.pins if p.job not in all_jobs})
+        if unknown:
+            raise HTTPException(
+                status_code=422, detail=f"Unknown job(s): {', '.join(unknown)}"
+            )
+
+        pins = [p.model_dump() for p in req.pins]
+        set_kv(_PINS_KV_KEY, json.dumps(pins))
+        return {"pins": pins}
 
     @app.post("/api/invoke")
     def invoke_job(req: InvokeRequest) -> typing.Dict[str, typing.Any]:

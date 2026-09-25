@@ -165,7 +165,7 @@ def run_agent(
                 if needs_ok is not None:
                     logger.log_function_response(name, needs_ok, user_input)
                     record_tool_outcome(exec_name, False, False)
-                    calls_made.append({"name": name, "args": args, "result": needs_ok})
+                    calls_made.append({"name": name, "args": args, "result": needs_ok, "needs_confirm": True})
                     messages.append(
                         {"role": "tool_result", "id": tool_id, "name": name, "content": needs_ok}
                     )

@@ -164,6 +164,7 @@ class Scheduler:
                 "id": job.id,
                 "text": meta.get("text", ""),
                 "action_job": action.get("job", ""),
+                "action_args": action.get("args") or {},
                 "when_str": meta.get("when_str", ""),
                 "repeating": meta.get("trigger_type") in ("cron", "interval"),
                 "next_run": next_run.isoformat() if next_run else None,
@@ -281,7 +282,7 @@ class Scheduler:
     @method_job(confirms={"edit", "cancel", "delete", "remove", "stop"})
     def manage_reminders(
         self,
-        action: str = "list",
+        action: typing.Literal["list", "edit", "cancel"] = "list",
         id_or_text: str = "",
         new_when: str = "",
         new_text: str = "",

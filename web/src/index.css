@@ -1,11 +1,57 @@
 @import "tailwindcss";
 
+@theme {
+  --color-page: #F1F5F5;
+  --color-surface: #FFFFFF;
+  --color-border: #DAE4E4;
+  --color-divider: #E6EDED;
+  --color-ink: #102B2F;
+  --color-muted: #56696C;
+  --color-body2: #3E5357;
+  --color-teal: #1E5A61;
+  --color-teal-dark: #17474D;
+  --color-teal-soft: #E2EDED;
+  --color-ok: #3B8F8F;
+  --color-accent: #EE8680;
+  --color-on-accent: #3B1311;
+  --color-pink-soft: #FCE9E7;
+  --color-pink-faint: #FDF3F2;
+  --color-pink-faint-2: #FDF1F0;
+  --color-pink-border: #F3D9D6;
+  --color-pink-border-2: #F0CFCB;
+  --color-red: #9E3A34;
+  --color-label-red: #B4524B;
+  --color-badge: #D9534C;
+  --color-switch-off: #C5D3D4;
+  --color-dashed-border: #B9CBCC;
+
+  --font-sans: "Figtree", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
 *, *::before, *::after {
   box-sizing: border-box;
 }
 
+html, body, #root {
+  height: 100%;
+}
+
 body {
   margin: 0;
-  font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
+  background: var(--color-page);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--color-teal);
+}
+a:hover {
+  color: var(--color-red);
+}
+
+button {
+  font-family: inherit;
 }

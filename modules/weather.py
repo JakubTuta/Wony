@@ -31,7 +31,7 @@ _FORECAST_DAYS = 5
     ),
 )
 @capture_response
-def weather(city: str = "", when: str = "now") -> str:
+def weather(city: str = "", when: typing.Literal["now", "today", "tomorrow", "week"] = "now") -> str:
     """
     [WEATHER JOB] Reports the weather for any city, or for wherever this computer is:
     conditions right now, or the forecast for today, tomorrow or the next few days.

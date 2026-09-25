@@ -184,7 +184,11 @@ class Desktop:
 
     @method_job(confirms={"close"})
     @capture_response
-    def manage_window(self, action: str = "list", title: str = "") -> str:
+    def manage_window(
+        self,
+        action: typing.Literal["list", "focus", "minimize", "maximize", "close"] = "list",
+        title: str = "",
+    ) -> str:
         """
         [DESKTOP JOB] Works with the open application windows: lists them, or brings
         one to the front, minimises, maximises or closes it by (partial) title.
@@ -256,7 +260,7 @@ class Desktop:
 
     @method_job(confirms={"write", "set", "copy"})
     @capture_response
-    def clipboard(self, action: str = "read", text: str = "") -> str:
+    def clipboard(self, action: typing.Literal["read", "write"] = "read", text: str = "") -> str:
         """
         [DESKTOP JOB] Reads what is on the clipboard, or puts text on it.
         Writing requires modules.desktop.allow_actions to be enabled in config.
@@ -363,7 +367,13 @@ class Desktop:
 
     @method_job(confirms={"write", "append"})
     @capture_response
-    def file(self, action: str = "read", path: str = "", content: str = "", offset: int = 0) -> str:
+    def file(
+        self,
+        action: typing.Literal["read", "write", "append", "list"] = "read",
+        path: str = "",
+        content: str = "",
+        offset: int = 0,
+    ) -> str:
         """
         [DESKTOP JOB] Reads a text file's contents, writes or appends text to one, or
         lists what is in a folder. Writing and appending require

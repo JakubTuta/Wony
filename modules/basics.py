@@ -1,4 +1,5 @@
 import os
+import typing
 from datetime import datetime
 
 from helpers.audio import Audio
@@ -13,7 +14,7 @@ from helpers.registry import register_job
 
 @register_job(module_name="basics", summary="Tell the current time and date")
 @capture_response
-def get_datetime(part: str = "both") -> str:
+def get_datetime(part: typing.Literal["time", "date", "both"] = "both") -> str:
     """
     [CLOCK JOB] Tells the current local time, today's date, or both.
 

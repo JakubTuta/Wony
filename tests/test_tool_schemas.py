@@ -157,6 +157,38 @@ class TestToolSchemas(unittest.TestCase):
 
         self.assertFalse(stray, "\n".join(stray))
 
+    def test_literal_params_produce_enum(self) -> None:
+        """A `Literal[...]` type hint must surface as a JSON-schema `enum` so the
+        web UI can render a select instead of a free-text box, and the default
+        value must be one of the declared choices."""
+        import typing
+
+        from helpers.tools import _parse_signature
+
+        for name, func in self.jobs.items():
+            try:
+                type_hints = typing.get_type_hints(func)
+            except Exception:
+                continue
+            signature = inspect.signature(func).parameters
+            _, properties, _ = _parse_signature(func)
+            for param, hint in type_hints.items():
+                if getattr(hint, "__origin__", None) is not typing.Literal:
+                    continue
+                with self.subTest(job=name, param=param):
+                    choices = list(hint.__args__)
+                    entry = properties.get(param, {})
+                    self.assertEqual(
+                        entry.get("enum"), choices,
+                        f"{name}({param}) is Literal but schema enum is {entry.get('enum')!r}",
+                    )
+                    default = signature[param].default
+                    if default is not inspect.Parameter.empty:
+                        self.assertIn(
+                            default, choices,
+                            f"{name}({param}) default {default!r} is not in {choices!r}",
+                        )
+
     def test_schema_builds_for_every_provider(self) -> None:
         from helpers.tools import (
             function_to_schema_anthropic,

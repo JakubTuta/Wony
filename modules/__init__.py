@@ -25,7 +25,10 @@ def discover_services():
                     str(e),
                 )
             import helpers.diagnostics
-            helpers.diagnostics.add("warning", "Modules", f"Could not load module '{module_name}': {e}")
+
+            helpers.diagnostics.add(
+                "warning", "Modules", f"Could not load module '{module_name}': {e}"
+            )
 
 
 discover_services()

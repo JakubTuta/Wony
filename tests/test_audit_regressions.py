@@ -153,6 +153,7 @@ class TestPanels(unittest.TestCase):
             "spotify": "playback_snapshot",
             "google_accounts": "accounts_snapshot",
             "scheduler": "reminders_snapshot",
+            "gmail": "inbox_snapshot",
         }
 
         checked = 0
@@ -224,7 +225,7 @@ class TestPanels(unittest.TestCase):
         try:
             Config._settings.enabled_modules = ["weather", "spotify"]
             keys = [p["key"] for p in available()]
-            self.assertEqual(keys, ["weather", "music"])
+            self.assertEqual(keys, ["weather", "forecast", "music"])
 
             Config._settings.enabled_modules = []
             self.assertEqual(available(), [])

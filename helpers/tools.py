@@ -49,6 +49,22 @@ def _python_type_to_json(hint: typing.Any) -> str:
     return "string"
 
 
+def _literal_values(hint: typing.Any) -> typing.Optional[typing.List[typing.Any]]:
+    """Return the allowed values if hint is Literal[...] (optionally wrapped in
+    Optional[...]), else None."""
+    origin = getattr(hint, "__origin__", None)
+    args = getattr(hint, "__args__", ())
+
+    if origin is typing.Union and type(None) in args:
+        inner = next((a for a in args if a is not type(None)), None)
+        return _literal_values(inner)
+
+    if origin is typing.Literal:
+        return list(args)
+
+    return None
+
+
 # A param line is `name: desc` or `name (type): desc`, continuing until the next
 # such line. The old pattern's lookahead was `\w+\s*:`, which cannot match across
 # the ` (str)` in `date (str):` — so no boundary was ever found and the entire
@@ -114,6 +130,9 @@ def _parse_signature(
         }
         if json_type == "array":
             entry["items"] = {"type": "string"}
+        literal_values = _literal_values(hint)
+        if literal_values is not None:
+            entry["enum"] = literal_values
 
         properties[param_name] = entry
 
@@ -133,10 +152,14 @@ def _parse_signature(
             continue
         hint = type_hints.get(param_name)
         json_type = _python_type_to_json(hint) if hint is not None else "string"
-        properties[param_name] = {
+        entry = {
             "type": json_type,
             "description": "No description available",
         }
+        literal_values = _literal_values(hint)
+        if literal_values is not None:
+            entry["enum"] = literal_values
+        properties[param_name] = entry
         if (
             param.default is inspect.Parameter.empty
             and param.kind != inspect.Parameter.VAR_POSITIONAL

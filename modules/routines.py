@@ -68,7 +68,11 @@ def _normalize(name: str) -> str:
     confirms={"add", "save", "create", "edit", "remove", "delete", "forget"},
 )
 @capture_response
-def routine(action: str = "run", name: str = "", steps: str = "") -> str:
+def routine(
+    action: typing.Literal["run", "list", "add", "remove"] = "run",
+    name: str = "",
+    steps: str = "",
+) -> str:
     """
     [ROUTINE JOB] Runs one of the user's named routines, or manages the list of them.
     A routine is a saved set of steps in plain words — "good night" might turn off the

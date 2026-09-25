@@ -1,10 +1,12 @@
+import typing
+
 from helpers.decorators import capture_response
 from helpers.registry import ServiceRegistry, register_job
 
 
 @register_job(module_name="status", summary="What Wony can do, and what is broken")
 @capture_response
-def system_status(scope: str = "modules") -> str:
+def system_status(scope: typing.Literal["modules", "setup", "commands", "retry"] = "modules") -> str:
     """
     [SYSTEM INFORMATION JOB] Reports what Wony can do and what is wrong with it: which
     modules are working, what a broken one needs installing or configuring, the full
@@ -38,7 +40,7 @@ def system_status(scope: str = "modules") -> str:
 
 @register_job(module_name="status", summary="What Wony watches on its own")
 @capture_response
-def manage_triggers(action: str = "list", name: str = "") -> str:
+def manage_triggers(action: typing.Literal["list", "off", "on"] = "list", name: str = "") -> str:
     """
     [SYSTEM INFORMATION JOB] Lists the things Wony watches for on its own — a low
     battery, a full disk, a meeting about to start, important mail — and turns one
