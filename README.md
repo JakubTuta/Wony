@@ -68,62 +68,53 @@ Open `http://localhost:8000` on the device. Other ways to start:
 
 ## Using the screen
 
-**Tiles** are the buttons on the home screen. Wony chooses a set based on what
-you have enabled, and you can replace them with your own list — see Settings
-below. Some answer on the spot; others open a page:
+The panel is touch-only — no typing, no microphone. Four tabs across the
+bottom: **Home**, **Rooms**, **Music**, **Macros**.
 
-| Tile     | What you get                                                    |
-| -------- | --------------------------------------------------------------- |
-| Weather  | Temperature, conditions, wind, humidity, sunrise and sunset     |
-| Today    | Today's and tomorrow's calendar, as a list                      |
-| Timers   | Everything counting down, with a button to call one off         |
-| Devices  | Every device you have, by room, one card each, with its controls |
-| Music    | Cover art, play controls and volume                             |
-| Lists    | Your shopping and todo lists, with a tick to cross one off      |
-| Routines | Every routine you have, and what each one does                  |
-| Briefing | Runs your briefing routine and answers in the chat              |
-| Accounts | Add, sign in to and switch Google accounts                      |
-| Sleep    | Sends the screen dark for the night                             |
+**Home** is a grid of tiles you arrange yourself: tap **Edit**, then **+ Add
+tile** for anything not already placed, or the × on a tile to remove it. A
+tile is a routine, a device, a 10-minute timer, music play/pause, or Sleep —
+whole-button actions that run the moment you tap them, no confirmation needed
+except for a locked door or an alarm. The layout is saved on the device itself,
+not in `config.yaml` — there is nothing to hand-edit here. Next to the grid, a
+Now playing card and a Coming up list (your next timers, events and reminders)
+stay visible without a tap.
 
-You can still ask Wony any of this in words — the tiles are the quicker way,
-not the only one. Things to try: _"what's it doing tomorrow"_, _"set a timer for
-10 minutes"_, _"add milk to my shopping list"_, _"read my last email"_, _"play
-some jazz"_, _"turn off the kitchen light"_, _"remember I prefer metric"_,
-_"what did we talk about on Monday"_.
+**Rooms** lists your Home Assistant devices by room, one card each — a switch,
+a slider, Open/Stop/Close, a thermostat's ± , a lock, or a vacuum's Start/Dock
+— built from whatever `modules.home_assistant` reports.
+
+**Music** is cover art, transport controls, volume and your playlists, wired
+to Spotify.
+
+**Macros** holds every routine you have as a tile (tap to run it), plus a row
+of quick timers (1/5/10/15/30/60 minutes).
+
+The **gear** icon in the header opens **Settings**, **Accounts** and **Sleep**
+as a System view — see below.
 
 ### Routines
 
-Tap **Briefing**, or say _"good morning"_, and Wony runs your briefing — a
-routine that comes with it and that you own. _"Add my shopping list to the
-briefing"_ rewrites it; the **Routines** tile shows what is in it.
-
-Make your own the same way: _"save a routine called good night that turns off
-the lights and sets an alarm for seven"_, then _"run my good night routine"_.
-A routine is just your own words, so it can use anything Wony can do. Saving or
-deleting one is read back to you first.
-
-**Typing.** Tap the box at the bottom and type — the Pi's own touch keyboard
-comes up on its own. If you plug in a USB or Bluetooth keyboard, just start
-typing anywhere and Wony picks it up. Press Enter to send.
+Say _"save a routine called good night that turns off the lights and sets an
+alarm for seven"_ to your phone or desktop Wony, then run it from the panel's
+Macros tab, or a Home tile you've added for it. A routine is just your own
+words, so it can use anything Wony can do. Saving or deleting one is read back
+to you first. The panel has no keyboard, so routines are made and edited from
+another Wony surface (phone, desktop) and simply appear here to run.
 
 **Notifications** appear when something happens on its own — a timer going off,
-new mail arriving. They wait on the screen until you tap them away, so nothing
-is missed while you are out of the room.
+new mail arriving. The bell in the header shows how many are waiting; tap it to
+read and dismiss them.
 
 **The clock screen** takes over when nobody has touched anything for a while. It
-shows the time, the date, what is next in your calendar, and anything waiting
-for you. Touch anywhere to go back.
+shows the time, the date, and what is next in your calendar. Touch anywhere to
+go back.
 
-**The Sleep tile** is for the end of the day. Pick a wake time or "until I
-touch the screen", and the display goes dark — but nothing shuts down, so your
-timers still go off overnight and waking is instant. Touch anywhere to come
-back, or ask her ("go to sleep until seven"). Whatever you picked is what it
-offers you tomorrow night.
-
-**Two looks**, light and dark. Tap the sun or moon in the top bar to switch. The
-screen remembers your choice.
-
-**Settings** are behind the cog in the top bar — see below.
+**Sleep** is for the end of the day, in the System view: pick a wake time or
+"until I touch the screen", and the display goes dark — but nothing shuts
+down, so your timers still go off overnight and waking is instant. Touch
+anywhere to come back. Whatever you picked is what it offers you tomorrow
+night.
 
 ## Start at boot
 
@@ -181,17 +172,14 @@ enabled_modules:
   # - web              # web search
   # - mcp
 
-# The buttons on the home screen. Leave this out and Wony picks them for you.
-tiles:
-  - id: agenda
-    label: "Today"
-    icon: "📅"
-    kind: prompt
-    prompt: "What's on my calendar today?"
-
 kiosk:
   idle_minutes: 15 # minutes untouched before the clock screen appears
+  home_columns: 3 # 3 or 4 tiles across on the Home tab
+  confirm_all_devices: false # true: every device tap asks first, like a lock
 ```
+
+The Home tab's own tile layout is arranged by touch (**Edit**, on the panel)
+and saved on the device — there is no `tiles:` list in `config.yaml` to hand-edit.
 
 A few things are switched off until you say otherwise, so nothing surprising can
 happen by accident. All seven are on the settings screen too:

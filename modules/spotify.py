@@ -299,9 +299,31 @@ class Spotify:
             "put" if liked else "delete",
             f"https://api.spotify.com/v1/me/tracks?ids={track_id}",
         )
+        self._liked_cache()[track_id] = liked
         state = self._get_playback_state()
         name = state["item"]["name"] if state and state.get("item") else "Track"
         return f"Liked {name}." if liked else f"Removed {name} from liked songs."
+
+    def _liked_cache(self) -> typing.Dict[str, bool]:
+        cache = getattr(self, "_liked_cache_data", None)
+        if cache is None:
+            cache = {}
+            self._liked_cache_data = cache
+        return cache
+
+    @retry_on_unauthorized("_refresh_access_token")
+    def _is_liked(self, track_id: str) -> bool:
+        """Whether the current track is in Liked Songs, cached per track id so
+        a 5-second panel poll does not hit /tracks/contains every time."""
+        cache = self._liked_cache()
+        if track_id in cache:
+            return cache[track_id]
+        response = self._make_spotify_request(
+            "get", f"https://api.spotify.com/v1/me/tracks/contains?ids={track_id}"
+        )
+        liked = bool(response.json()[0]) if response.content else False
+        cache[track_id] = liked
+        return liked
 
     @capture_response
     @method_job
@@ -523,6 +545,13 @@ class Spotify:
         art = images[1] if len(images) > 1 else (images[0] if images else None)
 
         device = state.get("device") or {}
+        track_id = item.get("id")
+        try:
+            liked = self._is_liked(track_id) if track_id else False
+        except Exception:
+            # A liked-songs lookup failing must not take the whole now-playing
+            # card down with it — the panel just shows the heart as unliked.
+            liked = False
         return {
             "active": True,
             "is_playing": bool(state.get("is_playing")),
@@ -533,8 +562,23 @@ class Spotify:
             "progress_ms": state.get("progress_ms") or 0,
             "duration_ms": item.get("duration_ms") or 0,
             "shuffle": bool(state.get("shuffle_state")),
+            "liked": liked,
             "device": device.get("name", ""),
             "volume": device.get("volume_percent"),
+        }
+
+    def library_snapshot(self) -> typing.Dict[str, typing.Any]:
+        """Devices to transfer to and playlists to start, for the music screen.
+
+        Not a job: spotify_info's "devices"/"playlists" already answer this in
+        a sentence for the chat; the panel needs the same data as rows to tap.
+        """
+        return {
+            "devices": [
+                {"name": d.get("name", ""), "active": bool(d.get("is_active"))}
+                for d in self._devices()
+            ],
+            "playlists": [{"name": p["name"]} for p in self._get_user_playlists()],
         }
 
     def _play_playlist(self, name: str) -> str:

@@ -3,17 +3,14 @@ import type { ReactNode } from 'react'
 import {
   ackAllNotifications,
   ackNotification,
-  clearChat as clearChatRequest,
   connectSocket,
   endSleep,
   fetchConfig,
-  fetchHistory,
   fetchNotifications,
   fetchSleep,
 } from '../api'
 import type {
   AppConfig,
-  AssistantState,
   ChatSocket,
   HistoryTurn,
   NotificationRecord,
@@ -21,12 +18,7 @@ import type {
   WsEvent,
 } from '../api'
 import { WonyContext } from './wony-context'
-import type { WonyContextValue } from './wony-context'
-
-/** How many exchanges stay in the DOM. The rest live in the database and come
- *  back from /api/chat/history; keeping them all mounted is what makes a long
- *  session feel slow on a Pi. */
-const MAX_TRANSCRIPT_TURNS = 40
+import type { PromptResult, WonyContextValue } from './wony-context'
 
 const AWAKE: SleepState = {
   asleep: false,
@@ -40,19 +32,14 @@ const AWAKE: SleepState = {
 export function WonyProvider({ children }: { children: ReactNode }) {
   const [config, setConfig] = useState<AppConfig | null>(null)
   const [connected, setConnected] = useState(false)
-  const [assistantState, setAssistantState] = useState<AssistantState>('idle')
-  const [turns, setTurns] = useState<HistoryTurn[]>([])
-  const [streaming, setStreaming] = useState<string | null>(null)
-  const [lastError, setLastError] = useState<string | null>(null)
   const [notifications, setNotifications] = useState<NotificationRecord[]>([])
-  const [arrival, setArrival] = useState<NotificationRecord | null>(null)
   const [sleep, setSleep] = useState<SleepState>(AWAKE)
 
   const socket = useRef<ChatSocket | null>(null)
-  // Which request the deltas currently arriving belong to. Turn frames are
-  // broadcast to every client, so without this a second screen's reply would
-  // land in this one's streaming buffer.
-  const session = useRef<string>('')
+  // Every runPrompt() in flight, keyed by its own session id — a tile tap and
+  // a routine run from Macros can be waiting at the same time, and turn/error
+  // frames are broadcast to every client, so only the id says which is whose.
+  const pending = useRef<Map<string, (result: PromptResult) => void>>(new Map())
 
   useEffect(() => {
     fetchConfig().then(setConfig).catch(() => {})
@@ -60,55 +47,37 @@ export function WonyProvider({ children }: { children: ReactNode }) {
 
   const handleEvent = useCallback((event: WsEvent) => {
     switch (event.type) {
-      case 'state':
-        setAssistantState(event.state)
-        break
-
-      case 'delta':
-        if (event.session_id === session.current) {
-          setStreaming((current) => (current ?? '') + event.data)
-        }
-        break
-
       case 'turn': {
         const turn = event as HistoryTurn & { session_id?: string }
-        if (turn.session_id === session.current) {
-          session.current = ''
-          setStreaming(null)
+        const sid = turn.session_id
+        const resolve = sid ? pending.current.get(sid) : undefined
+        if (resolve && sid) {
+          pending.current.delete(sid)
+          resolve({ ok: true, text: turn.assistant })
         }
-        setTurns((current) => {
-          // A turn can arrive twice (own reply plus the broadcast); id is the
-          // only thing that identifies it.
-          if (turn.id !== null && current.some((t) => t.id === turn.id)) return current
-          return [...current, turn].slice(-MAX_TRANSCRIPT_TURNS)
-        })
         break
       }
 
-      case 'error':
-        if (event.session_id === session.current) {
-          session.current = ''
-          setStreaming(null)
+      case 'error': {
+        const resolve = pending.current.get(event.session_id)
+        if (resolve) {
+          pending.current.delete(event.session_id)
+          resolve({ ok: false, text: event.data })
         }
-        setLastError(event.data)
         break
+      }
 
       case 'sleep':
         setSleep(event)
         break
 
-      case 'notification': {
-        const record = event as NotificationRecord
-        setNotifications((current) => [record, ...current])
-        // Raised here rather than from an effect watching the list: this is the
-        // moment it arrived, and only an arrival should interrupt anyone. The
-        // backlog fetched on connect is not news.
-        setArrival(record)
+      case 'notification':
+        setNotifications((current) => [event as NotificationRecord, ...current])
         break
-      }
 
       default:
-        // 'cancel' and diagnostics: nothing for the screen to do with them.
+        // 'delta', 'state', 'cancel' and diagnostics: nothing here needs them —
+        // the panel shows no live transcript and no thinking indicator.
         break
     }
   }, [])
@@ -118,22 +87,13 @@ export function WonyProvider({ children }: { children: ReactNode }) {
       onEvent: handleEvent,
       onConnect: () => {
         setConnected(true)
-        // Anything that fired while the socket was down is still in the
-        // database, and so is anything another client said.
         fetchNotifications().then(setNotifications).catch(() => {})
-        fetchHistory(MAX_TRANSCRIPT_TURNS).then(setTurns).catch(() => {})
         // A screen that reloaded — or was opened second — has to find out it
         // is meant to be dark. The sleep event only reaches clients that were
         // connected when it fired.
         fetchSleep().then(setSleep).catch(() => {})
       },
-      onDisconnect: () => {
-        setConnected(false)
-        // A reply in flight when the socket dropped will never finish
-        // streaming; the completed turn is refetched on reconnect.
-        setStreaming(null)
-        setAssistantState('idle')
-      },
+      onDisconnect: () => setConnected(false),
     })
     socket.current = s
     return () => {
@@ -142,23 +102,16 @@ export function WonyProvider({ children }: { children: ReactNode }) {
     }
   }, [handleEvent])
 
-  const send = useCallback((message: string) => {
+  const runPrompt = useCallback((message: string): Promise<PromptResult> => {
     const text = message.trim()
-    if (!text || !socket.current) return
-    session.current = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-    setLastError(null)
-    setStreaming('')
-    socket.current.send(text, session.current)
-  }, [])
-
-  const stop = useCallback(() => {
-    socket.current?.stop()
-  }, [])
-
-  const clearTranscript = useCallback(async () => {
-    await clearChatRequest()
-    setTurns([])
-    setStreaming(null)
+    if (!text || !socket.current) {
+      return Promise.resolve({ ok: false, text: 'Not connected.' })
+    }
+    return new Promise((resolve) => {
+      const sid = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      pending.current.set(sid, resolve)
+      socket.current!.send(text, sid)
+    })
   }, [])
 
   const ack = useCallback(async (id: number) => {
@@ -171,23 +124,6 @@ export function WonyProvider({ children }: { children: ReactNode }) {
     await ackAllNotifications()
   }, [])
 
-  /** A job tile answers over HTTP, not the socket, so nothing broadcasts it.
-   *  Recording it here keeps the transcript honest about what the screen
-   *  actually showed. */
-  const noteLocalAnswer = useCallback((question: string, answer: string) => {
-    setTurns((current) =>
-      [
-        ...current,
-        {
-          id: null,
-          user: question,
-          assistant: answer,
-          ts: new Date().toISOString(),
-        },
-      ].slice(-MAX_TRANSCRIPT_TURNS),
-    )
-  }, [])
-
   /** Optimistic: the overlay comes off on the touch, not on the round trip,
    *  because the panel is already lighting up by then and a screen that stays
    *  black for another 200ms reads as a device that did not hear you. */
@@ -196,51 +132,19 @@ export function WonyProvider({ children }: { children: ReactNode }) {
     endSleep().then(setSleep).catch(() => {})
   }, [])
 
-  const dismissArrival = useCallback(() => setArrival(null), [])
-  const dismissError = useCallback(() => setLastError(null), [])
-
   const value = useMemo<WonyContextValue>(
     () => ({
       config,
       connected,
-      assistantState,
-      turns,
-      streaming,
-      lastError,
       notifications,
       unreadCount: notifications.length,
-      arrival,
-      dismissArrival,
-      send,
-      stop,
-      clearTranscript,
-      dismissError,
       ack,
       ackAll,
-      noteLocalAnswer,
+      runPrompt,
       sleep,
       wakeUp,
     }),
-    [
-      config,
-      connected,
-      assistantState,
-      turns,
-      streaming,
-      lastError,
-      notifications,
-      arrival,
-      dismissArrival,
-      send,
-      stop,
-      clearTranscript,
-      dismissError,
-      ack,
-      ackAll,
-      noteLocalAnswer,
-      sleep,
-      wakeUp,
-    ],
+    [config, connected, notifications, ack, ackAll, runPrompt, sleep, wakeUp],
   )
 
   return <WonyContext.Provider value={value}>{children}</WonyContext.Provider>

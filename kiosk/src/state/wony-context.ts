@@ -1,31 +1,23 @@
 import { createContext, useContext } from 'react'
-import type {
-  AppConfig,
-  AssistantState,
-  HistoryTurn,
-  NotificationRecord,
-  SleepState,
-} from '../api'
+import type { AppConfig, NotificationRecord, SleepState } from '../api'
+
+export interface PromptResult {
+  ok: boolean
+  text: string
+}
 
 export interface WonyContextValue {
   config: AppConfig | null
   connected: boolean
-  assistantState: AssistantState
-  turns: HistoryTurn[]
-  streaming: string | null
-  lastError: string | null
   notifications: NotificationRecord[]
   unreadCount: number
-  /** The most recent arrival, for the toast. Null once dismissed. */
-  arrival: NotificationRecord | null
-  dismissArrival: () => void
-  send: (message: string) => void
-  stop: () => void
-  clearTranscript: () => Promise<void>
-  dismissError: () => void
   ack: (id: number) => Promise<void>
   ackAll: () => Promise<void>
-  noteLocalAnswer: (question: string, answer: string) => void
+  /** Sends a sentence through the agent — the only way a routine or a typed
+   *  sentence runs on a panel with no keyboard of its own — and resolves once
+   *  the reply (or a turn error) comes back on this session's own socket
+   *  round trip. */
+  runPrompt: (message: string) => Promise<PromptResult>
   /** Deep sleep, kept here because every client is asleep together — the
    *  server broadcasts it, and a second screen must not stay lit. */
   sleep: SleepState

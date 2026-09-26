@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
@@ -9,20 +9,8 @@
       name="viewport"
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
     />
-    <meta name="color-scheme" content="dark light" />
+    <meta name="color-scheme" content="dark" />
     <title>Wony</title>
-    <script>
-      // Before first paint: a flash of the wrong theme on a wall-mounted screen
-      // is the most visible bug this app could have.
-      try {
-        var t = localStorage.getItem('wony-theme');
-        if (t === 'light' || t === 'dark') {
-          document.documentElement.setAttribute('data-theme', t);
-        }
-      } catch (e) {
-        /* private mode — the default in the markup stands */
-      }
-    </script>
   </head>
   <body>
     <div id="root"></div>

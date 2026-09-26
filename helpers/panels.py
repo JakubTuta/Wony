@@ -52,6 +52,10 @@ def _music() -> typing.Dict[str, typing.Any]:
     return _service("spotify").playback_snapshot()
 
 
+def _music_library() -> typing.Dict[str, typing.Any]:
+    return _service("spotify").library_snapshot()
+
+
 def _accounts() -> typing.Dict[str, typing.Any]:
     return _service("google_accounts").accounts_snapshot()
 
@@ -86,6 +90,7 @@ _PANELS: typing.Dict[str, _Panel] = {
     "routines": _Panel("routines", "Routines", _routines),
     "devices": _Panel("home_assistant", "Devices", _devices),
     "music": _Panel("spotify", "Music", _music),
+    "music_library": _Panel("spotify", "Music library", _music_library),
     "accounts": _Panel("google_accounts", "Accounts", _accounts),
 }
 

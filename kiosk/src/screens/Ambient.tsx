@@ -35,9 +35,9 @@ export function Ambient({ onWake }: { onWake: () => void }) {
 
   return (
     <div
-      className="ambient-scope fade-up absolute inset-0 z-50 flex flex-col
+      className="fade-up absolute inset-0 z-50 flex flex-col
                  items-center justify-center gap-8
-                 bg-bg text-text px-8 py-8"
+                 bg-panel text-text px-8 py-8"
       onPointerDown={(e) => {
         // Consume the tap: waking the screen is the whole gesture. Letting it
         // through would also press whatever tile sat under the finger.

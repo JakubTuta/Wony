@@ -1,88 +1,54 @@
 @import "tailwindcss";
 
-/* The theme is an attribute on <html>, not a media query: this screen has no
-   OS-level light/dark preference worth following, and the toggle has to win. */
-@custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
+/* ── Palette ───────────────────────────────────────────────────────────────
+   Dark only — this panel hangs on a wall, not in a pocket, and there is no
+   "the room got bright" moment that would make a light face worth having. */
 
-/* ── Palettes ──────────────────────────────────────────────────────────────
-   Two complete looks. They share every dimension — spacing, radius, geometry
-   — and differ only in color and display face, so nothing reflows on toggle. */
+:root {
+  --wony-bg: #081a1c;
+  --wony-panel: #0f2629;
+  --wony-surface: #173538;
+  --wony-surface-2: #1f4347;
+  --wony-line: #2a5256;
+  --wony-off: #2e5256;
+  --wony-text: #eaf2f2;
+  --wony-muted: #9fb8ba;
+  --wony-accent: #f4928b;
+  --wony-accent-soft: #f4928b26;
+  --wony-on-accent: #34110f;
+  --wony-scrim: rgba(5, 18, 20, 0.72);
+  /* Not in the design tokens — used only by the Settings/Accounts screens,
+     which the design leaves unstyled. Picked to read clearly against the
+     same dark teal surfaces. */
+  --wony-warn: #e3b562;
+  --wony-danger: #ef6f66;
 
-:root,
-[data-theme="dark"] {
-  --wony-bg: #0b0d10;
-  --wony-surface: #16191f;
-  --wony-surface-2: #1e222a;
-  --wony-line: #262b34;
-  --wony-text: #e8eaed;
-  --wony-muted: #8a929e;
-  --wony-accent: #8b7cf6;
-  --wony-accent-soft: #8b7cf62e;
-  --wony-on-accent: #ffffff;
-  --wony-danger: #f2777a;
-  --wony-warn: #e0b155;
-  --wony-ok: #6cc79a;
-
-  --wony-display: system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  --wony-display-weight: 300;
-  --wony-display-spacing: -0.02em;
-  --wony-shadow: 0 1px 2px rgb(0 0 0 / 0.4);
-}
-
-[data-theme="light"] {
-  --wony-bg: #faf7f2;
-  --wony-surface: #ffffff;
-  --wony-surface-2: #f3eee6;
-  --wony-line: #e5ddd1;
-  --wony-text: #221e1a;
-  --wony-muted: #7a7168;
-  --wony-accent: #c4643a;
-  --wony-accent-soft: #c4643a1f;
-  --wony-on-accent: #ffffff;
-  --wony-danger: #b3402f;
-  --wony-warn: #9a6b18;
-  --wony-ok: #3d7a52;
-
-  /* Paper reads as paper because of the face, not just the background. */
-  --wony-display: Georgia, "Iowan Old Style", "Times New Roman", serif;
-  --wony-display-weight: 400;
-  --wony-display-spacing: -0.01em;
-  --wony-shadow: 0 1px 2px rgb(60 40 20 / 0.06), 0 2px 6px rgb(60 40 20 / 0.05);
-}
-
-/* The idle screen is always dark, whatever the theme. It is the surface that
-   stays lit all night, and a full cream panel in a dark room is a lamp. */
-.ambient-scope {
-  --wony-bg: #07080a;
-  --wony-surface: #101318;
-  --wony-surface-2: #171b21;
-  --wony-line: #1e232b;
-  --wony-text: #e8eaed;
-  --wony-muted: #79818d;
-  --wony-accent: #8b7cf6;
-  --wony-accent-soft: #8b7cf62e;
-  --wony-display: system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  --wony-display-weight: 200;
+  --font-display: "Figtree", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
 }
 
 @theme inline {
   --color-bg: var(--wony-bg);
+  --color-panel: var(--wony-panel);
   --color-surface: var(--wony-surface);
   --color-surface-2: var(--wony-surface-2);
   --color-line: var(--wony-line);
+  --color-off: var(--wony-off);
   --color-text: var(--wony-text);
   --color-muted: var(--wony-muted);
   --color-accent: var(--wony-accent);
   --color-accent-soft: var(--wony-accent-soft);
   --color-on-accent: var(--wony-on-accent);
-  --color-danger: var(--wony-danger);
+  --color-scrim: var(--wony-scrim);
   --color-warn: var(--wony-warn);
-  --color-ok: var(--wony-ok);
+  --color-danger: var(--wony-danger);
 
-  --font-display: var(--wony-display);
-  --radius-tile: 18px;
+  --font-display: var(--font-display);
+  --font-mono: var(--font-mono);
 
-  /* Everything moves on this curve, so the whole UI feels like one object. */
+  --radius-tile: 28px;
+  --radius-sheet: 32px;
+
   --ease-out-soft: cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
@@ -94,53 +60,52 @@
   box-sizing: border-box;
 }
 
-html,
-body,
-#root {
-  height: 100%;
+/* @layer base: plain element selectors here must not beat a utility class
+   (bg-surface on a <button>, say) — unlayered CSS always wins over @layer'd
+   CSS regardless of specificity, and Tailwind's utilities live in a layer. */
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: #000;
+    color: var(--wony-text);
+    font-family: var(--font-display);
+    -webkit-font-smoothing: antialiased;
+
+    /* Touch hygiene. manipulation kills the 300ms tap delay and double-tap
+       zoom; without the other two a stray drag rubber-bands the whole kiosk. */
+    touch-action: manipulation;
+    overscroll-behavior: none;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  input,
+  textarea {
+    user-select: text;
+    -webkit-user-select: text;
+    caret-color: var(--wony-accent);
+  }
+
+  button {
+    font: inherit;
+    color: inherit;
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+  }
 }
 
-body {
-  margin: 0;
-  background: var(--wony-bg);
-  color: var(--wony-text);
-  font-family: system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  -webkit-font-smoothing: antialiased;
-
-  /* Touch hygiene. manipulation kills the 300ms tap delay and double-tap zoom;
-     without the other two a stray drag rubber-bands the whole kiosk. */
-  touch-action: manipulation;
-  overscroll-behavior: none;
-  user-select: none;
-  -webkit-tap-highlight-color: transparent;
-}
-
-/* One place where selecting text is the point. */
 .selectable {
   user-select: text;
 }
 
-/* Text fields opt back in too. The body-wide user-select:none is there to stop
-   a dragged finger selecting the UI, but it also breaks shift-arrow and
-   ctrl-A for anyone who has plugged a real keyboard into the Pi. */
-input,
-textarea {
-  user-select: text;
-  -webkit-user-select: text;
-  caret-color: var(--wony-accent);
-}
-
-button {
-  font: inherit;
-  color: inherit;
-  background: none;
-  border: none;
-  padding: 0;
-  cursor: pointer;
-}
-
-/* Scrollable regions keep their scroll, lose their bar — a finger does not
-   need a 12px target it cannot grab anyway. */
 .scroll-y {
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -161,9 +126,7 @@ button {
   display: none;
 }
 
-/* ── Motion ────────────────────────────────────────────────────────────────
-   Transform and opacity only. Everything else relayouts on the CPU, and a
-   VideoCore VI has no CPU to spare for that. */
+/* ── Motion ──────────────────────────────────────────────────────────────── */
 
 .press {
   transition: transform 120ms var(--ease-out-soft);
@@ -202,20 +165,6 @@ button {
   animation: wony-sheet-in 240ms var(--ease-out-soft) both;
 }
 
-@keyframes wony-pulse {
-  0%,
-  100% {
-    opacity: 0.35;
-  }
-  50% {
-    opacity: 1;
-  }
-}
-
-.thinking-dot {
-  animation: wony-pulse 1.2s ease-in-out infinite;
-}
-
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -225,44 +174,43 @@ button {
   }
 }
 
-/* ── Fluid type ────────────────────────────────────────────────────────────
-   No breakpoints: the panel could be 800×480 or 1280×800 and both must look
-   deliberate. Everything scales off the viewport instead. */
-
-.t-display {
-  font-family: var(--wony-display);
-  font-weight: var(--wony-display-weight);
-  letter-spacing: var(--wony-display-spacing);
-  font-size: clamp(1.5rem, 3.4vw, 2.25rem);
-  line-height: 1.15;
-}
+/* ── Type ──────────────────────────────────────────────────────────────────
+   The frame is authored at a fixed 1280×800 and scaled as one object
+   (transform: scale on the Frame component), so type is fixed px, not fluid —
+   scaling the whole frame already handles every other panel size. */
 
 .t-clock {
-  font-family: var(--wony-display);
-  font-weight: var(--wony-display-weight);
-  letter-spacing: var(--wony-display-spacing);
-  font-size: clamp(4rem, 17vw, 10rem);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  font-size: 52px;
   line-height: 1;
   font-variant-numeric: tabular-nums;
 }
 
+.t-display {
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  font-size: 30px;
+  line-height: 1.15;
+}
+
 .t-body {
-  font-size: clamp(0.875rem, 1.7vw, 1.05rem);
-  line-height: 1.55;
+  font-size: 20px;
+  font-weight: 500;
+  line-height: 1.4;
 }
 
 .t-small {
-  font-size: clamp(0.72rem, 1.3vw, 0.85rem);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.4;
 }
 
-/* ── Tile grid ─────────────────────────────────────────────────────────────
-   auto-fill with a clamped minimum: 4 columns on an 800px panel, 6 on 1280,
-   without a single media query. */
-
-.tile-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(clamp(104px, 22vw, 176px), 1fr));
-  gap: clamp(8px, 1.6vw, 16px);
+.t-label {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
 }
 
 /* Long lists skip layout for what is off-screen. */

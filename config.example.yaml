@@ -88,37 +88,21 @@ modules:
     # command instead of running it.
     allow_install: false
 
-# The buttons on the home screen. Leave this out and Wony picks a sensible set
-# based on which modules you enabled above.
-#
-#   kind: job     runs a command straight away — instant, and costs nothing.
-#   kind: screen  opens a page you can read and press: weather, your day,
-#                 your devices.
-#   kind: prompt  asks Wony the sentence you write, same as typing it.
-#
-# tiles:
-#   - id: time
-#     label: "Time"
-#     icon: "🕑"
-#     kind: job
-#     job: get_datetime
-#   - id: joke
-#     label: "Joke"
-#     icon: "🙂"
-#     kind: prompt
-#     prompt: "Tell me a short joke."
-#   - id: lights
-#     label: "Devices"
-#     icon: "💡"
-#     kind: screen
-#     # screen: weather, agenda, reminders, devices, music, accounts,
-#     #         notifications, settings or commands
-#     screen: devices
-
 kiosk:
   # After this many minutes of nobody touching the screen, it switches to a
   # clock. Touching it anywhere brings the home screen back.
   idle_minutes: 15
+
+  # 3 or 4 tiles across on the Home tab.
+  home_columns: 3
+
+  # Off (default): tapping a light, blind, thermostat or vacuum on the panel
+  # runs it right away — the tap is the confirmation. On: every device asks
+  # first, same as a lock. Locks and alarms always ask, either way.
+  confirm_all_devices: false
+
+  # The Home tab's tile layout is arranged by touch (Edit, on the panel
+  # itself) and saved on the device, not here — there is nothing to hand-edit.
 
   # The Sleep tile has nothing to configure. It asks for a wake time when you
   # tap it and remembers what you answered; how this particular screen is

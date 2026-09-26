@@ -101,6 +101,10 @@ class DeviceControlRequest(BaseModel):
     option: str = ""
 
 
+class KioskTilesRequest(BaseModel):
+    tiles: typing.List[str] = []
+
+
 class SleepRequest(BaseModel):
     # "07:00", "8h", "90m", an ISO datetime, or blank for "until someone
     # touches the screen".
@@ -171,6 +175,8 @@ def build_app() -> FastAPI:
             },
             "kiosk": {
                 "idle_minutes": Config.get("kiosk.idle_minutes", 15),
+                "home_columns": Config.get("kiosk.home_columns", 3),
+                "confirm_all_devices": Config.get("kiosk.confirm_all_devices", False),
             },
         }
 
@@ -225,7 +231,7 @@ def build_app() -> FastAPI:
         all_jobs = ServiceRegistry.get_all_jobs()
         job_modules = ServiceRegistry.get_job_modules()
         job_summaries = ServiceRegistry.get_job_summaries()
-        destructive = ServiceRegistry.get_job_confirms()
+        confirms = ServiceRegistry.get_job_confirms()
 
         jobs_out = []
         for name, func in all_jobs.items():
@@ -234,13 +240,24 @@ def build_app() -> FastAPI:
             except Exception:
                 description, properties, required = "", {}, []
 
+            declared = confirms.get(name)
+            # True (or a truthy anything-but-a-collection) means every call
+            # confirms, so there is no fixed word list to hand the UI — only a
+            # set/list of gate words narrows it to specific `action` values.
+            confirm_words = (
+                sorted(str(v).lower() for v in declared)
+                if isinstance(declared, (set, frozenset, list, tuple))
+                else None
+            )
+
             jobs_out.append(
                 {
                     "name": name,
                     "module": job_modules.get(name, ""),
                     "summary": job_summaries.get(name, ""),
                     "description": description,
-                    "destructive": bool(destructive.get(name)),
+                    "destructive": bool(declared),
+                    "confirm_words": confirm_words,
                     "parameters": {
                         "properties": properties,
                         "required": required,
@@ -311,25 +328,23 @@ def build_app() -> FastAPI:
         turn_id = Conversation.record_turn(req.message, result.text, calls=safe_calls)
         return {"id": turn_id, "text": result.text, "calls": safe_calls}
 
-    @app.get("/api/tiles")
-    def list_tiles() -> typing.Dict[str, typing.Any]:
-        """The home-screen manifest for the touch UI."""
-        from helpers.kiosk import tiles
+    @app.get("/api/kiosk/tiles")
+    def get_kiosk_tiles() -> typing.Dict[str, typing.Any]:
+        """The saved home-screen layout, or null when nobody has arranged one yet."""
+        from helpers.kiosk import load_tiles
 
-        return {"tiles": tiles()}
+        return {"tiles": load_tiles()}
 
-    @app.post("/api/tiles/{tile_id}")
-    def run_tile_endpoint(tile_id: str) -> typing.Dict[str, typing.Any]:
-        """Run one tile. A job tile answers without involving the model at all."""
-        from helpers.kiosk import run_tile
+    @app.post("/api/kiosk/tiles")
+    def set_kiosk_tiles(req: KioskTilesRequest) -> typing.Dict[str, typing.Any]:
+        """Save the home-screen layout. Each id is `kind` or `kind:arg`."""
+        from helpers.kiosk import save_tiles
 
         try:
-            result = run_tile(tile_id)
-        except KeyError:
-            raise HTTPException(status_code=404, detail=f"No tile '{tile_id}'.")
+            save_tiles(req.tiles)
         except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-        return {"ok": result.ok, "text": result.text, "source": result.source}
+            raise HTTPException(status_code=422, detail=str(e))
+        return {"tiles": req.tiles}
 
     @app.get("/api/ambient")
     def get_ambient() -> typing.Dict[str, typing.Any]:

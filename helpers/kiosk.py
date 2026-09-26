@@ -1,25 +1,20 @@
 """
 The touch screen's side of the conversation.
 
-Two ways in, and the difference between them is the whole point of a touch
-device:
+The panel has no keyboard for typed sentences and no microphone; every tile on
+the home screen is a whole-button action, resolved straight to a job with no
+model call — instant, free, and the same answer every time.
 
-  run_tile()  — someone tapped a button. It resolves to a registered job and
-                runs it directly. No model call, so it is instant, free, and
-                gives the same answer every time. This is the common case.
-  run_text()  — someone typed a sentence into the chat box. That goes
-                through the agent, because free text is what the agent is for.
+load_tiles() / save_tiles() hold the user's home-screen layout: a flat list of
+tile ids (`kind` or `kind:arg`), kept in the kiosk's own kv row rather than
+config.yaml, because it is arranged by touch, not by hand-editing a file.
 
-A third kind of tile, "screen", runs nothing at all: it names a place in the
-UI. Some things — signing in to Google, picking a track — need a form and a
-back button, not an answer.
-
-Both come back as a KioskTurn so the UI renders one shape either way.
-
-ambient() is the third, passive one: what the screen shows itself when nobody
-has touched it for a while.
+ambient() is the passive one: what the screen shows itself when nobody has
+touched it for a while.
 """
 
+import json
+import re
 import threading
 import time
 import typing
@@ -28,49 +23,50 @@ from helpers.config import Config
 from helpers.decorators import is_error_response
 from helpers.registry import ServiceRegistry
 
-# The home screen when config.yaml says nothing about tiles. Each entry is only
-# offered if its module is enabled and its job actually registered, so a tile
-# can never be a button that does nothing. Keep these to things worth one tap:
-# a question with a stable answer, or an action with no arguments.
-#
-# None of these open the chat. A tile that dropped you into a conversation to
-# read a temperature made the screen a slower way of typing; anything with more
-# than a sentence of answer, or anything to press afterwards, gets its own
-# screen instead. The same modules are still there to talk to.
-_DEFAULT_TILES: typing.List[typing.Dict[str, typing.Any]] = [
-    {"id": "time", "label": "Time", "icon": "🕑", "kind": "job",
-     "job": "get_datetime", "module": "basics"},
-    # The one tile that has to go through the chat: a routine returns steps for
-    # the model to carry out, so running the job straight from a tap would show
-    # the instructions and do none of them.
-    {"id": "briefing", "label": "Briefing", "icon": "👋", "kind": "prompt",
-     "prompt": "run my briefing routine", "module": "routines"},
-    {"id": "weather", "label": "Weather", "icon": "🌤️", "kind": "screen",
-     "screen": "weather", "module": "weather"},
-    {"id": "reminders", "label": "Reminders", "icon": "⏰", "kind": "screen",
-     "screen": "reminders", "module": "scheduler"},
-    {"id": "agenda", "label": "Today", "icon": "📅", "kind": "screen",
-     "screen": "agenda", "module": "calendar"},
-    {"id": "inbox", "label": "Inbox", "icon": "✉️", "kind": "job",
-     "job": "find_emails", "args": {"view": "overview"}, "module": "gmail"},
-    {"id": "lists", "label": "Lists", "icon": "📝", "kind": "screen",
-     "screen": "notes", "module": "notes"},
-    {"id": "routines", "label": "Routines", "icon": "🔁", "kind": "screen",
-     "screen": "routines", "module": "routines"},
-    {"id": "lights", "label": "Devices", "icon": "💡", "kind": "screen",
-     "screen": "devices", "module": "home_assistant"},
-    {"id": "playpause", "label": "Play / Pause", "icon": "⏯️", "kind": "job",
-     "job": "control_playback", "args": {"action": "toggle"}, "module": "spotify"},
-    # Signing in to Google is the one setup step that can't be done from a
-    # sentence — it needs a browser and a name field — so it gets a screen.
-    {"id": "accounts", "label": "Accounts", "icon": "👤", "kind": "screen",
-     "screen": "accounts", "module": "google_accounts"},
-    # Last, and a screen rather than a job: sending the device dark is the one
-    # tile you must not be able to hit by accident, so it asks for a wake time
-    # and a confirmation first.
-    {"id": "sleep", "label": "Sleep", "icon": "🌙", "kind": "screen",
-     "screen": "sleep", "module": "basics"},
-]
+# id = "kind" or "kind:arg" — e.g. "routine:briefing", "device:light.lamp",
+# "timer:10", "music", "volume", "sleep". The arg (after the colon) is opaque
+# here; each kind's own screen code interprets it.
+_TILE_ID_RE = re.compile(r"^(routine|device|timer|music|volume|sleep)(:.{1,120})?$")
+_MAX_TILES = 32
+_TILES_KV_KEY = "kiosk.tiles"
+
+
+def load_tiles() -> typing.Optional[typing.List[str]]:
+    """The saved home-screen layout, or None when nobody has arranged one yet.
+
+    None (as opposed to an empty list) is what tells the UI to seed a starter
+    layout instead of showing a blank grid.
+    """
+    from helpers.memory_db import get_kv
+
+    raw = get_kv(_TILES_KV_KEY, "")
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(parsed, list):
+        return None
+    return [str(item) for item in parsed]
+
+
+def save_tiles(tile_ids: typing.List[str]) -> None:
+    """Validate and persist the home-screen layout.
+
+    Raises ValueError for anything that could not have come from the UI itself
+    — this is the one place a hand-crafted request could otherwise smuggle
+    arbitrary text into storage.
+    """
+    from helpers.memory_db import set_kv
+
+    if len(tile_ids) > _MAX_TILES:
+        raise ValueError(f"Too many tiles (max {_MAX_TILES}).")
+    for tile_id in tile_ids:
+        if not isinstance(tile_id, str) or not _TILE_ID_RE.match(tile_id):
+            raise ValueError(f"Invalid tile id: {tile_id!r}")
+    set_kv(_TILES_KV_KEY, json.dumps(tile_ids))
+
 
 # What the screen shows itself once nobody has touched it. The clock and date
 # are the client's own business; notifications already arrive over the
@@ -106,31 +102,6 @@ def _job_available(module: str, job_name: str) -> bool:
     if module not in Config.enabled_modules():
         return False
     return job_name in ServiceRegistry.get_all_jobs()
-
-
-def tiles() -> typing.List[typing.Dict[str, typing.Any]]:
-    """The home-screen manifest.
-
-    A `tiles:` list in config.yaml replaces the defaults outright — a user who
-    has arranged their own home screen does not want ours merged back in.
-    """
-    configured = Config.get("tiles", []) or []
-    if configured:
-        return [_normalize(dict(tile)) for tile in configured]
-
-    enabled = Config.enabled_modules()
-
-    out = []
-    for tile in _DEFAULT_TILES:
-        # Only a job tile names a job to check; prompt and screen tiles just
-        # need their module on.
-        if tile["kind"] in ("prompt", "screen"):
-            if tile["module"] not in enabled:
-                continue
-        elif not _job_available(tile["module"], tile["job"]):
-            continue
-        out.append(_normalize({k: v for k, v in tile.items() if k != "module"}))
-    return out
 
 
 def ambient() -> typing.List[typing.Dict[str, typing.Any]]:
@@ -171,39 +142,6 @@ def ambient() -> typing.List[typing.Dict[str, typing.Any]]:
             out.append({"key": card["key"], "label": card["label"], "text": text})
 
     return out
-
-
-def _normalize(tile: typing.Dict[str, typing.Any]) -> typing.Dict[str, typing.Any]:
-    """Fill in the optional fields so the UI never has to check for absence."""
-    return {
-        "id": str(tile.get("id", "")),
-        "label": str(tile.get("label", "")),
-        "icon": str(tile.get("icon", "")),
-        "kind": tile.get("kind", "job"),
-        "job": tile.get("job"),
-        "prompt": tile.get("prompt"),
-        "screen": tile.get("screen"),
-        "args": tile.get("args") or {},
-    }
-
-
-def run_tile(tile_id: str) -> KioskTurn:
-    """Run the tile with this id.
-
-    Raises KeyError if there is no such tile, and ValueError for a screen tile,
-    which has nothing to run here — it is a place the UI goes.
-    """
-    match = next((t for t in tiles() if t["id"] == tile_id), None)
-    if match is None:
-        raise KeyError(tile_id)
-
-    if match["kind"] == "screen":
-        raise ValueError(f"Tile '{tile_id}' opens a screen; there is nothing to run.")
-
-    if match["kind"] == "prompt":
-        return run_text(match["prompt"] or "", source=f"tile:{tile_id}")
-
-    return _run_job(match["job"] or "", match["args"], source=f"tile:{tile_id}")
 
 
 def _run_job(
@@ -247,26 +185,3 @@ def _run_job(
     text = str(result) if result is not None else ""
     logger.log_function_response(job_name, text[:200], f"[{source}]")
     return KioskTurn(text=text, source=source, ok=True)
-
-
-def run_text(
-    text: str,
-    source: str = "keyboard",
-    on_text: typing.Optional[typing.Callable[[str], None]] = None,
-) -> KioskTurn:
-    """Send typed text through the agent and record the exchange."""
-    from helpers.conversation import Conversation
-    from helpers.logger import logger
-    from helpers.turn import run_turn
-
-    message = (text or "").strip()
-    if not message:
-        return KioskTurn(text="", source=source, ok=False)
-
-    logger.log_user_input(message, source)
-    result = run_turn(message, on_text=on_text)
-    if result.error is not None:
-        return KioskTurn(text=result.error, source=source, ok=False)
-
-    Conversation.record_turn(message, result.text, calls=result.calls)
-    return KioskTurn(text=result.text, source=source, ok=True)

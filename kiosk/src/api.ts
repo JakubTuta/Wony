@@ -9,24 +9,6 @@ const BASE = '/api'
 
 // ── Shapes ──────────────────────────────────────────────────────────────────
 
-export interface Tile {
-  id: string
-  label: string
-  icon: string
-  /** A screen tile runs nothing — it names a place in this app to go. */
-  kind: 'job' | 'prompt' | 'screen'
-  job: string | null
-  prompt: string | null
-  screen: string | null
-  args: Record<string, unknown>
-}
-
-export interface TileResult {
-  ok: boolean
-  text: string
-  source: string
-}
-
 export interface NotificationRecord {
   id: number | null
   ts?: string
@@ -52,8 +34,23 @@ export interface NowPlaying {
   progress_ms?: number
   duration_ms?: number
   shuffle?: boolean
+  liked?: boolean
   device?: string
   volume?: number | null
+}
+
+export interface LibraryDevice {
+  name: string
+  active: boolean
+}
+
+export interface LibraryPlaylist {
+  name: string
+}
+
+export interface LibraryPanel {
+  devices: LibraryDevice[]
+  playlists: LibraryPlaylist[]
 }
 
 export interface WeatherPanel {
@@ -147,6 +144,10 @@ export interface Control {
   /** Locks, alarms and garage doors. Shown, but refused unless
    *  modules.home_assistant.allow_locks is on. */
   guarded: boolean
+  /** Climate/water_heater setpoint and the room's own reading. Null for every
+   *  other domain. */
+  target: number | null
+  current: number | null
 }
 
 /** One physical thing: a vacuum with its suction setting and its buttons,
@@ -192,6 +193,9 @@ export interface Job {
   summary: string
   description: string
   destructive: boolean
+  /** Which values of `args.action` need confirming — null when `destructive`
+   *  is true with no word list (every call confirms) or when it is false. */
+  confirm_words: string[] | null
   parameters: {
     properties: Record<string, JobParameter>
     required: string[]
@@ -249,7 +253,7 @@ export interface SettingsResponse {
 
 export interface AppConfig {
   assistant: { name: string; language: string }
-  kiosk: { idle_minutes: number }
+  kiosk: { idle_minutes: number; home_columns: number; confirm_all_devices: boolean }
 }
 
 export interface ChatCall {
@@ -258,6 +262,8 @@ export interface ChatCall {
   result: string
 }
 
+/** One exchange with the assistant — only used to resolve runPrompt(), since
+ *  the panel keeps no visible transcript. */
 export interface HistoryTurn {
   id: number | null
   user: string
@@ -318,18 +324,19 @@ export async function fetchHealth(): Promise<HealthResponse> {
   return getJson<HealthResponse>('/health')
 }
 
-export async function fetchTiles(): Promise<Tile[]> {
-  const data = await getJson<{ tiles: Tile[] }>('/tiles', { tiles: [] })
-  return data.tiles ?? []
+/** The saved Home-tab layout, or null when nobody has arranged one yet — the
+ *  screen seeds a starter set in that case rather than showing a blank grid. */
+export async function fetchKioskTiles(): Promise<string[] | null> {
+  const data = await getJson<{ tiles: string[] | null }>('/kiosk/tiles', { tiles: null })
+  return data.tiles
 }
 
-export async function runTile(id: string): Promise<TileResult> {
-  const res = await fetch(`${BASE}/tiles/${encodeURIComponent(id)}`, { method: 'POST' })
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }))
-    return { ok: false, text: err.detail ?? 'That tile is not available.', source: id }
-  }
-  return res.json()
+export async function saveKioskTiles(tiles: string[]): Promise<void> {
+  await fetch(`${BASE}/kiosk/tiles`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tiles }),
+  })
 }
 
 export async function fetchAmbient(): Promise<AmbientCard[]> {
@@ -382,13 +389,8 @@ export const fetchNotes = () => fetchPanel<NotesPanel>('notes')
 export const fetchRoutines = () => fetchPanel<RoutinesPanel>('routines')
 export const fetchDevices = () => fetchPanel<DevicesPanel>('devices')
 export const fetchGoogleAccounts = () => fetchPanel<GoogleAccountsSnapshot>('accounts')
-
-/** null when Spotify is off or unreachable — the caller shows a resting state
- *  rather than an error, because "no music" is the normal case. */
-export async function fetchNowPlaying(): Promise<NowPlaying | null> {
-  const { data } = await fetchPanel<NowPlaying>('music')
-  return data
-}
+export const fetchMusic = () => fetchPanel<NowPlaying>('music')
+export const fetchLibrary = () => fetchPanel<LibraryPanel>('music_library')
 
 export async function controlDevice(
   entity_id: string,
@@ -472,17 +474,6 @@ export async function invokeJob(
     return { ok: false, result: '', error: err.detail ?? 'Request failed' }
   }
   return res.json()
-}
-
-export async function fetchHistory(limit = 40): Promise<HistoryTurn[]> {
-  const data = await getJson<{ turns: HistoryTurn[] }>(`/chat/history?limit=${limit}`, {
-    turns: [],
-  })
-  return data.turns ?? []
-}
-
-export async function clearChat(): Promise<void> {
-  await fetch(`${BASE}/chat/clear`, { method: 'POST' })
 }
 
 export async function fetchSettings(): Promise<SettingsResponse> {

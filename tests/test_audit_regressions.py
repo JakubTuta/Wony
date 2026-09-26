@@ -117,87 +117,6 @@ class TestMcpToolNaming(unittest.TestCase):
 
 
 class TestKioskManifests(unittest.TestCase):
-    def test_every_default_entry_names_a_real_job(self) -> None:
-        """Three of the first eight tiles named jobs that did not exist
-        (get_weather, check_emails, pause_song). Nothing caught it until the
-        endpoint was called by hand — a tile that runs nothing looks exactly
-        like a tile whose module is off."""
-        import re
-
-        from helpers.kiosk import _AMBIENT_CARDS, _DEFAULT_TILES
-
-        # Read the module's source rather than the registry: a module only
-        # registers its jobs once it is enabled AND its credentials are in
-        # place, so a registry check passes or fails by local config instead of
-        # by whether the name is real.
-        entries = [(t["module"], t["job"]) for t in _DEFAULT_TILES if t["kind"] == "job"]
-        entries += [(c["module"], c["job"]) for c in _AMBIENT_CARDS]
-
-        sources: typing.Dict[str, str] = {}
-        for module_name in {name for name, _ in entries}:
-            path = os.path.join(_REPO_ROOT, "modules", f"{module_name}.py")
-            with open(path, encoding="utf-8") as handle:
-                sources[module_name] = handle.read()
-
-        for module_name, job_name in entries:
-            with self.subTest(module=module_name, job=job_name):
-                self.assertRegex(
-                    sources[module_name],
-                    rf"(?m)^\s*def {re.escape(job_name)}\(",
-                    f"{module_name} declares a tile/card for '{job_name}', "
-                    f"which modules/{module_name}.py does not define.",
-                )
-
-        self.assertTrue(entries, "No default entries could be checked at all.")
-
-    def test_prompt_tiles_carry_a_prompt(self) -> None:
-        """A prompt tile with no prompt sends an empty message to the agent."""
-        from helpers.kiosk import _DEFAULT_TILES
-
-        for tile in _DEFAULT_TILES:
-            if tile["kind"] == "prompt":
-                with self.subTest(tile=tile["id"]):
-                    self.assertTrue((tile.get("prompt") or "").strip())
-
-    def test_screen_tiles_name_a_screen(self) -> None:
-        """A screen tile with no screen is a tile that does nothing at all —
-        there is no job to fall back on, and the failure is silent in the UI."""
-        from helpers.kiosk import _DEFAULT_TILES
-
-        for tile in _DEFAULT_TILES:
-            if tile["kind"] == "screen":
-                with self.subTest(tile=tile["id"]):
-                    self.assertTrue((tile.get("screen") or "").strip())
-
-    def test_screen_tiles_name_a_registered_panel(self) -> None:
-        """A tile opening a screen whose data never loads is a dead end. Every
-        screen tile that reads a panel must name one that exists; the screens
-        that read no panel are listed here so adding another cannot pass
-        unnoticed."""
-        from helpers.kiosk import _DEFAULT_TILES
-        from helpers.panels import _PANELS
-
-        # notifications and commands fetch nothing; sleep has its own endpoints
-        # (/api/sleep, /api/wake) because it writes device state rather than
-        # reading a module's data.
-        self_contained = {"notifications", "commands", "sleep"}
-        checked = 0
-        for tile in _DEFAULT_TILES:
-            if tile["kind"] != "screen":
-                continue
-            screen = tile["screen"]
-            if screen in self_contained:
-                continue
-            with self.subTest(tile=tile["id"]):
-                self.assertIn(
-                    screen,
-                    _PANELS,
-                    f"tile '{tile['id']}' opens '{screen}', which has no panel.",
-                )
-            checked += 1
-
-        self.assertGreater(checked, 0, "No screen tiles were checked at all.")
-
     def test_panels_name_the_module_that_gates_them(self) -> None:
         """A panel gated on the wrong module either 503s while its module is
         on, or runs while its module is off."""
@@ -306,30 +225,12 @@ class TestKioskManifests(unittest.TestCase):
         try:
             Config._settings.enabled_modules = ["weather", "spotify"]
             keys = [p["key"] for p in available()]
-            self.assertEqual(keys, ["weather", "music"])
+            self.assertEqual(keys, ["weather", "music", "music_library"])
 
             Config._settings.enabled_modules = []
             self.assertEqual(available(), [])
         finally:
             Config._settings.enabled_modules = original
-
-    def test_screen_tiles_are_not_runnable(self) -> None:
-        """POSTing a screen tile used to fall through to _run_job with a null
-        job name, answering "'' isn't available right now." instead of saying
-        the request made no sense."""
-        from helpers import kiosk
-
-        original = kiosk.tiles
-        kiosk.tiles = lambda: [
-            {"id": "accounts", "label": "Accounts", "icon": "", "kind": "screen",
-             "job": None, "prompt": None, "screen": "accounts", "args": {}}
-        ]
-        try:
-            with self.assertRaises(ValueError):
-                kiosk.run_tile("accounts")
-        finally:
-            kiosk.tiles = original
-
 
 class TestKioskJobsShareTheAgentLock(unittest.TestCase):
     """A tile runs a job on the request thread. Both of these fail silently:
@@ -764,14 +665,16 @@ class TestOneTurnPath(unittest.TestCase):
     other and two different timeouts."""
 
     def test_every_entry_point_goes_through_run_turn(self) -> None:
+        """The kiosk has no free-text entry point of its own any more — every
+        typed sentence reaches the model over the WebSocket in web_app.py,
+        which this same test already covers."""
         import inspect
 
-        from helpers import kiosk, web_app
+        from helpers import web_app
         from modules.employer import Employer
 
         self.assertIn("run_turn", inspect.getsource(Employer.job_on_command))
         self.assertIn("run_turn", inspect.getsource(web_app.build_app))
-        self.assertIn("run_turn", inspect.getsource(kiosk))
 
     def test_a_failed_turn_comes_back_as_a_sentence(self) -> None:
         """run_turn never raises: a caller that only wants something to show

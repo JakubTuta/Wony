@@ -92,7 +92,7 @@ FEATURES = [
         "reqs": ["server.txt"],
         "module": None,
         "default": True,
-        "desc": "Run Wony as a screen: tap tiles, type into the chat box.",
+        "desc": "Run Wony as a wall panel: tap tiles, devices and routines — touch only, no keyboard.",
         "needs": "Node.js 20.19+ — setup builds the screen for you. "
         "Start with: python wony.py   (then open the URL it prints).",
     },

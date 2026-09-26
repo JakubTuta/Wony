@@ -113,6 +113,11 @@ _FIELDS: typing.List[typing.Tuple[str, typing.List[Field]]] = [
         Field("kiosk.idle_minutes", "Go to the clock after", "number",
               "Minutes of nobody touching the screen before it shows the clock.",
               minimum=1, maximum=240, step=1),
+        Field("kiosk.home_columns", "Home screen columns", "choice",
+              "How many tiles fit across the Home tab.", choices=("3", "4")),
+        Field("kiosk.confirm_all_devices", "Ask before every device", "toggle",
+              "Off: tapping a light, blind, thermostat or vacuum on the panel "
+              "runs it right away. On: every device asks first, same as a lock."),
         Field("server.port", "Web page port", "number",
               "Change only if something else already uses this port.",
               minimum=1024, maximum=65535, step=1, restart=True),

@@ -36,32 +36,17 @@ class AssistantSettings(BaseModel):
     memory: MemorySettings = Field(default_factory=MemorySettings)
 
 
-class TileSettings(BaseModel):
-    """One button on the home screen."""
-
-    # Stable id — the UI posts to /api/tiles/{id}.
-    id: str
-    label: str
-    # Emoji or icon name; the UI decides how to render it.
-    icon: str = ""
-    # "job" runs a registered job directly (instant, no AI involved).
-    # "prompt" sends a canned sentence through the assistant.
-    # "screen" opens a page in the UI and runs nothing at all.
-    kind: str = "job"
-    job: typing.Optional[str] = None
-    prompt: typing.Optional[str] = None
-    # Which page a screen tile opens. Absent here until now, which meant a
-    # hand-written screen tile — documented in config.example.yaml — had its
-    # destination dropped by the schema and opened nothing.
-    screen: typing.Optional[str] = None
-    args: typing.Dict[str, typing.Any] = Field(default_factory=dict)
-
-
 class KioskSettings(BaseModel):
     """The screen itself, as opposed to what is on it."""
 
     # Minutes of nobody touching the screen before it switches to the clock.
     idle_minutes: int = 15
+    # Home tab tile grid: 3 columns (default) or 4.
+    home_columns: int = 3
+    # Off (default): a direct tap on a non-guarded device (lights, blinds,
+    # climate, vacuum) runs immediately — the tap is the confirmation. On:
+    # every device control shows the confirm sheet, same as a guarded one.
+    confirm_all_devices: bool = False
 
 
 class HistorySettings(BaseModel):
@@ -148,8 +133,6 @@ class AppSettings(BaseSettings):
         default_factory=lambda: ["basics", "routines", "scheduler", "weather"]
     )
     modules: ModulesSettings = Field(default_factory=ModulesSettings)
-    # Empty list = fall back to the built-in manifest (helpers/kiosk.py).
-    tiles: list[TileSettings] = Field(default_factory=list)
     kiosk: KioskSettings = Field(default_factory=KioskSettings)
     server: ServerSettings = Field(default_factory=ServerSettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
