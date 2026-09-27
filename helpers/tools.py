@@ -60,7 +60,9 @@ def _literal_values(hint: typing.Any) -> typing.Optional[typing.List[typing.Any]
         return _literal_values(inner)
 
     if origin is typing.Literal:
-        return list(args)
+        # "" is used as a not-provided sentinel on optional string params, but
+        # Gemini's function-calling schema rejects an empty-string enum value.
+        return [a for a in args if a != ""]
 
     return None
 
