@@ -178,19 +178,27 @@ class TestSettingsSurface(unittest.TestCase):
 
     def test_every_field_key_exists_in_the_schema(self) -> None:
         """A key that does not resolve reads back as its default no matter what
-        was written, so the control looks live and does nothing."""
+        was written, so the control looks live and does nothing.
+
+        Secret fields are excluded: their key is an environment variable name,
+        not a config.yaml path, and Config.get() rightly does not know it.
+        """
         from helpers.config import Config
 
         missing = object()
-        for key in self.settings._BY_KEY:
-            with self.subTest(key=key):
-                self.assertIsNot(
-                    Config.get(key, missing), missing, f"{key} is not in the config schema"
-                )
+        for _, fields in self.settings._all_sections():
+            for field in fields:
+                if field.kind == "secret":
+                    continue
+                with self.subTest(key=field.key):
+                    self.assertIsNot(
+                        Config.get(field.key, missing), missing,
+                        f"{field.key} is not in the config schema",
+                    )
 
     def test_every_described_field_is_writable(self) -> None:
-        """describe() and apply() share one field list; a field the UI shows but
-        apply() rejects would be a dead control."""
+        """describe() and apply() share one field lookup; a field the UI shows
+        but apply() rejects would be a dead control."""
         described = [
             field["key"]
             for section in self.settings.describe()["sections"]
@@ -198,7 +206,52 @@ class TestSettingsSurface(unittest.TestCase):
         ]
         self.assertTrue(described)
         for key in described:
-            self.assertIn(key, self.settings._BY_KEY, f"{key} is shown but not writable")
+            self.assertIsNotNone(self.settings._field_by_key(key), f"{key} is shown but not writable")
+
+
+class TestSecretFields(unittest.TestCase):
+    """A secret field's key is an env var name, written to .env instead of
+    config.yaml — apply() must route it there and never echo the value back."""
+
+    def setUp(self) -> None:
+        import helpers.settings as settings
+
+        self.settings = settings
+        self.dir = tempfile.mkdtemp()
+        self._real_env_file = settings.ENV_FILE
+        settings.ENV_FILE = os.path.join(self.dir, ".env")
+        self._had_key = "ANTHROPIC_API_KEY" in os.environ
+        self._old_value = os.environ.get("ANTHROPIC_API_KEY")
+
+    def tearDown(self) -> None:
+        self.settings.ENV_FILE = self._real_env_file
+        if self._had_key:
+            os.environ["ANTHROPIC_API_KEY"] = self._old_value
+        else:
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+
+    def test_a_typed_value_is_written_to_env_and_environ(self) -> None:
+        result = self.settings.apply({"ANTHROPIC_API_KEY": "sk-test-123"})
+        self.assertTrue(result["restart_required"])
+        self.assertIn("ANTHROPIC_API_KEY", result["written"])
+        self.assertEqual(os.environ["ANTHROPIC_API_KEY"], "sk-test-123")
+        with io.open(self.settings.ENV_FILE, encoding="utf-8") as handle:
+            self.assertIn('ANTHROPIC_API_KEY="sk-test-123"', handle.read())
+
+    def test_a_blank_value_leaves_it_unchanged(self) -> None:
+        """describe() never sends the real secret back, so a field the user
+        never touched always arrives here as blank — writing it would blow
+        away whatever was already set."""
+        os.environ["ANTHROPIC_API_KEY"] = "sk-existing"
+        result = self.settings.apply({"ANTHROPIC_API_KEY": ""})
+        self.assertEqual(result["written"], [])
+        self.assertEqual(os.environ["ANTHROPIC_API_KEY"], "sk-existing")
+
+    def test_describe_never_reveals_the_value(self) -> None:
+        os.environ["ANTHROPIC_API_KEY"] = "sk-existing"
+        fields = [f for _, fs in self.settings._all_sections() for f in fs if f.key == "ANTHROPIC_API_KEY"]
+        self.assertEqual(len(fields), 1)
+        self.assertIs(self.settings._current(fields[0]), True)
 
 
 if __name__ == "__main__":

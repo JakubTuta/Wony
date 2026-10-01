@@ -752,7 +752,15 @@ class Spotify:
     ) -> requests.Response:
         """Make a Spotify API request with standard headers and error handling"""
         headers = kwargs.pop("headers", self._get_auth_headers())
-        response = getattr(net, method.lower())(url, headers=headers, **kwargs)
+        try:
+            response = getattr(net, method.lower())(url, headers=headers, **kwargs)
+        except requests.exceptions.Timeout as e:
+            # A bare "Read timed out" is meaningless when shown on the
+            # now-playing card or spoken aloud, and the panel polls again in
+            # a few seconds anyway — no retry needed here.
+            raise Exception("Spotify didn't respond in time — try again in a moment.") from e
+        except requests.exceptions.ConnectionError as e:
+            raise Exception("Could not reach Spotify — check your internet connection.") from e
         try:
             response.raise_for_status()
         except requests.exceptions.HTTPError as e:

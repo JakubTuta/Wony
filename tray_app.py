@@ -76,6 +76,44 @@ def _try_acquire_instance_lock() -> bool:
         return False
 
 
+def _release_instance_lock() -> None:
+    """Free the single-instance guard right now, instead of waiting for this
+    process to exit — Restart needs this so the new instance's own lock
+    attempt doesn't lose a race against this one still shutting down."""
+    global _lock_handle, _lock_socket
+
+    if sys.platform == "win32":
+        if _lock_handle:
+            import ctypes
+
+            ctypes.windll.kernel32.CloseHandle(_lock_handle)  # type: ignore[attr-defined]
+            _lock_handle = None
+        return
+
+    if _lock_socket:
+        _lock_socket.close()
+        _lock_socket = None
+
+
+def _relaunch_self() -> None:
+    """Spawn a fresh Wony process with this one's own launch command, so
+    Restart works the same whether this instance is running under wony.py,
+    tray_app.py, Wony.exe or pythonw.exe directly."""
+    import subprocess
+
+    argv = list(sys.argv)
+    argv[0] = os.path.abspath(argv[0])
+    kwargs: typing.Dict[str, typing.Any] = {
+        "cwd": os.path.dirname(os.path.abspath(__file__)),
+        "close_fds": True,
+    }
+    if sys.platform == "win32":
+        kwargs["creationflags"] = (
+            subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        )
+    subprocess.Popen([sys.executable] + argv, **kwargs)
+
+
 _STATE_COLORS = {
     "idle": (100, 149, 237),  # cornflower blue
     "listening": (72, 199, 116),  # green
@@ -309,6 +347,25 @@ def run_tray() -> None:
     def _on_exit(icon, item) -> None:
         icon.stop()
 
+    def _do_restart() -> None:
+        # Full teardown *before* spawning the new process — it binds the same
+        # web port, and starting it while this one still holds that port (or
+        # the instance-lock name) would just lose the race and quit right
+        # back out. icon.stop() at the end runs the normal exit path's own
+        # (idempotent) cleanup and os._exit — no need to repeat it here.
+        _stop_hotkey()
+        controller.shutdown()
+        from helpers.media_pause import resume_all
+
+        resume_all()
+        _release_instance_lock()
+        _relaunch_self()
+        if _icon_ref[0] is not None:
+            _icon_ref[0].stop()
+
+    def _on_restart(icon, item) -> None:
+        threading.Thread(target=_do_restart, daemon=True, name="restart").start()
+
     menu = pystray.Menu(
         pystray.MenuItem("Open in web", _on_open_web, default=True),
         pystray.Menu.SEPARATOR,
@@ -323,6 +380,7 @@ def run_tray() -> None:
         pystray.MenuItem("Check for updates", _on_check_updates),
         pystray.MenuItem(_toggle_label, _on_toggle),
         pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Restart", _on_restart),
         pystray.MenuItem("Exit", _on_exit),
     )
 

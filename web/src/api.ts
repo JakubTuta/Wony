@@ -297,13 +297,19 @@ export interface AppConfig {
 export interface SettingField {
   key: string;
   label: string;
-  kind: 'text' | 'longtext' | 'number' | 'toggle' | 'choice';
+  kind: 'text' | 'longtext' | 'number' | 'toggle' | 'choice' | 'secret';
   help: string;
   choices: string[];
   min: number | null;
   max: number | null;
   step: number | null;
   restart: boolean;
+  /** Which module this field only applies to, or '' for a global setting.
+   * Module-scoped fields render on that module's page instead of Settings. */
+  module: string;
+  /** For kind 'secret': true/false means whether it's set in .env — the
+   * actual value is never sent to the browser. A typed string is a new
+   * value waiting to be saved. */
   value: string | number | boolean | null;
 }
 

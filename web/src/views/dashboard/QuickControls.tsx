@@ -114,10 +114,10 @@ function PinCard({
   };
 
   return (
-    <div className="relative">
+    <div className="relative h-full">
       <Gated blocked={spotifyInactive} message="Nothing playing — open Spotify to see it here.">
       <div
-        className={`bg-surface border border-border rounded-[14px] p-4 flex flex-col gap-3 min-h-[148px] ${broken ? 'opacity-55' : ''}`}
+        className={`bg-surface border border-border rounded-[14px] p-4 flex flex-col gap-3 min-h-[148px] h-full ${broken ? 'opacity-55' : ''}`}
       >
       <div className="flex justify-between items-start gap-2">
         <div className="flex flex-col gap-0.5 min-w-0">
@@ -136,7 +136,7 @@ function PinCard({
         )}
       </div>
 
-      <span className="text-[13px] text-muted">
+      <span className="text-[13px] text-muted line-clamp-3">
         {broken ? moduleMessage(pin.module, health, settings?.modules, pin.module) : (status ?? job?.summary ?? '')}
       </span>
 

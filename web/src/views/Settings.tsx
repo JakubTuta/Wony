@@ -3,9 +3,8 @@ import { Check, Loader2, Plus, RotateCw, Star } from 'lucide-react';
 import { fetchPanel, fetchSettings, invokeJob, saveSettings } from '../api';
 import type { AccountsPanel, GoogleAccount, SettingField, SettingsResponse } from '../api';
 import { useWony } from '../lib/wonyContext';
-import { CARD, SectionLabel, Switch } from '../components/ui';
-
-type Draft = Record<string, string | number | boolean | null>;
+import { CARD, SectionLabel } from '../components/ui';
+import { inputClass, SettingRow, type Draft } from '../components/SettingField';
 
 export function Settings() {
   const { requestConfirm, wipeAllData } = useWony();
@@ -47,16 +46,23 @@ export function Settings() {
 
   return (
     <div className="px-8 pb-10 flex flex-col gap-6 max-w-2xl">
-      {data.sections.map((section) => (
-        <div key={section.title} className="flex flex-col gap-2">
-          <SectionLabel>{section.title}</SectionLabel>
-          <div className={`${CARD} divide-y`} style={{ borderColor: 'var(--color-border)' }}>
-            {section.fields.map((field) => (
-              <Row key={field.key} field={field} value={valueOf(field)} onChange={set} />
-            ))}
+      {data.sections.map((section) => {
+        // A field scoped to one module lives on that module's own page in
+        // Modules & jobs instead — configuring it and turning the module on
+        // or off happen in the same place there.
+        const fields = section.fields.filter((f) => !f.module);
+        if (fields.length === 0) return null;
+        return (
+          <div key={section.title} className="flex flex-col gap-2">
+            <SectionLabel>{section.title}</SectionLabel>
+            <div className={`${CARD} divide-y`} style={{ borderColor: 'var(--color-border)' }}>
+              {fields.map((field) => (
+                <SettingRow key={field.key} field={field} value={valueOf(field)} onChange={set} />
+              ))}
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
 
       {error && <p className="text-xs text-red">{error}</p>}
 
@@ -109,64 +115,6 @@ export function Settings() {
     </div>
   );
 }
-
-function Row({
-  field,
-  value,
-  onChange,
-}: {
-  field: SettingField;
-  value: string | number | boolean | null;
-  onChange: (key: string, value: string | number | boolean | null) => void;
-}) {
-  const label = (
-    <span className="min-w-0">
-      <span className="block text-sm">
-        {field.label}
-        {field.restart && <span className="ml-1.5 text-[10px] uppercase tracking-wide text-muted">needs restart</span>}
-      </span>
-      {field.help && <span className="block text-xs text-muted">{field.help}</span>}
-    </span>
-  );
-
-  if (field.kind === 'toggle') {
-    return (
-      <label className="flex items-start gap-3 px-3.5 py-3 cursor-pointer">
-        <Switch checked={Boolean(value)} onChange={() => onChange(field.key, !value)} />
-        {label}
-      </label>
-    );
-  }
-
-  return (
-    <div className="px-3.5 py-3 flex flex-col gap-1.5">
-      {label}
-      {field.kind === 'choice' ? (
-        <select value={String(value ?? '')} onChange={(e) => onChange(field.key, e.target.value)} className={inputClass}>
-          {field.choices.map((choice) => (
-            <option key={choice} value={choice}>
-              {choice}
-            </option>
-          ))}
-        </select>
-      ) : field.kind === 'longtext' ? (
-        <textarea value={String(value ?? '')} rows={4} onChange={(e) => onChange(field.key, e.target.value)} className={`${inputClass} resize-y`} />
-      ) : (
-        <input
-          type={field.kind === 'number' ? 'number' : 'text'}
-          value={value === null || value === undefined ? '' : String(value)}
-          min={field.min ?? undefined}
-          max={field.max ?? undefined}
-          step={field.step ?? undefined}
-          onChange={(e) => onChange(field.key, field.kind === 'number' && e.target.value !== '' ? Number(e.target.value) : e.target.value)}
-          className={inputClass}
-        />
-      )}
-    </div>
-  );
-}
-
-const inputClass = 'w-full rounded-[9px] border px-2.5 py-2 text-sm bg-surface';
 
 function Accounts() {
   const [panel, setPanel] = useState<AccountsPanel | null>(null);
