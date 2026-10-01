@@ -10,11 +10,26 @@ philosophy in CLAUDE.md) — tuning knobs live as constants next to their code.
 import os
 import typing
 
-from helpers import config_writer
+from helpers import config_writer, env_writer
 from helpers.config import ALWAYS_ON, Config
 from helpers.paths import repo_path
 
 CONFIG_FILE = repo_path("config.yaml")
+ENV_FILE = repo_path(".env")
+
+# A field kind "secret" is never backed by config.yaml — Field.key is instead
+# the name of an environment variable, written to .env. os.environ is the
+# live source of truth for these, not Config.
+_ACRONYMS = {"id", "api", "url", "ai"}
+
+
+def _humanize_env_var(var: str) -> str:
+    """SPOTIFY_CLIENT_ID -> "Spotify Client ID" — a plain label for a raw
+    environment variable name, keeping well-known acronyms upper-case."""
+    return " ".join(
+        word.upper() if word in _ACRONYMS else word.capitalize()
+        for word in var.lower().split("_")
+    )
 
 # Modules a user picks from, with what each one gives them. Order is the order
 # they appear in the UI.
@@ -104,6 +119,12 @@ _FIELDS: typing.List[typing.Tuple[str, typing.List[Field]]] = [
         Field("ai.provider", "AI provider", "choice",
               "Which service answers. Leave on auto to use whichever key is in .env.",
               choices=("auto", "anthropic", "gemini", "ollama"), restart=True),
+        Field("ANTHROPIC_API_KEY", "Anthropic API key", "secret",
+              "Used when the AI provider is Anthropic (Claude). Get one at "
+              "console.anthropic.com.", restart=True),
+        Field("GEMINI_API_KEY", "Gemini API key", "secret",
+              "Used when the AI provider is Gemini. Get one at aistudio.google.com.",
+              restart=True),
         Field("ai.thinking", "Thinking", "choice",
               "'on' reasons harder on knowledge questions; 'off' is fastest.",
               choices=("on", "off")),
@@ -170,10 +191,56 @@ _FIELDS: typing.List[typing.Tuple[str, typing.List[Field]]] = [
     ]),
 ]
 
-_BY_KEY = {field.key: field for section in _FIELDS for field in section[1]}
+def _dynamic_secret_fields() -> typing.List[Field]:
+    """One secret Field per environment variable a switchable module declared
+    as required, so its page can be fully set up without touching .env.
+
+    Read from the registry rather than hand-listed here: every module already
+    declares its own env_vars on its Requirement (see helpers/requirements.py),
+    and duplicating that list here is exactly the kind of copy CLAUDE.md's
+    "consolidate" rule warns against — it would drift the moment a module's
+    requirement changed.
+    """
+    from helpers.registry import ServiceRegistry
+
+    known_modules = {key for key, _, _ in MODULES}
+    fields: typing.List[Field] = []
+    seen: typing.Set[str] = set()
+    for module_name, requires in ServiceRegistry.get_module_requirements().items():
+        if module_name not in known_modules:
+            continue
+        for var in getattr(requires, "env_vars", None) or []:
+            if var in seen:
+                continue
+            seen.add(var)
+            fields.append(Field(
+                key=var,
+                label=_humanize_env_var(var),
+                kind="secret",
+                help=getattr(requires, "setup_hint", "") or f"Sets {var} in .env.",
+                module=module_name,
+                restart=True,
+            ))
+    return fields
+
+
+def _all_sections() -> typing.List[typing.Tuple[str, typing.List[Field]]]:
+    dynamic = _dynamic_secret_fields()
+    return _FIELDS + [("Integration keys", dynamic)] if dynamic else _FIELDS
+
+
+def _field_by_key(key: str) -> typing.Optional[Field]:
+    for _, fields in _all_sections():
+        for field in fields:
+            if field.key == key:
+                return field
+    return None
 
 
 def _current(field: Field) -> typing.Any:
+    if field.kind == "secret":
+        # Never hand the actual secret to the browser — only whether it's set.
+        return bool(os.environ.get(field.key))
     value = Config.get(field.key)
     if field.key == "ai.provider" and not value:
         return "auto"
@@ -197,18 +264,19 @@ def describe() -> typing.Dict[str, typing.Any]:
     """Everything the settings UI needs: the fields, their values, the modules."""
     enabled = Config.enabled_modules()
     sections = []
-    for title, fields in _FIELDS:
+    for title, fields in _all_sections():
         shown = [
             {
                 "key": field.key,
                 "label": field.label,
                 "kind": field.kind,
                 "help": field.help,
-                "choices": _choices_for(field, _current(field)),
+                "choices": _choices_for(field, _current(field)) if field.kind == "choice" else [],
                 "min": field.minimum,
                 "max": field.maximum,
                 "step": field.step,
                 "restart": field.restart,
+                "module": field.module,
                 "value": _current(field),
             }
             for field in fields
@@ -249,6 +317,14 @@ def _ensure_config_file() -> None:
     if not os.path.exists(example):
         raise SettingsError("config.example.yaml is missing, so config.yaml cannot be created.")
     shutil.copyfile(example, CONFIG_FILE)
+
+
+def _ensure_env_file() -> None:
+    """Create .env if it is missing, same reasoning as _ensure_config_file."""
+    if os.path.exists(ENV_FILE):
+        return
+    with open(ENV_FILE, "w", encoding="utf-8") as handle:
+        handle.write("# Wony secrets — never commit this file.\n")
 
 
 def _coerce(field: Field, value: typing.Any) -> typing.Any:
@@ -295,13 +371,22 @@ def apply(
     become a way to put arbitrary text into the config file.
     """
     to_write: typing.Dict[str, typing.Any] = {}
+    env_updates: typing.Dict[str, str] = {}
     restart = False
 
     for key, value in (updates or {}).items():
-        field = _BY_KEY.get(key)
+        field = _field_by_key(key)
         if field is None:
             raise SettingsError(f"'{key}' is not a setting that can be changed here.")
-        to_write[key] = _coerce(field, value)
+        coerced = _coerce(field, value)
+        if field.kind == "secret":
+            if not coerced:
+                # Blank means "leave it as it is" — describe() never sends the
+                # real value back, so an untouched field always looks blank.
+                continue
+            env_updates[field.key] = coerced
+        else:
+            to_write[key] = coerced
         restart = restart or field.restart
 
     if modules is not None:
@@ -317,10 +402,22 @@ def apply(
         ]
         restart = True
 
-    if not to_write:
+    written: typing.List[str] = []
+    if to_write:
+        _ensure_config_file()
+        written += config_writer.update(CONFIG_FILE, to_write)
+    if env_updates:
+        _ensure_env_file()
+        written += env_writer.update(ENV_FILE, env_updates)
+        for var, val in env_updates.items():
+            # A module built its client from the old (missing) value once at
+            # startup, so this alone isn't enough — restart_required below
+            # still applies. Setting it now just means a later retry or
+            # restart sees it without the user re-typing anything.
+            os.environ[var] = val
+
+    if not written:
         return {"written": [], "restart_required": False}
 
-    _ensure_config_file()
-    written = config_writer.update(CONFIG_FILE, to_write)
     Config.load()  # settings read through Config.get() take effect immediately
     return {"written": written, "restart_required": restart}

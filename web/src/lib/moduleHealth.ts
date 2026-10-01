@@ -18,6 +18,6 @@ export function moduleMessage(
   fallbackLabel: string,
 ): string {
   const label = modules?.find((m) => m.key === key)?.label ?? fallbackLabel;
-  if (moduleHealthState(key, health) === 'off') return `Turn on ${label} in Settings to see this.`;
+  if (moduleHealthState(key, health) === 'off') return `Turn on ${label} in Modules & jobs to see this.`;
   return health?.modules[key]?.reason || `${label} isn't working right now.`;
 }

@@ -654,45 +654,27 @@ def config_value(dotted_key, default=None):
 
 
 def env_values():
-    """Every KEY=value pair currently in .env."""
-    values = {}
-    if not os.path.exists(ENV_FILE):
-        return values
-    with open(ENV_FILE, "r", encoding="utf-8-sig") as fh:
-        for line in fh:
-            stripped = line.strip()
-            if not stripped or stripped.startswith("#") or "=" not in stripped:
-                continue
-            key, _, raw = stripped.partition("=")
-            values[key.strip()] = raw.strip().strip("\"'")
-    return values
+    """Every KEY=value pair currently in .env.
+
+    helpers/env_writer.py is the one implementation of this, shared with the
+    web UI's settings page; it is stdlib-only so it works here too, before any
+    dependency has been installed.
+    """
+    repo_on_path()
+    from helpers.env_writer import read as _read
+
+    return _read(ENV_FILE)
 
 
 def env_set(updates):
-    """Write keys into .env, keeping the rest of the file as the user left it.
+    """Write keys into .env, keeping the rest of the file as the user left it."""
+    repo_on_path()
+    from helpers.env_writer import update as _update
 
-    A key that is only there as a commented placeholder is replaced in place,
-    so the file stays in the order its comments describe.
-    """
-    lines = []
-    if os.path.exists(ENV_FILE):
-        with open(ENV_FILE, "r", encoding="utf-8-sig") as fh:
-            lines = fh.readlines()
-
+    _update(ENV_FILE, updates)
     for key, value in updates.items():
-        rendered = f'{key}="{value}"\n'
-        pattern = re.compile(r"^\s*#?\s*" + re.escape(key) + r"\s*=")
-        for index, line in enumerate(lines):
-            if pattern.match(line):
-                lines[index] = rendered
-                break
-        else:
-            lines.append(rendered)
         # The sign-in steps below read the keys back out of the environment.
         os.environ[key] = value
-
-    with open(ENV_FILE, "w", encoding="utf-8", newline="\n") as fh:
-        fh.writelines(lines)
 
 
 # ── Connect: keys, sign-ins and the permissions that need an answer ───────────

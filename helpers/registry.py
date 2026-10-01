@@ -1,3 +1,4 @@
+import re
 import threading
 import typing
 
@@ -227,18 +228,28 @@ class ServiceRegistry:
 
     @classmethod
     def _extract_summary(cls, func: typing.Callable) -> str:
-        """Extract first meaningful line from a docstring, stripping [... JOB] tags."""
+        """First full sentence of a docstring's opening paragraph, for UI job lists.
+
+        Docstrings are hand-wrapped across several source lines for
+        readability — joining them before cutting is what keeps this from
+        handing the UI a summary sliced off mid-sentence at whatever column
+        the source happened to wrap.
+        """
         doc = func.__doc__ or ""
+        paragraph: typing.List[str] = []
         for line in doc.splitlines():
             line = line.strip()
             if not line:
+                if paragraph:
+                    break
                 continue
-            # Strip [... JOB] / [... METHOD] style tags
-            if line.startswith("[") and "]" in line:
-                line = line[line.index("]") + 1:].strip()
-            if line:
-                return line[:80]
-        return ""
+            paragraph.append(line)
+        text = " ".join(paragraph)
+        # Strip [... JOB] / [... METHOD] style tags
+        if text.startswith("[") and "]" in text:
+            text = text[text.index("]") + 1:].strip()
+        match = re.match(r".{1,240}?[.!?](?=\s|$)", text)
+        return match.group(0) if match else text[:240]
 
     @classmethod
     def register_job(

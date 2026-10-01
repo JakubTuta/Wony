@@ -38,6 +38,7 @@ export function ChatPanel() {
   const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
   const micWarningTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -66,6 +67,7 @@ export function ChatPanel() {
     const text = input.trim();
     if (!text || loading) return;
     setInput('');
+    if (inputRef.current) inputRef.current.style.height = 'auto';
     sendText(text);
   }
 
@@ -158,8 +160,17 @@ export function ChatPanel() {
     }
   }
 
-  function handleKey(e: React.KeyboardEvent<HTMLInputElement>) {
-    if (e.key === 'Enter') send();
+  function handleKey(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      send();
+    }
+  }
+
+  const MAX_INPUT_HEIGHT = 120;
+  function autoGrow(el: HTMLTextAreaElement) {
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, MAX_INPUT_HEIGHT)}px`;
   }
 
   return (
@@ -201,20 +212,26 @@ export function ChatPanel() {
             </button>
           ))}
         </div>
-        <div className="flex gap-2 items-center border rounded-xl py-1.5 pr-1.5 pl-3" style={{ borderColor: 'var(--color-border)' }}>
-          <input
+        <div className="flex gap-2 items-end border rounded-xl py-1.5 pr-1.5 pl-3" style={{ borderColor: 'var(--color-border)' }}>
+          <textarea
+            ref={inputRef}
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => {
+              setInput(e.target.value);
+              autoGrow(e.target);
+            }}
             onKeyDown={handleKey}
             placeholder="Message Wony"
             disabled={loading}
-            className="flex-1 min-w-0 border-0 outline-none text-[15px] bg-transparent"
+            rows={1}
+            className="flex-1 min-w-0 border-0 outline-none text-[15px] bg-transparent resize-none py-1.5 leading-snug"
+            style={{ maxHeight: MAX_INPUT_HEIGHT }}
           />
           <button
             onClick={toggleMic}
             disabled={loading}
             title={recording ? 'Stop recording' : 'Record voice input'}
-            className="border-0 w-9 h-9 rounded-[9px] text-xs font-bold disabled:opacity-40"
+            className="border-0 w-9 h-9 rounded-[9px] text-xs font-bold disabled:opacity-40 shrink-0"
             style={{
               background: recording ? 'var(--color-accent)' : 'var(--color-teal-soft)',
               color: recording ? 'var(--color-on-accent)' : 'var(--color-teal)',
@@ -225,7 +242,7 @@ export function ChatPanel() {
           {loading ? (
             <button
               onClick={stopGeneration}
-              className="border-0 h-9 px-3.5 rounded-[9px] bg-accent text-on-accent text-sm font-semibold"
+              className="border-0 h-9 px-3.5 rounded-[9px] bg-accent text-on-accent text-sm font-semibold shrink-0"
             >
               Stop
             </button>
@@ -233,7 +250,7 @@ export function ChatPanel() {
             <button
               onClick={send}
               disabled={!input.trim()}
-              className="border-0 h-9 px-3.5 rounded-[9px] bg-accent text-on-accent text-sm font-semibold disabled:opacity-40"
+              className="border-0 h-9 px-3.5 rounded-[9px] bg-accent text-on-accent text-sm font-semibold disabled:opacity-40 shrink-0"
             >
               Send
             </button>

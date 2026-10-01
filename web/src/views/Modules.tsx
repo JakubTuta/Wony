@@ -1,9 +1,11 @@
 import { useState } from 'react';
+import { Loader2, Check, RotateCw } from 'lucide-react';
 import { saveSettings } from '../api';
 import { useWony } from '../lib/wonyContext';
 import { confirmLabel, humanize, isWidgetCovered } from '../lib/jobs';
-import { CARD, Pill, Switch } from '../components/ui';
-import type { Job } from '../api';
+import { CARD, Pill, SectionLabel, Switch } from '../components/ui';
+import { SettingRow, type Draft } from '../components/SettingField';
+import type { Job, SettingField } from '../api';
 
 const STATUS_LABEL: Record<string, string> = {
   enabled: 'Enabled',
@@ -36,6 +38,9 @@ export function Modules({
   const active = modules.find((m) => m.key === selectedModule) ?? modules[0];
   const status = active ? health?.modules[active.key]?.status ?? 'disabled' : 'disabled';
   const jobsForModule = active ? jobs.filter((j) => j.module === active.key) : [];
+  const moduleFields = active
+    ? (settings?.sections ?? []).flatMap((s) => s.fields).filter((f) => f.module === active.key)
+    : [];
 
   const dotColor = (m: (typeof modules)[number]) => {
     if (m.always_on) return 'var(--color-ok)';
@@ -125,6 +130,8 @@ export function Modules({
             )}
           </div>
 
+          {active.enabled && <ModuleConfigFields key={active.key} fields={moduleFields} />}
+
           {jobsForModule.length === 0 ? (
             <p className="text-sm text-muted px-1">
               {active.always_on || active.enabled ? 'No jobs available.' : 'Turn this module on to use its jobs.'}
@@ -134,6 +141,73 @@ export function Modules({
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+/** A module's own settings fields (see helpers/settings.py's `module=`),
+ * so turning a module on and configuring what it needs both happen on this
+ * one page instead of sending the user to Settings for half of it. */
+function ModuleConfigFields({ fields }: { fields: SettingField[] }) {
+  const { reloadSettings } = useWony();
+  const [draft, setDraft] = useState<Draft>({});
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState<'none' | 'ok' | 'restart'>('none');
+
+  if (fields.length === 0) return null;
+
+  const dirty = Object.keys(draft).length > 0;
+  const set = (key: string, value: string | number | boolean | null) => {
+    setSaved('none');
+    setDraft((prev) => ({ ...prev, [key]: value }));
+  };
+  const valueOf = (field: SettingField) => (field.key in draft ? draft[field.key] : field.value);
+
+  const save = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      const result = await saveSettings(draft);
+      setDraft({});
+      setSaved(result.restart_required ? 'restart' : 'ok');
+      reloadSettings();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className={`${CARD} p-5 flex flex-col gap-3`}>
+      <SectionLabel>Configuration</SectionLabel>
+      <div className="divide-y" style={{ borderColor: 'var(--color-border)' }}>
+        {fields.map((field) => (
+          <SettingRow key={field.key} field={field} value={valueOf(field)} onChange={set} />
+        ))}
+      </div>
+      {error && <p className="text-xs text-red">{error}</p>}
+      <div className="flex items-center gap-3">
+        <button
+          onClick={save}
+          disabled={!dirty || saving}
+          className="border-0 bg-accent text-on-accent rounded-[9px] px-4 py-2.5 text-sm font-semibold disabled:opacity-40 flex items-center gap-2"
+        >
+          {saving ? <Loader2 size={14} className="animate-spin" /> : null}
+          Save changes
+        </button>
+        {saved === 'ok' && (
+          <span className="flex items-center gap-1.5 text-xs text-ok">
+            <Check size={13} /> Saved.
+          </span>
+        )}
+        {saved === 'restart' && (
+          <span className="flex items-center gap-1.5 text-xs text-red">
+            <RotateCw size={13} /> Saved — restart Wony for all of it to take effect.
+          </span>
+        )}
+      </div>
     </div>
   );
 }
