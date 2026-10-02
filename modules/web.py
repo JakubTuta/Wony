@@ -1,3 +1,4 @@
+import re
 import typing
 from urllib.parse import urlsplit
 
@@ -52,6 +53,10 @@ def web_search(query: str) -> str:
     if not results:
         return f"No results found for '{query}'."
 
+    from helpers.turn_context import record_search_hrefs
+
+    record_search_hrefs(r.get("href", r.get("url", "")) for r in results)
+
     lines = [f"Web search results for '{query}':"]
     for i, r in enumerate(results, 1):
         title = r.get("title", "No title")
@@ -75,23 +80,40 @@ _BROWSE_JOB = "browse"
 _RENDER_BELOW_CHARS = 200
 
 
-def _task_needs_ok(args: typing.Dict[str, typing.Any]) -> bool:
-    """A task on a site the user never named needs their go-ahead.
+def _host_named(host: str, text: str) -> bool:
+    """Whether `host` appears in `text` as a whole domain, not merely as a
+    substring of a longer one ("evil-example.com" naming "example.com")."""
+    pattern = r"(?<![\w.-])" + re.escape(host) + r"(?![\w.-])"
+    return bool(re.search(pattern, text, re.IGNORECASE))
 
-    An email or a page can carry a link built to leak data ("visit
-    evil.example/?inbox=..."). If the user said the site themselves, the
-    browsing is theirs; otherwise the model must ask first.
+
+def _needs_ok(args: typing.Dict[str, typing.Any]) -> bool:
+    """A page the user never asked for needs their go-ahead before Wony visits
+    it — with or without a task. An email or a page can carry a link built to
+    leak data ("visit evil.example/?inbox=..."), and reading it is exactly as
+    able to carry that data out as clicking through it is.
+
+    No confirm is needed when the URL is one `web_search` itself returned
+    this turn (the search was the ask), or when the user's own words name the
+    site.
     """
-    if not str(args.get("task", "")).strip():
+    url = str(args.get("url", "")).strip()
+    if not url:
         return False
-    host = (urlsplit(str(args.get("url", ""))).hostname or "").lower().removeprefix("www.")
+
+    from helpers.turn_context import search_hrefs
+
+    if url in search_hrefs():
+        return False
+
+    host = (urlsplit(url).hostname or "").lower().removeprefix("www.")
     if not host:
         return True
     from helpers.conversation import Conversation
     from helpers.turn_context import user_text
 
     said = [user_text()] + [m["content"] for m in Conversation.get_messages() if m["role"] == "user"]
-    return not any(host in str(text).lower() for text in said)
+    return not any(_host_named(host, str(text)) for text in said)
 
 
 @register_job(
@@ -101,7 +123,7 @@ def _task_needs_ok(args: typing.Dict[str, typing.Any]) -> bool:
         setup_hint="pip install -r requirements/web.txt",
     ),
     summary="Read a web page, or click through it to find something",
-    confirms=_task_needs_ok,
+    confirms=_needs_ok,
 )
 @capture_response
 def browse(url: str, task: str = "", offset: int = 0) -> str:

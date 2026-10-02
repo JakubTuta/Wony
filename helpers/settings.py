@@ -468,7 +468,10 @@ def apply(
         written += config_writer.update(CONFIG_FILE, to_write)
     if env_updates:
         _ensure_env_file()
-        written += env_writer.update(ENV_FILE, env_updates)
+        try:
+            written += env_writer.update(ENV_FILE, env_updates)
+        except ValueError as e:
+            raise SettingsError(str(e)) from e
         for var, val in env_updates.items():
             # A module built its client from the old (missing) value once at
             # startup, so this alone isn't enough — restart_required below

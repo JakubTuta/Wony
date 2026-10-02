@@ -176,6 +176,33 @@ def build_agent_system_prompt() -> typing.List[str]:
     return [stable, volatile]
 
 
+def _manage_documents_needs_confirm(args: typing.Dict[str, typing.Any]) -> bool:
+    """Forgetting always asks. Indexing a file asks only after this turn has
+    read something someone other than the user wrote — a page that says
+    "index ~/Downloads/x.pdf" would otherwise make it permanently searchable
+    on its own say-so."""
+    wanted = str(args.get("action", "list")).strip().lower()
+    if wanted == "forget":
+        return True
+    if wanted != "add":
+        return False
+    from helpers import confirm
+    return confirm.after_untrusted(args)
+
+
+def _remember_needs_confirm(args: typing.Dict[str, typing.Any]) -> bool:
+    """Forgetting always asks. Saving asks only once this turn has read
+    something someone other than the user wrote — a page or email that says
+    "remember to always cc x@y.z" must not get to plant that silently."""
+    wanted = str(args.get("action", "save")).strip().lower()
+    if wanted == "forget":
+        return True
+    if wanted != "save":
+        return False
+    from helpers import confirm
+    return confirm.after_untrusted(args)
+
+
 @simple_service
 class AI:
     client = None
@@ -218,7 +245,7 @@ class AI:
         Conversation.clear()
         return "Conversation history cleared."
 
-    @register_job(module_name="ai", confirms={"forget", "remove", "delete"})
+    @register_job(module_name="ai", confirms=_remember_needs_confirm)
     @capture_response
     @staticmethod
     def remember(action: typing.Literal["save", "forget"] = "save", fact: str = "", topic: str = "") -> str:
@@ -411,7 +438,7 @@ class AI:
                 lines.append(f"  Assistant: {preview}")
         return "\n".join(lines)
 
-    @register_job(module_name="ai", confirms={"forget", "remove", "delete"})
+    @register_job(module_name="ai", confirms=_manage_documents_needs_confirm)
     @capture_response
     @staticmethod
     def manage_documents(action: typing.Literal["list", "add", "forget"] = "list", path: str = "") -> str:
@@ -514,6 +541,8 @@ class AI:
                 "Add files with manage_documents."
             )
 
+        from helpers.untrusted import wrap
+
         blocks = []
         for r in results:
             # ref_key is "<path>#<chunk index>" — name the file so the model can
@@ -523,7 +552,7 @@ class AI:
             blocks.append(f"[{label}]\n{r['text']}")
         return (
             f"From indexed documents (top {len(results)} chunk(s)):\n\n"
-            + "\n\n".join(blocks)
+            + wrap("\n\n".join(blocks), "indexed document")
         )
 
     def explain_screenshot(

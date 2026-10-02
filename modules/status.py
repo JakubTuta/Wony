@@ -38,7 +38,17 @@ def system_status(scope: typing.Literal["modules", "setup", "commands", "retry"]
     return f"Unknown scope '{scope}'. Use modules, setup, commands or retry."
 
 
-@register_job(module_name="status", summary="What Wony watches on its own")
+def _manage_triggers_needs_confirm(args: typing.Dict[str, typing.Any]) -> bool:
+    """Turning a watcher on asks only after this turn has read something
+    someone other than the user wrote — a page that says "watch my inbox"
+    must not get to turn that on silently."""
+    if str(args.get("action", "list")).strip().lower() != "on":
+        return False
+    from helpers import confirm
+    return confirm.after_untrusted(args)
+
+
+@register_job(module_name="status", summary="What Wony watches on its own", confirms=_manage_triggers_needs_confirm)
 @capture_response
 def manage_triggers(action: typing.Literal["list", "off", "on"] = "list", name: str = "") -> str:
     """
@@ -58,10 +68,10 @@ def manage_triggers(action: typing.Literal["list", "off", "on"] = "list", name: 
 
     wanted = (action or "list").strip().lower()
 
-    if wanted in ("list", "show", "status"):
+    if wanted == "list":
         return _trigger_list()
 
-    if wanted not in ("off", "on", "disable", "enable", "stop", "start"):
+    if wanted not in ("off", "on"):
         return f"Unknown action '{action}'. Use list, off or on."
     if not name:
         return "Error: which one? Ask for the list to see the names."
@@ -70,7 +80,7 @@ def manage_triggers(action: typing.Literal["list", "off", "on"] = "list", name: 
     if name not in known:
         return f"There is no '{name}'. Known: {', '.join(sorted(known))}."
 
-    turning_on = wanted in ("on", "enable", "start")
+    turning_on = wanted == "on"
     triggers.set_enabled(name, turning_on)
     state = "watching for" if turning_on else "no longer watching for"
     return f"I'm {state} {name.replace('_', ' ')}."

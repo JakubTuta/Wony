@@ -85,7 +85,10 @@ class MCPServerSession:
         return list(self._tools)
 
     def call_tool(self, tool_name: str, arguments: typing.Dict) -> str:
-        return _run_sync(self._call_tool_async(tool_name, arguments))
+        from helpers.untrusted import wrap
+
+        result = _run_sync(self._call_tool_async(tool_name, arguments))
+        return wrap(result, f"mcp:{self.name}")
 
     # ---------------------------------------------------------------- async internals
 

@@ -23,6 +23,17 @@ export default defineConfig({
         target: `http://127.0.0.1:${backendPort()}`,
         changeOrigin: true,
         ws: true,
+        // Wony's backend only accepts same-origin requests (helpers/server_address.py)
+        // and has no notion of the Vite dev server, so the proxy — not the
+        // backend — is what makes the dev page's requests look same-origin.
+        rewriteWsOrigin: true,
+        configure: (proxy, options) => {
+          proxy.on('proxyReq', (proxyReq) => {
+            if (proxyReq.getHeader('origin')) {
+              proxyReq.setHeader('origin', options.target as string)
+            }
+          })
+        },
       },
     },
   },

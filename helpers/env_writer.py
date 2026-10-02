@@ -25,13 +25,30 @@ def read(path: str) -> typing.Dict[str, str]:
     return values
 
 
+def _check_value(key: str, value: str) -> None:
+    """Refuse a value that could break out of its quotes and inject a line —
+    a stray `"` or newline in a pasted key would otherwise let one update
+    plant an arbitrary KEY=value, or truncate/append to the file."""
+    if any(ch == '"' or ord(ch) < 0x20 for ch in value):
+        raise ValueError(
+            f"Value for '{key}' contains a quote or control character and can't be saved to .env."
+        )
+
+
 def update(path: str, updates: typing.Dict[str, str]) -> typing.List[str]:
     """Set KEY=value pairs in the .env file at `path`.
 
     A key that is only there as a commented-out placeholder is replaced in
     place, so the file stays in the order its comments describe. Returns the
     keys written.
+
+    Raises ValueError without writing anything if any value is unsafe to
+    quote (see _check_value) — an all-or-nothing update is simpler to reason
+    about than a file left half written.
     """
+    for key, value in updates.items():
+        _check_value(key, value)
+
     lines: typing.List[str] = []
     if os.path.exists(path):
         with io.open(path, "r", encoding="utf-8-sig") as handle:

@@ -1,5 +1,7 @@
 import typing
 
+from helpers.untrusted import truncate
+
 # How many of the most recent turns carry their tool results forward as context.
 # Deeper costs tokens on every request for data the model rarely revisits.
 _TOOL_RESULT_TURNS = 2
@@ -43,8 +45,7 @@ def _format_calls(
             continue
         arg_str = ", ".join(f"{k}={v!r}" for k, v in args.items()) if args else ""
         call_sig = f"{name}({arg_str})" if arg_str else name
-        if len(result) > max_chars:
-            result = result[:max_chars] + "…"
+        result = truncate(result, max_chars)
         lines.append(f"• {call_sig} → {result}")
     if len(lines) == 1:
         return ""

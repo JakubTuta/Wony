@@ -7,6 +7,7 @@ from helpers.decorators import capture_response
 from helpers.registry import ServiceRegistry, register_job
 from helpers.requirements import Requirement
 from helpers.screenReader import ScreenReader
+from helpers.untrusted import wrap
 
 SCREENSHOTS_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "screenshots"
@@ -52,4 +53,4 @@ def look_at_screen(question: str = "", save: bool = False) -> str:
     answer = ai_service.explain_screenshot(
         question or "Describe what is on this screen.", screenshot
     )
-    return f"{answer}{saved_note}"
+    return f"{wrap(answer, 'screen')}{saved_note}"
