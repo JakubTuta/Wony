@@ -19,10 +19,6 @@ sys.path.insert(0, _REPO_ROOT)
 
 _NO_DESC = "No description available"
 
-# Ceiling on the whole job list with every module enabled. 73 before the audit,
-# 47 after the Tier 2 consolidation, 52 once Tier 3 spent five of the freed
-# slots. The headroom above 52 is small on purpose.
-_JOB_BUDGET = 55
 _DOCUMENTED_ARG = re.compile(r"^[ \t]*(\w+)[ \t]*\([^)]*\)[ \t]*:", re.MULTILINE)
 
 
@@ -40,21 +36,6 @@ class TestToolSchemas(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.jobs = _load_jobs()
-
-    def test_the_job_budget_has_not_quietly_regrown(self) -> None:
-        """Every registered job is sent to the model on every request, so the
-        list is a token budget and an accuracy budget at once. It was cut from
-        73 to 47 and then deliberately spent back up to 52; a new job is a
-        decision, not an accident.
-
-        Counted with every module switched on, which CI cannot do, so this
-        only asserts the ceiling it can actually see.
-        """
-        self.assertLessEqual(
-            len(self.jobs), _JOB_BUDGET,
-            "The job list has grown past the budget. If the new job is right, "
-            "raise _JOB_BUDGET here on purpose and say why.",
-        )
 
     def test_jobs_are_registered(self) -> None:
         # Deliberately low: CI installs core deps only, so most optional

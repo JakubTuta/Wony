@@ -1,0 +1,5 @@
+# Windows location service, used for "near me" and local weather.
+# Without it Wony falls back to your home address, then your internet connection.
+winrt-Windows.Devices.Geolocation ; platform_system == "Windows"
+winrt-Windows.Foundation ; platform_system == "Windows"
+winrt-runtime ; platform_system == "Windows"

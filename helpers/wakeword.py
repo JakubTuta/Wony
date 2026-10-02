@@ -23,10 +23,10 @@ Single-input-stream contract: the listener closes its stream before STT records.
 
 Config keys (voice.wake_word.*):
   enabled          bool  - master switch
-  phrase           str   - built-in model name (ignored when model_path is set)
-                          valid: "hey jarvis", "alexa", "hey mycroft", "hey rhasspy"
-  model_path       str   - path to a custom .onnx model (optional, relative to repo root)
-  threshold        float - detection score cutoff, 0..1 (default 0.5)
+  phrase           str   - a built-in phrase ("hey jarvis", "alexa", "hey mycroft",
+                          "hey rhasspy") or a custom one trained into
+                          models/<phrase_with_underscores>.onnx
+  threshold       float - detection score cutoff, 0..1 (default 0.5)
 
 False-trigger tuning lives in the constants below (_PATIENCE_FRAMES,
 _VAD_THRESHOLD, _COOLDOWN_SECONDS) rather than config.yaml — they are
@@ -39,6 +39,7 @@ No account or API key required.
 
 import os
 import queue
+import re
 import threading
 import time
 import typing
@@ -70,6 +71,19 @@ _COOLDOWN_SECONDS = 2.0
 # package is effectively Linux-only, so it is off by default and the Model
 # construction below falls back when it isn't available.
 _NOISE_SUPPRESSION = False
+
+
+def custom_model_path(phrase: str) -> typing.Optional[str]:
+    """Where a trained model for `phrase` lives; None for a built-in phrase.
+
+    Same naming as the training scripts and `setup.py wakeword`: "hey wony" ->
+    models/hey_wony.onnx.
+    """
+    name = phrase.strip().lower()
+    if name in _BUILTIN_PHRASES:
+        return None
+    stem = re.sub(r"[^a-z0-9]+", "_", name).strip("_") or "wake_word"
+    return os.path.join(_REPO_ROOT, "models", stem + ".onnx")
 
 
 class WakeWordListener:
@@ -137,10 +151,8 @@ class WakeWordListener:
         except Exception as e:
             diagnostics.add("warning", "WakeWord", f"Model download failed (offline?): {e} — continuing with cached models.")
 
-        model_path = cfg.get("model_path") or None
-        if model_path and not os.path.isabs(model_path):
-            model_path = os.path.join(_REPO_ROOT, model_path)
         phrase = cfg.get("phrase", "hey jarvis")
+        model_path = custom_model_path(phrase)
         self._threshold = float(cfg.get("threshold", 0.5))
         self._cooldown = _COOLDOWN_SECONDS
         self._last_trigger = 0.0
@@ -151,8 +163,8 @@ class WakeWordListener:
         if model_path and not os.path.exists(model_path):
             diagnostics.add(
                 "error", "WakeWord",
-                f"Custom model '{model_path}' not found — falling back to a built-in phrase.",
-                hint="Train it (training/train_hey_wony.ipynb or .sh) or unset voice.wake_word.model_path.",
+                f"No model for '{phrase}' at {model_path} — falling back to a built-in phrase.",
+                hint="Train it with: python setup.py wakeword",
             )
             model_path = None
             fell_back = True

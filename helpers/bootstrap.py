@@ -58,6 +58,9 @@ _HEALTH_CHECK_INTERVAL_MINUTES = 5.0
 # pays a reload. 0 would mean "never unload".
 _IDLE_UNLOAD_MINUTES = 15.0
 
+# Two weeks covers "it broke last week" without logs growing forever.
+_LOG_KEEP_DAYS = 14
+
 
 class BootstrapError(Exception):
     pass
@@ -159,7 +162,7 @@ def bootstrap(
     try:
         from helpers.logger import logger
 
-        logger.cleanup_old_logs(int(Config.get("logging.keep_days", 14)))
+        logger.cleanup_old_logs(_LOG_KEEP_DAYS)
     except Exception:
         pass
 
@@ -212,7 +215,6 @@ def bootstrap(
         except Exception:
             pass
 
-    _warn_if_web_exposed(Config)
     _reconnect_mcp_servers(Config, quiet)
     _start_health_watcher(quiet)
     _start_triggers(quiet)
@@ -228,28 +230,6 @@ def bootstrap(
         print()
 
     return employer
-
-
-def _warn_if_web_exposed(Config: typing.Any) -> None:
-    """Flag a web server bound beyond localhost.
-
-    The HTTP API has no authentication: /api/invoke can run any registered job
-    — send an email, delete a calendar event, type on the desktop, wipe the
-    database, exit the app. On 127.0.0.1 that is fine; on any other address it
-    hands those to everyone who can reach the port.
-    """
-    host = str(Config.get("server.host", "127.0.0.1")).strip()
-    if host in ("127.0.0.1", "localhost", "::1", ""):
-        return
-    import helpers.diagnostics
-
-    helpers.diagnostics.add(
-        "warning", "Server",
-        f"Web API is bound to {host}, not localhost — anyone who can reach "
-        f"port {Config.get('server.port', 8000)} can run any job without a password.",
-        hint='Set server.host: "127.0.0.1" in config.yaml unless you have put '
-             "the port behind your own authenticated proxy.",
-    )
 
 
 def _reconnect_mcp_servers(Config: typing.Any, quiet: bool) -> None:
@@ -278,7 +258,7 @@ def _start_health_watcher(quiet: bool) -> None:
 
 
 def _start_triggers(quiet: bool) -> None:
-    """Start the proactive watcher. No-op unless assistant.proactive.enabled."""
+    """Start the watcher thread. No-op while every trigger is off."""
     try:
         from helpers import triggers
 

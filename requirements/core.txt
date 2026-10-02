@@ -10,6 +10,8 @@ apscheduler>=3.10
 dateparser>=1.2
 numpy
 Pillow
+# Reading PDFs: documents, Drive files and email attachments (helpers/text_extract.py).
+pypdf
 anthropic
 google-genai
 ollama

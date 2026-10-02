@@ -1,2 +1,2 @@
-# Weather module dependencies.
-geocoder
+# Weather module dependencies (requests is in core).
+-r location.txt

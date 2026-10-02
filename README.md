@@ -1,8 +1,8 @@
 # Wony
 
 A personal AI assistant that runs on your own Windows PC. Talk to it or type to
-it, and it can handle your email, calendar, music, smart home, timers and the
-web — using whatever you switch on, and nothing you don't.
+it, and it can handle your email, calendar, Drive, contacts, music, smart home, timers,
+maps and the web — using whatever you switch on, and nothing you don't.
 
 - **Say "hey jarvis"**, press a hotkey, or just type in the browser.
 - **Everything is off by default.** It cannot send an email, change your
@@ -18,8 +18,9 @@ web — using whatever you switch on, and nothing you don't.
 2. **Double-click `install.bat`.** It checks for Python, installs what is
    missing, and asks which features you want (arrow keys to move, space to tick,
    Enter to confirm).
-3. **Double-click `Wony.bat`.** A tray icon appears near the clock, and the chat
-   page opens at http://127.0.0.1:8000.
+3. **Double-click `Wony.bat`.** A tray icon appears near the clock. Right-click
+   it → **Open in web** for the chat page. (Wony picks a free address on your
+   computer the first time and keeps it, so a bookmark keeps working.)
 
 `Wony.bat` is how you start it every time — keep a shortcut to it somewhere
 handy, or have it start by itself when you log in:
@@ -66,9 +67,13 @@ fixes, or ask Wony "check setup".
 
 Things to try: _"what's the weather"_, _"what's it doing tomorrow"_, _"set a
 timer for 10 minutes"_, _"add milk to my shopping list"_, _"how much battery
-have I got"_, _"read my last email"_, _"what's on my calendar tomorrow"_,
-_"play some jazz"_, _"turn off the kitchen light"_, _"remember I prefer
-metric"_, _"what did we talk about on Monday"_.
+have I got"_, _"read my last email"_, _"what's in the PDF Marta sent"_,
+_"email Anna the notes"_, _"what's on my calendar tomorrow"_, _"invite Tom to
+Friday's sync with a Meet link"_, _"pharmacy near me"_, _"how long to drive to
+Warsaw"_, _"what does my lease doc say about notice"_, _"find the file about my
+lease"_, _"go to this page and tell me the battery size"_, _"play some jazz"_,
+_"turn off the kitchen light"_, _"remember I prefer Fahrenheit"_, _"what did we
+talk about on Monday"_.
 
 ### Routines
 
@@ -111,8 +116,9 @@ every command it knows, with a form for each.
 ### The tray icon
 
 Right-click it for: **Open in web**, **Listen now**, **Stop speaking**,
-**Mute**, **Wake word on/off**, **Settings**, **Check for updates**,
-**Pause assistant**, **Exit**.
+**Mute**, **Wake word on/off**, **Sign in to Google again** (only when Google
+has signed Wony out), **Settings**, **Check for updates**, **Pause assistant**,
+**Exit**.
 
 Setup offers to start Wony when you log in. To change your mind later:
 
@@ -128,17 +134,22 @@ Open the chat page → **Settings**. Everything there is also in `config.yaml`,
 which you can still edit by hand; the page just means you don't have to.
 
 You can change the assistant's name and personality, the voice and how fast it
-speaks, the wake word and hotkey, which AI provider answers, and which features
-are switched on.
+speaks, the microphone and speakers, the wake word and hotkey, which AI provider
+answers, and which features are switched on.
+
+Claude and Gemini always use their fastest model (the newest Haiku or Flash) —
+there is nothing to pick. Temperatures and distances follow your Windows region;
+say _"remember I prefer Fahrenheit"_ (or miles, or metric) to change that.
 
 ### What Wony may do on its own
 
-These eight start **off**. Nothing else can turn them on.
+These nine start **off**. Nothing else can turn them on.
 
 | Switch                           | Off (the default)                       | On                                          |
 | -------------------------------- | --------------------------------------- | ------------------------------------------- |
 | Change my mailbox                | Writes a draft in Gmail for you to send | Sends, deletes and marks mail read          |
-| Change my calendar               | Tells you what to add                   | Creates, edits and deletes events           |
+| Change my calendar and send invitations | Tells you what to add            | Creates, edits and deletes events, and emails invitations |
+| Change my Drive files            | Finds and reads your files              | Creates Docs, adds to Docs and Sheets, uploads |
 | Unlock doors and open the garage | Lights and blinds still work            | Locks, garage and alarms too                |
 | Type and click for me            | Can look at the screen                  | Can type, click, open and write files       |
 | Install MCP tool servers         | Tells you the command                   | Starts the program on this computer         |
@@ -147,7 +158,7 @@ These eight start **off**. Nothing else can turn them on.
 | Tell it what I'm looking at      | Sees nothing unless you ask             | Sends the front window's title every message |
 
 They are `modules.gmail.allow_write`, `modules.calendar.allow_write`,
-`modules.home_assistant.allow_locks`, `modules.desktop.allow_actions`,
+`modules.drive.allow_write`, `modules.home_assistant.allow_locks`, `modules.desktop.allow_actions`,
 `modules.mcp.allow_install`, `assistant.proactive.enabled`,
 `assistant.memory.learn_from_my_data` and `modules.desktop.share_window_title`
 in `config.yaml`.
@@ -158,6 +169,10 @@ its own words rather than a canned alert. Ask _"what do you watch for"_ to see
 the list, or _"stop watching for important email"_ to switch one off. A meeting
 about to start comes with who is coming, what you last wrote to them and
 anything on your lists with the meeting's name on it.
+
+Two more watchers stay off until you ask, whatever that switch says: _"watch my
+inbox"_ tells you about new mail as it arrives, and _"watch my calendar"_ about
+events someone adds. What you turn on or off is remembered after a restart.
 
 **Learn about me on its own** lets Wony keep the things you mention in passing —
 the dog's name, that you cycle to work — instead of only what you say
@@ -176,9 +191,8 @@ the PC down — is read back to you first and only happens once you say yes. In 
 chat page you get a confirm dialog; by voice or by typing, Wony tells you what it
 is about to do and waits for an answer.
 
-> **Keep `server.host` at `127.0.0.1`.** The web page has no password and can
-> run every command Wony has. On any other address, anyone who can reach the
-> port gets all of it.
+The chat page has no password, so it only answers this computer, and it refuses
+requests made by other websites you have open.
 
 ---
 
@@ -190,19 +204,23 @@ off — nothing crashes, and `doctor` says what is missing.
 
 | Feature                                      | What you need to bring                                                         |
 | -------------------------------------------- | ------------------------------------------------------------------------------ |
-| Everyday basics — time, date, shutdown       | none                                                                           |
+| Everyday basics — time, date, shut down, restart, sleep, lock | none                                          |
 | Routines — the briefing and your own         | none                                                                           |
 | Timers, alarms and reminders                 | none                                                                           |
 | Shopping and todo lists                      | none                                                                           |
 | Computer health — battery, disk, memory      | none                                                                           |
 | Weather — now and the next five days         | free key from [openweathermap.org/api](https://openweathermap.org/api)         |
+| Maps & places — near me, travel times        | none (optional Google Maps key, below)                                         |
 | Web search and page reading                  | none (optional `TAVILY_API_KEY` for better results)                            |
+| Web browsing — clicks through pages for you  | none; uses Edge or Chrome, or downloads a small browser once                   |
 | Voice — speech in and out                    | none; downloads its speech models once                                         |
 | Wake word                                    | needs Voice                                                                    |
 | Spotify                                      | a free app at [developer.spotify.com](https://developer.spotify.com/dashboard) |
 | Gmail                                        | Google OAuth file (below)                                                      |
 | Google Calendar                              | the same OAuth file                                                            |
-| Multiple Google accounts                     | needs Gmail or Calendar                                                        |
+| Google Drive, Docs & Sheets                  | the same OAuth file                                                            |
+| Google Contacts                              | the same OAuth file                                                            |
+| Multiple Google accounts                     | needs a Google feature                                                         |
 | Home Assistant                               | a long-lived token from your Home Assistant profile                            |
 | Desktop control                              | none                                                                           |
 | Screen reading                               | none; downloads OCR models once                                                |
@@ -219,20 +237,90 @@ off — nothing crashes, and `doctor` says what is missing.
 Setup then opens a browser once to connect your account. Spotify must be open
 somewhere for playback to have a target; if it was closed, open it and ask again.
 
-### Gmail and Google Calendar
+### Google — Gmail, Calendar, Drive and Contacts
 
-1. In [Google Cloud Console](https://console.cloud.google.com/), create an OAuth
-   client of type **Desktop**, with the Gmail and Calendar APIs enabled, and add
-   your own address as a test user on the consent screen.
-2. Download the JSON. Setup offers the one it finds in your Downloads folder, or
-   takes the path — it files it away and opens the browser for consent.
+All four share **one sign-in per account**, and Wony asks Google only for what
+your switches allow: read-only until you turn on a "Change my …" switch, which
+then asks Google once more.
 
-Want a second mailbox? Say **"add google account work"** — the same consent, and
-you can then ask for one by name.
+1. In [Google Cloud Console](https://console.cloud.google.com/), pick or create a
+   project and enable the APIs for what you ticked (setup lists them: Gmail API,
+   Google Calendar API, Drive/Docs/Sheets APIs, People API).
+2. On the OAuth consent screen choose **External**, leave it in **Testing**, and
+   add your own Google address under **Test users**.
+3. Create an OAuth client of type **Desktop** and download the JSON. Setup offers
+   the one it finds in your Downloads folder, files it away and opens the browser.
 
-Google expires tokens on its own, and changing your password expires all of
-them. Say **"authorize work"** to sign in again. You can connect several
-accounts; ask for one by name ("what's in my work inbox") or let it search all.
+Google will say it **hasn't verified this app**. It is your own app: click
+**Advanced**, then continue.
+
+**Google signs Wony out every 7 days.** That is Google's rule for apps in
+Testing, and publishing the app needs a public website, privacy policy and
+terms. Wony tells you once when it happens, warns you the day before, and
+**Sign in again** (Settings → Google accounts, or the tray menu) takes one click.
+Updating from a version with separate Gmail and Calendar sign-ins also asks you
+to sign in once.
+
+Want a second account? Say **"add google account work"** — the same consent —
+then ask for one by name ("what's in my work inbox") or let Wony search all.
+
+### Maps & places
+
+Works straight away, free, through [OpenStreetMap](https://www.openstreetmap.org):
+places near you by type or name, addresses, travel time by car, bike or on foot,
+and a Google Maps link for every route.
+
+What OpenStreetMap can't do:
+
+- no ratings, reviews or prices
+- opening hours are often missing or out of date, so "open now" isn't possible
+  (the recorded hours are shown when there are any)
+- no live traffic: driving times assume empty roads
+- no public transport routes
+- coverage varies by country and town
+- a kind of place ("pharmacy") works better than a vague wish ("somewhere nice")
+- the public servers are run by volunteers, allow about one request a second and
+  promise no uptime, so answers can be slow
+
+**A Google Maps key** adds ratings, open-now, price level, live traffic and public
+transport. It needs a Google Cloud **billing account with a card**. Google gives a
+free allowance every month; Wony counts its own requests and goes back to
+OpenStreetMap before the allowance runs out, so normal use costs nothing.
+
+1. [Google Cloud Console](https://console.cloud.google.com/) → **Billing**: add a
+   billing account.
+2. **APIs & Services → Library**: enable **Places API (New)** and **Routes API**.
+3. **Credentials → Create credentials → API key**. Restrict it to those two APIs.
+4. Optional: **Quotas** → set a daily cap, so nothing can ever cost money.
+5. Paste it into setup or Settings (`GOOGLE_MAPS_API_KEY`).
+
+**Where "near me" is.** Windows' own location is the most accurate: Settings →
+Privacy & security → **Location** → turn on **Location services** and **Let
+desktop apps access your location**. Without it Wony uses the home address from
+Settings, and failing that guesses from your internet connection — good to
+roughly the city. Set how you usually get around (car, public transport,
+walking, cycling) in Settings.
+
+### Web browsing
+
+With **Web browsing** ticked, give Wony a page and a job: _"go to this page, open
+the Specs tab and tell me the battery size"_. It works through the page in a
+browser in the background and tells you when it has the answer — you can keep
+talking meanwhile, and _"stop background jobs"_ cancels it.
+
+It is always logged out, so it can't see anything behind your sign-ins, and it
+won't buy anything, fill in your details or download files. It only visits public
+websites. If a link came from an email or a page rather than from you, Wony asks
+before following it. Local Ollama models often can't drive a browser.
+
+### Finding files
+
+_"Find the file about my lease"_ searches names **and contents**, using the same
+index as the Start menu search. Windows indexes your user folders (Desktop,
+Documents, Downloads, Pictures…) by default; to add another folder, open
+**Indexing Options** from the Start menu → **Modify**. Whether PDF contents are
+searchable depends on the PDF filter installed on your PC. If Windows Search is
+switched off, Wony still matches file names, and says so.
 
 ### Home Assistant
 
@@ -308,7 +396,9 @@ stay mixed in.
 | Wake word fires on its own           | Raise **Wake sensitivity** in Settings                     |
 | Wake word never fires                | Lower it; check the mic in `python wony.py doctor`         |
 | Music commands fail                  | Open Spotify on some device, then ask again                |
-| "Google access expired"              | Say "authorize <account name>"                             |
+| "Google signed me out"               | Press **Sign in again** (Settings → Google accounts, or the tray), or say "authorize <account name>" |
+| "Near me" is in the wrong place      | Turn on Windows location, or set your home address in Settings |
+| A file search misses a file          | Add its folder to the Windows search index (below)         |
 | Second copy exits silently           | Only one Wony runs at a time — check the tray              |
 | Started at login but nothing happens | Task Scheduler → `WonyAssistant` → Last Run Result         |
 
@@ -332,11 +422,20 @@ python setup.py configure # add a key or sign in again, without installing
 Re-run `install.bat` (or `python setup.py`) any time to add or remove features.
 It keeps your `.env` and `config.yaml` and only installs what is newly ticked.
 
+Changing Wony itself? See [docs/developers.md](docs/developers.md).
+
 ---
 
 ## Privacy
 
 Conversations, remembered facts, lists and reminders are stored in `wony.db` in
-this folder. Nothing is uploaded anywhere except the text of your requests, which
-goes to the AI provider you chose (nowhere at all with Ollama). **Wipe data** in
-the chat page deletes all of it. Speech recognition and speech are local.
+this folder. **Wipe data** in the chat page deletes all of it. Speech recognition
+and speech are local.
+
+What leaves your computer, and only when a request needs it:
+
+- The text of your requests, and what Wony reads to answer them — an email, a
+  web page, a file or a Drive document — goes to the AI provider you chose
+  (nowhere at all with Ollama).
+- Map searches go to OpenStreetMap, or to Google if you added a Maps key. Your
+  location itself stays on this computer except as part of such a search.

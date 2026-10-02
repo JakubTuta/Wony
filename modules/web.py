@@ -1,8 +1,12 @@
 import typing
+from urllib.parse import urlsplit
 
 from helpers.decorators import capture_response
+from helpers.logger import logger
 from helpers.registry import register_job
+from helpers.net import is_public_url
 from helpers.requirements import Requirement
+from helpers.untrusted import wrap
 
 
 # How much of a fetched page reaches the model. A tuning knob, not a setting:
@@ -61,7 +65,33 @@ def web_search(query: str) -> str:
             lines.append(f"   {preview}")
         if url:
             lines.append(f"   Source: {url}")
-    return "\n".join(lines)
+    # Titles and snippets are whatever the page authors wrote.
+    return lines[0] + "\n" + wrap("\n".join(lines[1:]), "web search")
+
+
+_BROWSE_JOB = "browse"
+# Static text shorter than this usually means the page builds itself with
+# JavaScript, so it is rendered in a real browser instead.
+_RENDER_BELOW_CHARS = 200
+
+
+def _task_needs_ok(args: typing.Dict[str, typing.Any]) -> bool:
+    """A task on a site the user never named needs their go-ahead.
+
+    An email or a page can carry a link built to leak data ("visit
+    evil.example/?inbox=..."). If the user said the site themselves, the
+    browsing is theirs; otherwise the model must ask first.
+    """
+    if not str(args.get("task", "")).strip():
+        return False
+    host = (urlsplit(str(args.get("url", ""))).hostname or "").lower().removeprefix("www.")
+    if not host:
+        return True
+    from helpers.conversation import Conversation
+    from helpers.turn_context import user_text
+
+    said = [user_text()] + [m["content"] for m in Conversation.get_messages() if m["role"] == "user"]
+    return not any(host in str(text).lower() for text in said)
 
 
 @register_job(
@@ -70,29 +100,97 @@ def web_search(query: str) -> str:
         pip_modules=["httpx"],
         setup_hint="pip install -r requirements/web.txt",
     ),
-    summary="Fetch and read the text content of a URL",
+    summary="Read a web page, or click through it to find something",
+    confirms=_task_needs_ok,
 )
 @capture_response
-def fetch_url(url: str, offset: int = 0) -> str:
+def browse(url: str, task: str = "", offset: int = 0) -> str:
     """
-    [WEB JOB] Fetches the main text content of a web page URL.
-    Use this to read a specific article, documentation page, or any URL the user provides.
-    Chain with web_search to first find a URL, then read its full content.
+    [WEB JOB] Opens a web page. Without a task it returns the page's text. With a task
+    ("open the Specs tab and find the battery size", "search the site for X") it
+    works through the page in a real browser — clicking, typing, scrolling — in the
+    background, and reports back when done. It is logged out: it cannot sign in, buy
+    anything or download files.
 
     Args:
-        url (str): The full URL to fetch (must start with http:// or https://). (required)
-        offset (int): Where to start reading, in characters. Use it to read the
-            rest of a page that was cut short.
+        url (str): The full URL, starting with http:// or https://. (required)
+        task (str): What to do or find on the page. Empty just reads it.
+        offset (int): When reading, where to continue a page that was cut short.
 
     Returns:
-        str: The main text content of the page, truncated if very long.
+        str: The page text, or confirmation that the task is under way.
     """
     if not url:
         return "Error: No URL provided."
     if not url.startswith(("http://", "https://")):
         return "Error: URL must start with http:// or https://"
+    if not is_public_url(url):
+        return f"I don't open {url}: it points at this computer or the local network."
 
+    if task.strip():
+        return _start_task(url, task.strip())
     return _do_fetch(url, max(0, int(offset or 0)))
+
+
+def _start_task(url: str, task: str) -> str:
+    from helpers import browser
+    from helpers.jobs import BackgroundJobs
+
+    if not browser.available():
+        return (
+            "Clicking through pages needs the browser feature: run python setup.py "
+            "and tick 'Web browsing'. I can still read the page without a task."
+        )
+    if BackgroundJobs.is_running(_BROWSE_JOB):
+        return "I'm already working through a page. Ask me to stop background jobs to cancel it."
+
+    def work(stop: typing.Any) -> None:
+        answer = _run_task(browser, url, task, stop)
+        _deliver(url, task, answer)
+
+    BackgroundJobs.start(_BROWSE_JOB, work, pass_stop_event=True)
+    return f"On it — I'll open {url} and tell you what I find."
+
+
+def _run_task(browser: typing.Any, url: str, task: str, stop: typing.Any) -> str:
+    import threading
+
+    from helpers.events import session_cancel
+
+    timed_out = threading.Event()
+    timer = threading.Timer(browser.TIMEOUT_SECONDS, timed_out.set)
+    timer.daemon = True
+
+    class _Cancel:
+        @staticmethod
+        def is_set() -> bool:
+            return stop.is_set() or session_cancel.is_set() or timed_out.is_set()
+
+    timer.start()
+    try:
+        answer = browser.run_task(url, task, _Cancel())
+    except browser.BrowserUnavailable as e:
+        return str(e)
+    except Exception as e:
+        logger.log_error(str(e), "browse")
+        return f"I couldn't finish that on {url}: {e}"
+    finally:
+        timer.cancel()
+    if timed_out.is_set():
+        return f"I ran out of time on {url}. So far: {answer}"
+    return answer
+
+
+def _deliver(url: str, task: str, answer: str) -> None:
+    """Say the result, and put it in the conversation so "what was it?" works."""
+    from helpers.conversation import Conversation
+    from helpers.decorators import agent_lock
+    from helpers.notify import notify
+
+    notify(answer, kind="info", source="browse")
+    # Under agent_lock: a turn in progress owns the conversation history.
+    with agent_lock:
+        Conversation.record_turn(f"(Wony browsed {url} for: {task})", wrap(answer, url))
 
 
 # ------------------------------------------------------------------ internals
@@ -144,24 +242,27 @@ def _ddg_search(query: str, max_results: int) -> typing.List[typing.Dict]:
 
 def _do_fetch(url: str, offset: int = 0) -> str:
     max_chars = _MAX_CONTENT_CHARS
-
     try:
-        import httpx
-
-        response = httpx.get(url, timeout=15, follow_redirects=True, headers={
-            "User-Agent": "Mozilla/5.0 (compatible; WonyAssistant/1.0)"
-        })
-        response.raise_for_status()
-        try:
-            import trafilatura
-
-            text = trafilatura.extract(response.text) or _strip_html(response.text)
-        except ImportError:
-            text = _strip_html(response.text)
+        text = _static_text(url)
     except Exception as e:
-        return f"Error fetching {url}: {e}"
+        text, problem = "", f"Error fetching {url}: {e}"
+    else:
+        problem = ""
 
-    if not text:
+    # Pages built by JavaScript come back near-empty, and some sites refuse
+    # plain HTTP clients outright; a real browser gets both.
+    if len(text.strip()) < _RENDER_BELOW_CHARS:
+        from helpers import browser
+
+        if browser.available():
+            try:
+                text = browser.render_text(url)
+            except Exception as e:
+                logger.log_error(str(e), "browse.render")
+    if problem and not text.strip():
+        return problem
+
+    if not text.strip():
         return f"Could not extract text content from {url}."
 
     if offset >= len(text):
@@ -173,7 +274,32 @@ def _do_fetch(url: str, offset: int = 0) -> str:
         f"\n\n[Characters {offset}–{end} of {len(text)}. Read on with offset={end}.]"
         if end < len(text) else ""
     )
-    return f"Content from {url}:\n\n{page}{suffix}"
+    return f"Content from {url}:\n\n{wrap(page, url)}{suffix}"
+
+
+def _static_text(url: str) -> str:
+    import httpx
+
+    response = httpx.get(
+        url,
+        timeout=15,
+        follow_redirects=True,
+        headers={"User-Agent": "Mozilla/5.0 (compatible; WonyAssistant/1.0)"},
+        # Every hop, so a public page cannot redirect into the local network.
+        event_hooks={"request": [_refuse_private_hop]},
+    )
+    response.raise_for_status()
+    try:
+        import trafilatura
+
+        return trafilatura.extract(response.text) or _strip_html(response.text)
+    except ImportError:
+        return _strip_html(response.text)
+
+
+def _refuse_private_hop(request: typing.Any) -> None:
+    if not is_public_url(str(request.url)):
+        raise ValueError(f"redirected to {request.url}, which is on this computer or the local network")
 
 
 def _strip_html(html: str) -> str:

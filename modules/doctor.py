@@ -93,12 +93,65 @@ def run_doctor(voice_mode: bool = False) -> str:
                 lines.append(f"    Fix: {req.setup_hint}")
 
     lines.extend(_compute_selftest())
+    lines.extend(_location_check())
+    lines.extend(_browsing_check())
 
     if voice_mode:
         lines.extend(_audio_selftest())
         lines.extend(_wakeword_selftest())
 
     return "\n".join(lines)
+
+
+def _location_check() -> list:
+    """Where 'near me' comes from, and which maps service answers."""
+    from helpers.config import Config
+
+    if not (Config.is_module_enabled("maps") or Config.is_module_enabled("weather")):
+        return []
+    lines = ["\n  Location & maps:"]
+    try:
+        from helpers.location import here, windows_status
+
+        lines.append(f"    Windows location: {windows_status()}")
+        place = here()
+        if place is None:
+            lines.append("    ✗ No location — turn on Windows location or set a home address in Settings.")
+        else:
+            lines.append(f"    ✓ Using: {place.source}" + (" (approximate)" if place.approximate else ""))
+    except Exception as e:
+        lines.append(f"    ✗ Location check failed: {e}")
+
+    if Config.is_module_enabled("maps"):
+        if os.environ.get("GOOGLE_MAPS_API_KEY"):
+            from modules.maps import usage_this_month
+
+            used = usage_this_month()
+            counted = ", ".join(f"{name}: {n}" for name, n in used.items()) or "none yet"
+            lines.append(f"    ✓ Google Maps key set — requests this month: {counted}")
+        else:
+            lines.append(
+                "    . Maps uses OpenStreetMap (no ratings, live traffic or public transport). "
+                "Add GOOGLE_MAPS_API_KEY for those."
+            )
+    return lines
+
+
+def _browsing_check() -> list:
+    from helpers.config import Config
+
+    if not Config.is_module_enabled("web"):
+        return []
+    from helpers import browser
+
+    if not browser.available():
+        return ["\n  Web browsing: off — reading pages works; clicking through them needs "
+                "'Web browsing' ticked in python setup.py."]
+    lines = ["\n  Web browsing: installed."]
+    if (Config.get("ai.provider") or "") == "ollama":
+        lines.append("    ! Local Ollama models often can't drive a browser; tasks may end with "
+                     "'I couldn't finish that'.")
+    return lines
 
 
 def _compute_selftest() -> list:
@@ -316,12 +369,11 @@ def _wakeword_selftest() -> list:
         lines.append(f"    (skipped — TTS engine unavailable: {e})")
         return lines
 
-    model_path = cfg.get("model_path") or None
+    from helpers.wakeword import custom_model_path
+
     phrase = cfg.get("phrase", "hey jarvis")
     threshold = float(cfg.get("threshold", 0.5))
-    if model_path and not os.path.isabs(model_path):
-        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        model_path = os.path.join(repo_root, model_path)
+    model_path = custom_model_path(phrase)
     models = [model_path] if model_path else [phrase]
 
     try:

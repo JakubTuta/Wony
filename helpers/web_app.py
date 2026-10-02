@@ -64,9 +64,6 @@ def _coerce_args(
     return coerced
 
 
-from helpers.errors import classify_api_error as _classify_api_error, emit_api_diagnostic as _emit_api_diagnostic
-
-
 def _sanitize_calls(
     calls: typing.List[typing.Dict[str, typing.Any]],
 ) -> typing.List[typing.Dict[str, typing.Any]]:
@@ -130,6 +127,57 @@ class PinsRequest(BaseModel):
 
 _PINS_KV_KEY = "web.pins"
 
+# Saved dashboard pins outlive the jobs they name. A pin for a job that was
+# merged into another is pointed at its replacement rather than left dead.
+_RETIRED_PIN_JOBS: typing.Dict[str, typing.Dict[str, typing.Any]] = {
+    "watch_inbox": {"job": "manage_triggers", "module": "status", "args": {"name": "new_email"}},
+    "watch_calendar": {"job": "manage_triggers", "module": "status", "args": {"name": "new_event"}},
+    "list_mcp_servers": {"job": "manage_mcp_server", "args": {"action": "list"}},
+    "click_at": {"job": "click", "args": {}},
+    "click_text": {"job": "click", "args": {}},
+    "close_computer": {"job": "power", "args": {"action": "shutdown"}},
+    "fetch_url": {"job": "browse", "args": {}},
+}
+
+
+def _migrate_pins(pins: typing.List[typing.Dict[str, typing.Any]]) -> typing.List[typing.Dict[str, typing.Any]]:
+    out = []
+    for pin in pins:
+        replacement = _RETIRED_PIN_JOBS.get(pin.get("job", ""))
+        out.append({**pin, **replacement} if replacement else pin)
+    return out
+
+
+class _LocalOnlyMiddleware:
+    """Refuse requests a website could have made on the user's behalf.
+
+    The API has no password, so any page the user visits could otherwise post
+    to it or open /api/ws (browsers do not apply CORS to WebSockets). The Host
+    check stops DNS rebinding; the Origin check stops cross-site requests.
+    """
+
+    def __init__(self, app: typing.Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: dict, receive: typing.Any, send: typing.Any) -> None:
+        if scope["type"] in ("http", "websocket") and not self._allowed(scope):
+            if scope["type"] == "websocket":
+                await send({"type": "websocket.close", "code": 1008})
+            else:
+                await JSONResponse({"detail": "Forbidden"}, status_code=403)(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+    @staticmethod
+    def _allowed(scope: dict) -> bool:
+        from helpers.server_address import LOOPBACK_NAMES, allowed_origin
+
+        headers = {k.decode("latin-1"): v.decode("latin-1") for k, v in scope.get("headers", [])}
+        host = headers.get("host", "")
+        if host.rsplit(":", 1)[0] not in LOOPBACK_NAMES:
+            return False
+        return allowed_origin(headers.get("origin"), host)
+
 
 def build_app() -> FastAPI:
     """Build and return the FastAPI application. Must be called after bootstrap()."""
@@ -171,9 +219,12 @@ def build_app() -> FastAPI:
 
     app = FastAPI(title="Wony Web API", lifespan=_lifespan)
 
+    from helpers.server_address import DEV_ORIGINS
+
+    app.add_middleware(_LocalOnlyMiddleware)
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+        allow_origins=DEV_ORIGINS,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -192,7 +243,6 @@ def build_app() -> FastAPI:
             "voice": {
                 "stt": {
                     "silence_ms": int(Config.get("voice.stt.silence_ms", 700)),
-                    "start_timeout": int(Config.get("voice.stt.start_timeout", 4)),
                     "max_seconds": int(_MAX_CAPTURE_SECONDS),
                 },
             },
@@ -211,14 +261,9 @@ def build_app() -> FastAPI:
             pass
 
         provider = model_info[0] if model_info else "unknown"
-        if provider == "anthropic":
-            model_name = Config.get("ai.anthropic_model") or "claude (auto)"
-        elif provider == "gemini":
-            model_name = Config.get("ai.gemini_model") or "gemini (auto)"
-        elif provider == "ollama":
-            model_name = Config.get("ai.ollama_model") or "ollama"
-        else:
-            model_name = None
+        from helpers.model import current_model_name
+
+        model_name = current_model_name(provider)
 
         modules_out: typing.Dict[str, typing.Any] = {}
         for name, (st, reason) in status.items():
@@ -249,6 +294,13 @@ def build_app() -> FastAPI:
         except Exception:
             pass
 
+        watching: typing.Dict[str, bool] = {}
+        try:
+            from helpers import triggers
+            watching = {t.name: triggers.is_on(t.name) for t in triggers.all_triggers()}
+        except Exception:
+            pass
+
         return {
             "provider": provider,
             "model": model_name,
@@ -256,6 +308,7 @@ def build_app() -> FastAPI:
             "compute": compute,
             "diagnostics": diagnostics,
             "background": background,
+            "triggers": watching,
         }
 
     @app.get("/api/jobs")
@@ -400,7 +453,7 @@ def build_app() -> FastAPI:
         if not raw:
             return {"pins": None}
         try:
-            return {"pins": json.loads(raw)}
+            return {"pins": _migrate_pins(json.loads(raw))}
         except (json.JSONDecodeError, ValueError):
             return {"pins": None}
 
@@ -449,8 +502,11 @@ def build_app() -> FastAPI:
             # from speaking the result: the user clicked a button and is
             # looking at the answer, not waiting to hear it read out.
             from helpers.decorators import agent_lock, set_agent_active
+            from helpers.turn_context import user_request
 
-            with agent_lock:
+            # A click is the user asking, so a Sign in again button may open
+            # Google's consent page.
+            with agent_lock, user_request():
                 set_agent_active(True)
                 try:
                     result = func(**coerced)

@@ -9,7 +9,8 @@ _ACCOUNTS_FILE = repo_path("credentials", "accounts.json")
 # One OAuth client covers every account; accounts differ by token, not client.
 CREDENTIALS_FILE = repo_path("credentials", "google_credentials.json")
 
-_TOKEN_KEYS = ("gmail_token", "calendar_token")
+# Before one token per account, each Google service kept its own file.
+_LEGACY_KEYS = ("gmail_token", "calendar_token")
 
 
 def _abs(path: str) -> str:
@@ -18,7 +19,23 @@ def _abs(path: str) -> str:
     return repo_path(path) if path and not os.path.isabs(path) else path
 
 
+def _token_rel(name: str) -> str:
+    return f"credentials/google_token_{name}.json"
+
+
+def _remove_file(path: str) -> None:
+    path = _abs(path)
+    if path and os.path.exists(path):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
 class GoogleAccounts:
+    """The accounts list in credentials/accounts.json. Signing in, scopes and
+    tokens themselves are helpers/google_auth.py."""
+
     _data: typing.Optional[dict] = None
 
     @classmethod
@@ -31,7 +48,9 @@ class GoogleAccounts:
                 cls._data = json.load(f)
         else:
             cls._data = {"primary": None, "accounts": {}}
-            cls._migrate_legacy()
+            cls._migrate_single_token_files()
+        if cls._migrate_per_service_tokens():
+            cls._save()
         return cls._data
 
     @classmethod
@@ -41,18 +60,28 @@ class GoogleAccounts:
             json.dump(cls._data, f, indent=2)
 
     @classmethod
-    def _migrate_legacy(cls) -> None:
-        """Seed accounts.json from legacy single-token files on first run."""
-        has_gmail = os.path.exists(_abs("credentials/gmail_token.json"))
-        has_calendar = os.path.exists(_abs("credentials/calendar_token.json"))
-        if has_gmail or has_calendar:
-            cls._data["accounts"]["primary"] = {
-                "gmail_token": "credentials/gmail_token.json",
-                "calendar_token": "credentials/calendar_token.json",
-                "email": "",
-            }
+    def _migrate_single_token_files(cls) -> None:
+        """Oldest installs kept one gmail_token.json / calendar_token.json."""
+        legacy = [p for p in ("credentials/gmail_token.json", "credentials/calendar_token.json")
+                  if os.path.exists(_abs(p))]
+        if legacy:
+            cls._data["accounts"]["primary"] = {"gmail_token": legacy[0], "email": ""}
             cls._data["primary"] = "primary"
-            cls._save()
+
+    @classmethod
+    def _migrate_per_service_tokens(cls) -> bool:
+        """One token per account replaced one per service. The old files only
+        cover part of what is needed now, so the account signs in once more and
+        they are deleted after that sign-in succeeds."""
+        changed = False
+        for name, rec in cls._data["accounts"].items():
+            if "token" in rec:
+                continue
+            rec["legacy_tokens"] = [rec.pop(key) for key in _LEGACY_KEYS if rec.get(key)]
+            rec["token"] = _token_rel(name)
+            rec["needs_sign_in"] = True
+            changed = True
+        return changed
 
     @classmethod
     def list_accounts(cls) -> typing.List[str]:
@@ -85,15 +114,29 @@ class GoogleAccounts:
 
     @classmethod
     def record(cls, name: str) -> dict:
-        """Account record with token paths resolved to absolute."""
+        """Account record with the token path resolved to absolute."""
         data = cls._load()
         if name not in data["accounts"]:
             raise ValueError(f"Account '{name}' not found.")
         rec = dict(data["accounts"][name])
-        for key in _TOKEN_KEYS:
-            if rec.get(key):
-                rec[key] = _abs(rec[key])
+        rec["token"] = _abs(rec["token"])
         return rec
+
+    @classmethod
+    def update(cls, name: str, **fields: typing.Any) -> None:
+        data = cls._load()
+        if name in data["accounts"]:
+            data["accounts"][name].update(fields)
+            cls._save()
+
+    @classmethod
+    def drop_legacy_tokens(cls, name: str) -> None:
+        data = cls._load()
+        rec = data["accounts"].get(name, {})
+        if rec.get("legacy_tokens"):
+            for path in rec.pop("legacy_tokens"):
+                _remove_file(path)
+            cls._save()
 
     @classmethod
     def add_account(cls, name: str) -> str:
@@ -102,11 +145,7 @@ class GoogleAccounts:
         safe = name.strip().replace(" ", "_").lower()
         if safe in data["accounts"]:
             raise ValueError(f"Account '{safe}' already exists.")
-        data["accounts"][safe] = {
-            "gmail_token": f"credentials/gmail_token_{safe}.json",
-            "calendar_token": f"credentials/calendar_token_{safe}.json",
-            "email": "",
-        }
+        data["accounts"][safe] = {"token": _token_rel(safe), "email": ""}
         if not data.get("primary"):
             data["primary"] = safe
         cls._save()
@@ -118,76 +157,15 @@ class GoogleAccounts:
         if name not in data["accounts"]:
             raise ValueError(f"Account '{name}' not found.")
         rec = data["accounts"].pop(name)
-        cls._delete_token_files(rec)
+        for path in [rec.get("token", "")] + rec.get("legacy_tokens", []):
+            _remove_file(path)
         if data.get("primary") == name:
             data["primary"] = next(iter(data["accounts"]), None)
         cls._save()
 
-    @staticmethod
-    def _remove_token(path: str) -> None:
-        path = _abs(path)
-        if path and os.path.exists(path):
-            try:
-                os.remove(path)
-            except OSError:
-                pass
-
-    @classmethod
-    def _delete_token_files(cls, rec: dict) -> None:
-        for key in _TOKEN_KEYS:
-            cls._remove_token(rec.get(key, ""))
-
-    @classmethod
-    def clear_token(cls, name: str, service: str) -> None:
-        """Delete one service's stored token so its next use re-runs OAuth.
-
-        Per service, not per account: a stale Gmail token must not take a
-        working Calendar sign-in down with it.
-        """
-        data = cls._load()
-        if name not in data["accounts"]:
-            raise ValueError(f"Account '{name}' not found.")
-        key = f"{service}_token"
-        if key not in _TOKEN_KEYS:
-            raise ValueError(f"Unknown service '{service}'.")
-        cls._remove_token(data["accounts"][name].get(key, ""))
-
-    @classmethod
-    def clear_tokens(cls, name: str) -> None:
-        """Delete an account's stored tokens so the next use re-runs OAuth.
-
-        Without this, re-authorizing is a no-op: both Google libraries load
-        whatever token file is on disk, revoked or not.
-        """
-        data = cls._load()
-        if name not in data["accounts"]:
-            raise ValueError(f"Account '{name}' not found.")
-        cls._delete_token_files(data["accounts"][name])
-
-    @classmethod
-    def token_status(cls, name: str) -> typing.Dict[str, bool]:
-        """Which services this account has a stored token for.
-
-        A file on disk is not proof the token still works, but it is the only
-        answer available without a network call.
-        """
-        rec = cls.record(name)
-        return {
-            "gmail": bool(rec.get("gmail_token")) and os.path.exists(rec["gmail_token"]),
-            "calendar": bool(rec.get("calendar_token"))
-            and os.path.exists(rec["calendar_token"]),
-        }
-
-    @classmethod
-    def set_email(cls, name: str, email: str) -> None:
-        data = cls._load()
-        if name in data["accounts"]:
-            data["accounts"][name]["email"] = email
-            cls._save()
-
     @classmethod
     def rename_account(cls, old_name: str, new_name: str) -> str:
-        """Rename an account. Returns the normalized new name."""
+        """Rename an account, moving its token file. Returns the normalized new name."""
         data = cls._load()
         if old_name not in data["accounts"]:
             raise ValueError(f"Account '{old_name}' not found.")
@@ -198,18 +176,13 @@ class GoogleAccounts:
             raise ValueError(f"Account '{safe}' already exists.")
 
         rec = data["accounts"].pop(old_name)
-
-        # Rename token files on disk (rec keeps the repo-relative form).
-        for key in _TOKEN_KEYS:
-            old_rel = rec.get(key, "")
-            if old_rel and os.path.exists(_abs(old_rel)):
-                new_rel = old_rel.replace(f"_{old_name}.", f"_{safe}.")
-                try:
-                    os.rename(_abs(old_rel), _abs(new_rel))
-                    rec[key] = new_rel
-                except OSError:
-                    pass
-
+        new_rel = _token_rel(safe)
+        if os.path.exists(_abs(rec["token"])):
+            try:
+                os.replace(_abs(rec["token"]), _abs(new_rel))
+            except OSError:
+                pass
+        rec["token"] = new_rel
         data["accounts"][safe] = rec
         if data.get("primary") == old_name:
             data["primary"] = safe

@@ -20,10 +20,6 @@ sys.path.insert(0, _REPO_ROOT)
 _KEY_CALL = re.compile(r"""Config\.get\(\s*["']([A-Za-z0-9_.]+)["']""")
 _SEARCH_DIRS = ("helpers", "modules", ".")
 
-# ModulesSettings allows extra keys, so per-module settings a module defines for
-# itself are legitimately absent from the schema.
-_EXTRA_ALLOWED_PREFIX = "modules."
-
 _MISSING = object()
 
 
@@ -40,31 +36,12 @@ def _all_keys() -> dict:
     return keys
 
 
-def _dead_keys(node: dict, model: type, prefix: str = "") -> list:
-    """YAML key paths that `model` would silently drop (pydantic extra='ignore').
-
-    Recurses into nested models. A model declaring extra='allow' (ModulesSettings,
-    so a module can carry settings it defines for itself) ends the walk.
-    """
-    from pydantic import BaseModel
-
-    if model.model_config.get("extra") == "allow":
-        return []
-
-    dead = []
+def _leaves(node: dict, prefix: tuple = ()):
     for key, value in node.items():
-        field = model.model_fields.get(key)
-        if field is None:
-            dead.append(f"{prefix}{key}")
-            continue
-        annotation = field.annotation
-        if (
-            isinstance(value, dict)
-            and isinstance(annotation, type)
-            and issubclass(annotation, BaseModel)
-        ):
-            dead += _dead_keys(value, annotation, f"{prefix}{key}.")
-    return dead
+        if isinstance(value, dict):
+            yield from _leaves(value, prefix + (key,))
+        else:
+            yield prefix + (key,), value
 
 
 class TestConfigKeys(unittest.TestCase):
@@ -75,8 +52,6 @@ class TestConfigKeys(unittest.TestCase):
 
         unresolved = []
         for key, where in sorted(_all_keys().items()):
-            if key.startswith(_EXTRA_ALLOWED_PREFIX):
-                continue
             if Config.get(key, _MISSING) is _MISSING:
                 unresolved.append(f"  {key}  ({where})")
 
@@ -98,15 +73,42 @@ class TestConfigKeys(unittest.TestCase):
             self.skipTest("no config.yaml in this checkout")
         self._assert_no_dead_keys("config.yaml")
 
-    def _assert_no_dead_keys(self, filename: str) -> None:
+    def test_example_values_are_the_schema_defaults(self) -> None:
+        """Deleting a line from config.yaml must not change behaviour. When
+        barge_in defaulted to off in the schema but on in the example, a user
+        who removed the line silently lost interruptions."""
         import yaml
 
         from helpers.config import AppSettings
 
+        with open(os.path.join(_REPO_ROOT, "config.example.yaml"), encoding="utf-8") as fh:
+            example = yaml.safe_load(fh) or {}
+        AppSettings._yaml_file = None
+        try:
+            defaults = AppSettings().model_dump()
+        finally:
+            from helpers.config import Config
+
+            Config.load()
+
+        drift = []
+        for path, value in _leaves(example):
+            node = defaults
+            for part in path:
+                node = node[part]
+            if node != value:
+                drift.append(f"  {'.'.join(path)}: example={value!r} schema={node!r}")
+        self.assertFalse(drift, "config.example.yaml disagrees with the schema:\n" + "\n".join(drift))
+
+    def _assert_no_dead_keys(self, filename: str) -> None:
+        import yaml
+
+        from helpers.config import dead_keys
+
         with open(os.path.join(_REPO_ROOT, filename), encoding="utf-8") as fh:
             raw = yaml.safe_load(fh) or {}
 
-        dead = _dead_keys(raw, AppSettings)
+        dead = dead_keys(raw)
         self.assertFalse(
             dead,
             f"{filename} sets keys the schema ignores — they look like working "

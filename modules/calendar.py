@@ -1,19 +1,14 @@
-import os
 import typing
 from datetime import datetime, timedelta
 
 from helpers.accounts import CREDENTIALS_FILE, GoogleAccounts
-from helpers.notify import notify
 from helpers.cache import Cache
 from helpers.config import Config
 from helpers.decorators import capture_response
-from helpers.jobs import BackgroundJobs
-from helpers.logger import logger
 from helpers.registry import method_job, register_service
 from helpers.requirements import Requirement
-from helpers.timeutil import local_tz, now_local
-
-_SCOPES = ["https://www.googleapis.com/auth/calendar"]
+from helpers.timeutil import local_tz, now_local, parse_when
+from helpers.untrusted import wrap
 
 # Tuning knobs, not settings — nobody asking "what's on today" should have to
 # pick a result cap or a search window, and the right values don't vary by user.
@@ -24,12 +19,6 @@ _DEFAULT_LOOKAHEAD_HOURS = 24
 # Window a keyword search covers when no dates are given.
 _SEARCH_DAYS_BACK = 30
 _SEARCH_DAYS_AHEAD = 90
-# How often "watch my calendar" polls when no interval is given.
-_DEFAULT_POLL_INTERVAL_MINUTES = 15
-
-
-def _calendar_job_name(account_name: str) -> str:
-    return f"calendar_polling_{account_name}"
 
 
 def _other_attendees(event: dict) -> typing.List[str]:
@@ -48,57 +37,48 @@ def _other_attendees(event: dict) -> typing.List[str]:
     return people
 
 
+def _meet_request() -> typing.Dict[str, typing.Any]:
+    import uuid
+
+    return {"createRequest": {"requestId": uuid.uuid4().hex, "conferenceSolutionKey": {"type": "hangoutsMeet"}}}
+
+
+def _reports_bad_dates(func: typing.Callable) -> typing.Callable:
+    """Turn an unreadable date or time into the sentence that says so."""
+    import functools
+
+    @functools.wraps(func)
+    def wrapper(*args: typing.Any, **kwargs: typing.Any) -> str:
+        try:
+            return func(*args, **kwargs)
+        except ValueError as e:
+            return f"{e} Try a weekday, 'tomorrow', or a date like 2025-03-15."
+    return wrapper
+
+
 @register_service(
     module_name="calendar",
     requires=Requirement(
         files=[CREDENTIALS_FILE],
-        pip_modules=["googleapiclient", "google_auth_oauthlib", "google.auth"],
-        setup_hint=(
-            "Create an OAuth client (Desktop) in Google Cloud Console with Calendar API "
-            "and Gmail API enabled, download it to credentials/google_credentials.json, "
-            "then run: pip install -r requirements/calendar.txt"
-        ),
+        pip_modules=["googleapiclient", "google_auth_oauthlib"],
+        setup_hint="Run: python setup.py configure — it sets up Google sign-in.",
     ),
 )
 class Calendar:
     """Google Calendar service for reading and managing events. Supports multiple Google accounts."""
 
     def __init__(self):
-        self._services: typing.Dict[str, object] = {}
+        pass
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
     def _service_for(self, account: str) -> object:
-        from googleapiclient.discovery import build
+        """googleapiclient Calendar resource (helpers/google_auth.py)."""
+        from helpers import google_auth
 
-        name = GoogleAccounts.resolve(account or None)
-        if name not in self._services:
-            rec = GoogleAccounts.record(name)
-            creds = self._load_credentials(rec["calendar_token"], name)
-            self._services[name] = build("calendar", "v3", credentials=creds)
-        return self._services[name]
-
-    def forget_account(self, name: str) -> None:
-        """Drop the cached service for an account whose token changed or went
-        away, so the next call builds one from the token now on disk."""
-        self._services.pop(name, None)
-
-    def sign_in(self, account: str) -> str:
-        """Sign `account` in and report the address it belongs to.
-
-        Building the service is what triggers OAuth consent. The accounts job
-        and setup.py both come here, so there is one sign-in path.
-        """
-        service = self._service_for(account)
-        try:
-            primary = service.calendarList().get(calendarId="primary").execute()
-            calendar_id = (primary or {}).get("id", "")
-            return calendar_id if "@" in calendar_id else ""
-        except Exception as e:
-            logger.log_error(str(e), f"calendar.sign_in.{account}")
-            return ""
+        return google_auth.service("calendar", "v3", account)
 
     def _accounts(self, account: str) -> typing.List[str]:
         """Accounts to operate on: the named one if given, else every configured
@@ -111,38 +91,6 @@ class Calendar:
     def _event_start_key(event: dict) -> str:
         start = event.get("start", {})
         return start.get("dateTime") or start.get("date") or ""
-
-    def _load_credentials(self, token_file: str, account: str) -> typing.Any:
-        from google.auth.exceptions import RefreshError
-        from google.auth.transport.requests import Request
-        from google.oauth2.credentials import Credentials
-        from google_auth_oauthlib.flow import InstalledAppFlow
-
-        creds: typing.Any = None
-        if os.path.exists(token_file):
-            creds = Credentials.from_authorized_user_file(token_file, _SCOPES)
-
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                try:
-                    creds.refresh(Request())
-                except RefreshError as exc:
-                    # Google says "invalid_grant: Bad Request", which tells
-                    # nobody what to do about it.
-                    raise RuntimeError(
-                        f"Google access for '{account}' has expired or was revoked. "
-                        f"Say 'authorize {account}' to sign in again."
-                    ) from exc
-            else:
-                flow = InstalledAppFlow.from_client_secrets_file(
-                    CREDENTIALS_FILE, _SCOPES
-                )
-                creds = flow.run_local_server(port=0)
-            os.makedirs(os.path.dirname(token_file), exist_ok=True)
-            with open(token_file, "w", encoding="utf-8") as f:
-                f.write(creds.to_json())
-
-        return creds
 
     def _cfg(self) -> dict:
         return Config.module_settings("calendar")
@@ -226,16 +174,9 @@ class Calendar:
         items.sort(key=self._event_start_key)
         return items
 
-    def _get_new_events(self, account: str) -> typing.List[dict]:
-        name = GoogleAccounts.resolve(account or None)
-        cache_key = f"announced_event_ids_{name}"
-        events = self._fetch_events_range(account=account)
-        announced: typing.List[str] = Cache.get_value(cache_key) or []
-        new_events = [e for e in events if e.get("id") not in announced]
-        if new_events:
-            seen_ids = announced + [e.get("id") for e in new_events if e.get("id")]
-            Cache.set_value(cache_key, seen_ids[-200:])
-        return new_events
+    def new_events(self, seen: typing.Set[str]) -> typing.List[dict]:
+        """Upcoming events whose ids are not in `seen`, for the new_event trigger."""
+        return [e for e in self._fetch_events_range() if e.get("id") and e["id"] not in seen]
 
     def agenda_snapshot(self, days: int = 2) -> typing.Dict[str, typing.Any]:
         """Upcoming events as data, for the agenda panel.
@@ -356,39 +297,27 @@ class Calendar:
         return dt.strftime("%Y-%m-%d %H:%M")
 
     def _parse_date(self, date_str: str) -> datetime:
-        tz = local_tz()
-        today = now_local().replace(hour=0, minute=0, second=0, microsecond=0)
-        s = date_str.strip().lower()
-        if not s or s == "today":
-            return today
-        if s == "tomorrow":
-            return today + timedelta(days=1)
-        if s == "yesterday":
-            return today - timedelta(days=1)
-        try:
-            dt = datetime.fromisoformat(date_str)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=tz)
-            return dt
-        except ValueError:
-            return today
+        """Midnight of the day `date_str` names ("friday", "next monday",
+        "2025-03-15"); empty means today.
+
+        Raises ValueError on anything unreadable. This used to fall back to
+        today, so "create it on Fryday" silently booked the event today.
+        """
+        if not date_str.strip():
+            return now_local().replace(hour=0, minute=0, second=0, microsecond=0)
+        parsed = parse_when(date_str)
+        if parsed is None:
+            raise ValueError(f"I couldn't understand the date '{date_str}'.")
+        return parsed.replace(hour=0, minute=0, second=0, microsecond=0)
 
     def _parse_time(self, time_str: str, base_date: datetime) -> datetime:
-        """Parse 'HH:MM', '2pm', '14:00', etc. relative to base_date."""
-        s = time_str.strip().lower()
-        is_pm = "pm" in s
-        is_am = "am" in s
-        s_clean = s.replace("am", "").replace("pm", "").strip()
-        if ":" in s_clean:
-            parts = s_clean.split(":")
-            hour, minute = int(parts[0]), int(parts[1])
-        else:
-            hour, minute = int(s_clean), 0
-        if is_pm and hour != 12:
-            hour += 12
-        elif is_am and hour == 12:
-            hour = 0
-        dt = base_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        """'2pm', '14:00', '14.30', '9:30am' on base_date. Raises ValueError."""
+        if time_str.strip().isdigit():
+            time_str = f"{time_str.strip()}:00"  # a bare "9" reads as a day of the month
+        parsed = parse_when(time_str, base=base_date)
+        if parsed is None:
+            raise ValueError(f"I couldn't understand the time '{time_str}'.")
+        dt = base_date.replace(hour=parsed.hour, minute=parsed.minute, second=0, microsecond=0)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=local_tz())
         return dt
@@ -417,7 +346,10 @@ class Calendar:
         for event in events:
             lines.append("")
             lines.append(self._format_event(event, verbose=verbose))
-        return "\n".join(lines)
+        if not events:
+            return "\n".join(lines)
+        # Invites carry titles, descriptions and names other people wrote.
+        return lines[0] + "\n" + wrap("\n".join(lines[1:]), "calendar")
 
     # ------------------------------------------------------------------
     # Jobs
@@ -432,6 +364,7 @@ class Calendar:
 
     @capture_response
     @method_job
+    @_reports_bad_dates
     def find_events(
         self,
         query: str = "",
@@ -555,65 +488,6 @@ class Calendar:
 
     @capture_response
     @method_job
-    def watch_calendar(
-        self,
-        action: typing.Literal["start", "stop"] = "start",
-        interval_minutes: int = 0,
-        account: str = "",
-    ) -> str:
-        """
-        [CALENDAR JOB] Starts or stops background calendar monitoring. While it runs,
-        newly added events are announced as they appear.
-
-        Args:
-            action (str): "start" (the default) or "stop".
-            interval_minutes (int): How often to check when starting (defaults to 15).
-            account (str): Google account to watch. Stopping with no account stops all.
-
-        Returns:
-            str: Confirmation of what is now running.
-        """
-        wanted = (action or "start").strip().lower()
-
-        if wanted in ("stop", "off", "cancel"):
-            if account:
-                name = GoogleAccounts.resolve(account)
-                stopped = BackgroundJobs.stop(_calendar_job_name(name))
-                return (f"Stopped watching the '{name}' calendar." if stopped
-                        else f"The '{name}' calendar was not being watched.")
-            watched = [j for j in BackgroundJobs.list_jobs() if j.startswith("calendar_polling_")]
-            stopped_any = any(BackgroundJobs.stop(job) for job in watched)
-            return ("Stopped watching the calendar." if stopped_any
-                    else "The calendar was not being watched.")
-
-        if wanted not in ("start", "on", "watch"):
-            return f"Unknown action '{action}'. Use start or stop."
-
-        name = GoogleAccounts.resolve(account or None)
-        job_name = _calendar_job_name(name)
-        if BackgroundJobs.is_running(job_name):
-            return f"Already watching the '{name}' calendar."
-
-        if not interval_minutes or interval_minutes <= 0:
-            interval_minutes = _DEFAULT_POLL_INTERVAL_MINUTES
-
-        def _poll() -> None:
-            events = self._get_new_events(name)
-            if not events:
-                return
-            headline = f"You have {len(events)} new calendar event(s) in {name}."
-            logger.log_system_event("calendar_poll", headline)
-            notify(
-                [headline] + [self._format_event(e, verbose=False) for e in events],
-                kind="alert",
-                source="calendar",
-            )
-
-        BackgroundJobs.start(job_name, _poll, interval=interval_minutes * 60)
-        return f"Watching the '{name}' calendar — checking every {interval_minutes} minutes."
-
-    @capture_response
-    @method_job
     def list_calendars(self, account: str = "") -> str:
         """
         [CALENDAR JOB] Lists all available Google Calendars for the account.
@@ -648,6 +522,7 @@ class Calendar:
 
     @capture_response
     @method_job
+    @_reports_bad_dates
     def check_free_time(
         self,
         date_str: str = "",
@@ -793,13 +668,13 @@ class Calendar:
 
     def _write_disabled_note(self) -> str:
         return (
-            "Calendar writes are disabled (allow_write: false). "
-            "To enable: set modules.calendar.allow_write: true in config.yaml.\n"
-            "Note: delete credentials/calendar_token_*.json first to re-authenticate with the new scope."
+            "Changing the calendar is switched off. Turn on 'Change my calendar and "
+            "send invitations' in Settings to allow it."
         )
 
     @capture_response
     @method_job(confirms=True)
+    @_reports_bad_dates
     def manage_event(
         self,
         action: typing.Literal["create", "edit", "delete"] = "create",
@@ -810,13 +685,17 @@ class Calendar:
         end_time: str = "",
         description: str = "",
         location: str = "",
+        attendees: str = "",
+        remove_attendees: str = "",
+        add_meet_link: bool = False,
         calendar_name: str = "",
         account: str = "",
     ) -> str:
         """
-        [CALENDAR JOB] Creates a calendar event, changes one, or deletes one. Editing
-        and deleting find the event by `query` and/or `date`, and refuse to guess when
-        more than one matches.
+        [CALENDAR JOB] Creates a calendar event, changes one, or deletes one — and can
+        invite people and add a Google Meet link, which emails them the invitation.
+        Editing and deleting find the event by `query` and/or `date`, and refuse to
+        guess when more than one matches.
 
         Args:
             action (str): "create" (the default), "edit" or "delete".
@@ -830,6 +709,10 @@ class Calendar:
             end_time (str): End time. Defaults to an hour after the start.
             description (str): Description or notes for the event.
             location (str): Location or meeting link.
+            attendees (str): People to invite — names from Contacts or email
+                addresses, separated by commas. When editing, they are added.
+            remove_attendees (str): When editing, people to take off the invitation.
+            add_meet_link (bool): Give the event a Google Meet video link.
             calendar_name (str): Which calendar to add to (default: primary).
             account (str): Google account to use (default: primary).
 
@@ -846,7 +729,7 @@ class Calendar:
             new_date = date if query else ""
             return self._edit_event(
                 query, search_date, title, new_date, start_time, end_time,
-                description, location, account,
+                description, location, account, attendees, remove_attendees, add_meet_link,
             )
         if wanted in ("delete", "remove", "cancel"):
             return self._delete_event(query, date, account)
@@ -875,6 +758,10 @@ class Calendar:
         else:
             end_dt = start_dt + timedelta(hours=1)
 
+        guests, problem = self._guests(attendees, account)
+        if problem:
+            return problem
+
         if not self._write_allowed():
             lines = [
                 self._write_disabled_note(),
@@ -889,6 +776,10 @@ class Calendar:
                 lines.append(f"  Description: {description}")
             if location:
                 lines.append(f"  Location:    {location}")
+            if guests:
+                lines.append(f"  Invite:      {', '.join(guests)}")
+            if add_meet_link:
+                lines.append("  Video call:  add a Google Meet link")
             if calendar_name:
                 lines.append(f"  Calendar:    {calendar_name}")
             return "\n".join(lines)
@@ -913,6 +804,10 @@ class Calendar:
             event_body["description"] = description
         if location:
             event_body["location"] = location
+        if guests:
+            event_body["attendees"] = [{"email": email} for email in guests]
+        if add_meet_link:
+            event_body["conferenceData"] = _meet_request()
 
         service = self._service_for(account)
         try:
@@ -921,6 +816,8 @@ class Calendar:
                 .insert(
                     calendarId=calendar_id,
                     body=event_body,
+                    conferenceDataVersion=1,
+                    sendUpdates="all" if guests else "none",
                 )
                 .execute()
             )
@@ -930,7 +827,20 @@ class Calendar:
         start_str = self._format_time(
             created["start"].get("dateTime", created["start"].get("date", ""))
         )
-        return f"Event created: '{title}' on {start_str}."
+        extras = []
+        if guests:
+            extras.append(f"invitations sent to {', '.join(guests)}")
+        if created.get("hangoutLink"):
+            extras.append(f"Meet link: {created['hangoutLink']}")
+        return f"Event created: '{title}' on {start_str}" + (f" — {'; '.join(extras)}." if extras else ".")
+
+    @staticmethod
+    def _guests(names: str, account: str) -> typing.Tuple[typing.List[str], str]:
+        if not names.strip():
+            return [], ""
+        from modules.contacts import resolve_addresses
+
+        return resolve_addresses(names, account)
 
     def _resolve_one_event(
         self, query: str, date: str, account: str
@@ -977,6 +887,9 @@ class Calendar:
         new_description: str = "",
         new_location: str = "",
         account: str = "",
+        add_attendees: str = "",
+        remove_attendees: str = "",
+        add_meet_link: bool = False,
     ) -> str:
         if not query and not date:
             return "Error: Provide a query or date to find the event to edit."
@@ -997,6 +910,19 @@ class Calendar:
             patch["description"] = new_description
         if new_location:
             patch["location"] = new_location
+        if add_attendees or remove_attendees:
+            adding, problem = self._guests(add_attendees, account)
+            if problem:
+                return problem
+            dropping, problem = self._guests(remove_attendees, account)
+            if problem:
+                return problem
+            current = [a for a in event.get("attendees", []) if a.get("email", "").lower() not in
+                       {d.lower() for d in dropping}]
+            known = {a.get("email", "").lower() for a in current}
+            patch["attendees"] = current + [{"email": e} for e in adding if e.lower() not in known]
+        if add_meet_link and not event.get("hangoutLink"):
+            patch["conferenceData"] = _meet_request()
 
         if new_date or new_start_time or new_end_time:
             old_start_str = event.get("start", {}).get("dateTime") or event.get(
@@ -1052,6 +978,10 @@ class Calendar:
                 lines.append(f"  New description: {patch['description']}")
             if "location" in patch:
                 lines.append(f"  New location:    {patch['location']}")
+            if "attendees" in patch:
+                lines.append(f"  Guests:          {', '.join(a['email'] for a in patch['attendees'])}")
+            if "conferenceData" in patch:
+                lines.append("  Add a Google Meet link")
             return "\n".join(lines)
 
         service = self._service_for(account)
@@ -1062,6 +992,9 @@ class Calendar:
                     calendarId=event.get("_calendar_id", "primary"),
                     eventId=event_id,
                     body=patch,
+                    conferenceDataVersion=1,
+                    # Guests hear about changes to an event they are invited to.
+                    sendUpdates="all" if event.get("attendees") or "attendees" in patch else "none",
                 )
                 .execute()
             )

@@ -166,7 +166,6 @@ function Accounts() {
           <AccountRow
             key={account.name}
             account={account}
-            services={panel.services}
             expanded={open === account.name}
             busy={!!working}
             onToggle={() => setOpen(open === account.name ? null : account.name)}
@@ -196,14 +195,12 @@ function Accounts() {
 
 function AccountRow({
   account,
-  services,
   expanded,
   busy,
   onToggle,
   onRun,
 }: {
   account: GoogleAccount;
-  services: { gmail: boolean; calendar: boolean };
   expanded: boolean;
   busy: boolean;
   onToggle: () => void;
@@ -211,7 +208,8 @@ function AccountRow({
 }) {
   const [confirming, setConfirming] = useState(false);
   const [rename, setRename] = useState('');
-  const missing = (['gmail', 'calendar'] as const).filter((s) => services[s] && !account.tokens[s]);
+  const signIn = () =>
+    onRun('manage_google_accounts', { action: 'authorize', name: account.name }, `Signing in ${account.name} — finish in the browser window.`);
 
   return (
     <div className={CARD}>
@@ -221,14 +219,21 @@ function AccountRow({
             {account.primary && <Star size={12} className="text-accent fill-accent shrink-0" />}
             {account.name}
           </div>
-          <div className="text-xs text-muted truncate">
-            {missing.length > 0 ? `Not signed in for ${missing.join(' and ')}` : account.email || 'Signed in'}
+          <div className={`text-xs truncate ${account.needs_sign_in ? 'text-red' : 'text-muted'}`}>
+            {account.needs_sign_in
+              ? 'Needs signing in — Google signs Wony out every week'
+              : account.email || 'Signed in'}
           </div>
         </div>
       </button>
+      {account.needs_sign_in && !expanded && (
+        <div className="px-3 pb-3">
+          <SmallAction busy={busy} onClick={signIn}>Sign in again</SmallAction>
+        </div>
+      )}
       {expanded && (
         <div className="px-3 pb-3 flex flex-col gap-1.5" style={{ borderTop: '1px solid var(--color-divider)', paddingTop: 10 }}>
-          <SmallAction busy={busy} onClick={() => onRun('manage_google_accounts', { action: 'authorize', name: account.name }, `Signing in ${account.name} — finish in the browser window.`)}>
+          <SmallAction busy={busy} onClick={signIn}>
             Sign in again
           </SmallAction>
           {!account.primary && (

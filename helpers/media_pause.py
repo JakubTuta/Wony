@@ -194,12 +194,8 @@ class MediaPause:
             return
         if self._resume_handle is not None:
             self._resume_handle.cancel()
-        from helpers.config import Config
-
-        linger = Config.get("voice.media_pause.resume_linger_seconds", None)
-        linger = float(linger) if linger is not None else self._RESUME_LINGER
         assert self._loop is not None
-        self._resume_handle = self._loop.call_later(linger, self._on_resume_deadline)
+        self._resume_handle = self._loop.call_later(self._RESUME_LINGER, self._on_resume_deadline)
 
     def _on_resume_deadline(self) -> None:
         self._resume_handle = None

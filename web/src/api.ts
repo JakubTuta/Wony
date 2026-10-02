@@ -50,6 +50,8 @@ export interface HealthResponse {
   compute?: Compute;
   diagnostics?: Diagnostic[];
   background: string[];
+  /** Whether each watcher (helpers/triggers.py) is on, by trigger name. */
+  triggers: Record<string, boolean>;
 }
 
 export interface JobsResponse {
@@ -178,17 +180,24 @@ export interface NowPlaying {
   volume?: number | null;
 }
 
+/** One sign-in per account covers every Google module (helpers/google_auth.py). */
 export interface GoogleAccount {
   name: string;
   email: string;
   primary: boolean;
-  tokens: { gmail: boolean; calendar: boolean };
+  signed_in: boolean;
+  /** Google signed Wony out (weekly in Testing mode), or a switch needs a new OK. */
+  needs_sign_in: boolean;
+  /** Which Google modules the current sign-in covers. */
+  modules: Record<string, boolean>;
+  signed_in_at: string;
 }
 
 export interface AccountsPanel {
   accounts: GoogleAccount[];
   primary: string | null;
-  services: { gmail: boolean; calendar: boolean };
+  /** Which Google modules are switched on. */
+  services: Record<string, boolean>;
   credentials_ready: boolean;
 }
 
@@ -287,7 +296,7 @@ export async function ackNotifications(id?: number): Promise<void> {
 
 export interface AppConfig {
   assistant: { name: string; language: string };
-  voice: { stt: { silence_ms: number; start_timeout: number; max_seconds: number } };
+  voice: { stt: { silence_ms: number; max_seconds: number } };
 }
 
 // ── Settings ───────────────────────────────────────────────────────────────

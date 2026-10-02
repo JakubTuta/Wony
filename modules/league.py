@@ -95,8 +95,8 @@ def _auto_accept() -> str:
     if BackgroundJobs.is_running(_ACCEPT_JOB):
         return "Already watching for queue pop-up."
 
-    # Shares ScreenReader's matching with desktop.click_text but not the job:
-    # click_text is gated on modules.desktop.allow_actions, and enabling the
+    # Shares ScreenReader's matching with desktop.click but not the job:
+    # click is gated on modules.desktop.allow_actions, and enabling the
     # league module is already the user asking for this one click. Routing
     # through it would break auto-accept for anyone who never wanted general
     # desktop control.

@@ -12,6 +12,7 @@ and the "one moment" cue into `on_text`; every caller records its own turn into
 Conversation, because the WebSocket path needs the turn id back.
 """
 
+import contextlib
 import threading
 import typing
 
@@ -42,8 +43,13 @@ class TurnResult(typing.NamedTuple):
 def run_turn(
     user_input: str,
     on_text: typing.Optional[typing.Callable[[str], None]] = None,
+    from_user: bool = True,
 ) -> TurnResult:
-    """Run one agent turn. Never raises — failures come back in TurnResult.error."""
+    """Run one agent turn. Never raises — failures come back in TurnResult.error.
+
+    from_user=False for turns nobody asked for (triggers): nothing in them may
+    open a sign-in window or follow a link the user never mentioned.
+    """
     from helpers import confirm
     from helpers.agent import _fallback_from_calls, run_agent
     from helpers.bootstrap import get_ai_client
@@ -55,6 +61,7 @@ def run_turn(
     )
     from helpers.events import clear_cancel, session_cancel
     from helpers.registry import ServiceRegistry
+    from helpers.turn_context import user_request
     from modules.ai import build_agent_system_prompt
 
     timed_out = threading.Event()
@@ -82,17 +89,19 @@ def run_turn(
         # this is what stops the model from confirming itself.
         confirm.begin_turn()
         timer.start()
+        presence = user_request(user_input) if from_user else contextlib.nullcontext()
         try:
-            agent_result = run_agent(
-                client=get_ai_client(),
-                user_input=user_input,
-                available_jobs=ServiceRegistry.get_all_jobs(),
-                system_instructions=build_agent_system_prompt(),
-                history=Conversation.get_messages(),
-                max_steps=MAX_AGENT_STEPS,
-                on_text=on_text,
-                cancel_event=_TurnCancel(),
-            )
+            with presence:
+                agent_result = run_agent(
+                    client=get_ai_client(),
+                    user_input=user_input,
+                    available_jobs=ServiceRegistry.get_all_jobs(),
+                    system_instructions=build_agent_system_prompt(),
+                    history=Conversation.get_messages(),
+                    max_steps=MAX_AGENT_STEPS,
+                    on_text=on_text,
+                    cancel_event=_TurnCancel(),
+                )
         except Exception as exc:
             agent_err = exc
         finally:

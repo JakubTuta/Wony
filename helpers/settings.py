@@ -11,7 +11,7 @@ import os
 import typing
 
 from helpers import config_writer, env_writer
-from helpers.config import ALWAYS_ON, Config
+from helpers.config import Config
 from helpers.paths import repo_path
 
 CONFIG_FILE = repo_path("config.yaml")
@@ -39,11 +39,14 @@ MODULES: typing.List[typing.Tuple[str, str, str]] = [
     ("scheduler", "Timers & reminders", "Timers and alarms that survive a restart."),
     ("notes", "Lists", "Shopping and todo lists you add to by voice."),
     ("weather", "Weather", "Now and the next few days, here or any city."),
-    ("web", "Web search", "Search the web and read pages."),
+    ("maps", "Maps & places", "Places near you and how long it takes to get somewhere."),
+    ("web", "Web search", "Search the web, read pages, and click through them to find things."),
     ("system", "Computer health", "Battery, disk space, memory and network."),
     ("spotify", "Spotify", "Play, pause, skip, search, volume."),
     ("gmail", "Gmail", "Read, search and watch your inbox."),
     ("calendar", "Google Calendar", "Events, availability and free slots."),
+    ("drive", "Google Drive", "Find and read your Drive files; create and edit Docs and Sheets."),
+    ("contacts", "Google Contacts", "Look people up, and email or invite them by name."),
     ("google_accounts", "Google accounts", "Use more than one Google account."),
     ("home_assistant", "Home Assistant", "Lights, blinds, thermostats, vacuums, scenes."),
     ("desktop", "Desktop control", "Open apps and windows, clipboard, read and write files."),
@@ -82,6 +85,9 @@ _FIELDS: typing.List[typing.Tuple[str, typing.List[Field]]] = [
         Field("assistant.owner_name", "Your name", "text", "How it addresses you."),
         Field("assistant.personality", "Personality", "longtext",
               "Free text describing how it should talk to you."),
+        Field("assistant.home_address", "Home address", "text",
+              "Used for 'near me' and local weather when Windows location is off. "
+              "Optional."),
     ]),
     ("Voice", [
         Field("voice.tts_voice", "Voice", "choice",
@@ -97,13 +103,21 @@ _FIELDS: typing.List[typing.Tuple[str, typing.List[Field]]] = [
               minimum=200, maximum=3000, step=50),
         Field("voice.conversation.enabled", "Keep listening after a reply", "toggle",
               "Carry on a back-and-forth without repeating the wake word."),
+        Field("voice.conversation.follow_up_timeout", "How long to keep listening after a reply",
+              "number", "Seconds of silence before Wony stops listening.",
+              minimum=1, maximum=15, step=0.5),
         Field("voice.barge_in.enabled", "Let me interrupt", "toggle",
               "Talking over a reply stops it."),
         Field("voice.media_pause.enabled", "Pause my music while talking", "toggle",
               "Pauses Spotify, videos and other players, then resumes them."),
         Field("voice.hotkeys.push_to_talk", "Push-to-talk key", "text",
               'Key combination that starts listening, e.g. "<ctrl>+<alt>+w". '
-              "Leave empty to switch it off.", restart=True),
+              "Use three keys: a single key also starts listening every time you "
+              "press it in any app. Leave empty to switch it off.", restart=True),
+        Field("voice.input_device", "Microphone", "choice",
+              "Which microphone Wony listens with.", restart=True),
+        Field("voice.output_device", "Speakers", "choice",
+              "Where Wony's voice plays.", restart=True),
     ]),
     ("Wake word", [
         Field("voice.wake_word.enabled", "Listen for a wake word", "toggle",
@@ -117,17 +131,18 @@ _FIELDS: typing.List[typing.Tuple[str, typing.List[Field]]] = [
     ]),
     ("AI", [
         Field("ai.provider", "AI provider", "choice",
-              "Which service answers. Leave on auto to use whichever key is in .env.",
-              choices=("auto", "anthropic", "gemini", "ollama"), restart=True),
+              "Which service answers. Leave on auto to use whichever key is in .env. "
+              "Claude and Gemini always use their fastest model.",
+              choices=("anthropic", "gemini", "ollama"), restart=True),
         Field("ANTHROPIC_API_KEY", "Anthropic API key", "secret",
               "Used when the AI provider is Anthropic (Claude). Get one at "
               "console.anthropic.com.", restart=True),
         Field("GEMINI_API_KEY", "Gemini API key", "secret",
               "Used when the AI provider is Gemini. Get one at aistudio.google.com.",
               restart=True),
-        Field("ai.thinking", "Thinking", "choice",
-              "'on' reasons harder on knowledge questions; 'off' is fastest.",
-              choices=("on", "off")),
+        Field("ai.ollama_model", "Ollama model", "text",
+              "The model name you pulled, e.g. llama3.1. Only used with Ollama.",
+              restart=True),
         Field("ai.history.max_turns", "Conversation memory", "number",
               "How many past exchanges it keeps in mind during a chat.",
               minimum=1, maximum=50, step=1),
@@ -137,9 +152,14 @@ _FIELDS: typing.List[typing.Tuple[str, typing.List[Field]]] = [
               "Send, reply, delete, and mark mail as read. "
               "Off: emails are saved as drafts for you to send yourself.",
               module="gmail"),
-        Field("modules.calendar.allow_write", "Change my calendar", "toggle",
-              "Off: it tells you what to add instead of adding it.",
+        Field("modules.calendar.allow_write", "Change my calendar and send invitations", "toggle",
+              "Create, change and delete events, and email invitations to the people on "
+              "them. Off: it tells you what to add instead of adding it.",
               module="calendar"),
+        Field("modules.drive.allow_write", "Change my Drive files", "toggle",
+              "Create Google Docs, add to Docs and Sheets, and upload files. "
+              "Off: it can find and read your files only. Turning it on asks Google once more.",
+              module="drive"),
         Field("modules.home_assistant.allow_locks", "Unlock doors and open the garage", "toggle",
               "Off: lights and blinds still work, locks and alarms do not.",
               module="home_assistant"),
@@ -167,14 +187,13 @@ _FIELDS: typing.List[typing.Tuple[str, typing.List[Field]]] = [
               "message, so 'what does this mean' has something to point at. Window "
               "titles name documents, browser tabs and who you are chatting to.",
               module="desktop"),
-        Field("modules.gmail.use_ai", "Summarise email with AI", "toggle",
-              "Sends the text of your emails to your AI provider.", module="gmail"),
     ]),
     ("This computer", [
         Field("modules.home_assistant.base_url", "Home Assistant address", "text",
               "The same address you open in a browser.", module="home_assistant"),
-        Field("modules.weather.default_units", "Units", "choice",
-              "Celsius or Fahrenheit.", choices=("metric", "imperial"), module="weather"),
+        Field("modules.maps.travel_mode", "How you usually get around", "choice",
+              "Used when you ask how long it takes to get somewhere.",
+              choices=("car", "public transport", "walking", "cycling"), module="maps"),
         Field("modules.calendar.work_start_hour", "Working day starts", "number",
               "Used when finding free time.", minimum=0, maximum=23, step=1, module="calendar"),
         Field("modules.calendar.work_end_hour", "Working day ends", "number",
@@ -185,9 +204,6 @@ _FIELDS: typing.List[typing.Tuple[str, typing.List[Field]]] = [
         Field("models.preload", "Load speech models at startup", "toggle",
               "Faster first reply, but holds memory the whole time Wony runs.",
               restart=True),
-        Field("server.port", "Web page port", "number",
-              "Change only if something else already uses this port.",
-              minimum=1024, maximum=65535, step=1, restart=True),
     ]),
 ]
 
@@ -224,8 +240,23 @@ def _dynamic_secret_fields() -> typing.List[Field]:
     return fields
 
 
+# Keys a module works without but does better with. Requirements only declare
+# what a module cannot run without, so these never reach _dynamic_secret_fields.
+_OPTIONAL_SECRETS: typing.List[Field] = [
+    Field("TAVILY_API_KEY", "Tavily API key", "secret",
+          "Better web search results (free key at tavily.com). Search works without it.",
+          module="web"),
+    Field("GOOGLE_MAPS_API_KEY", "Google Maps API key", "secret",
+          "Optional. Adds ratings, opening hours, live traffic and public transport. "
+          "Needs a Google Cloud billing account; Wony stays inside Google's free "
+          "monthly allowance and switches back to OpenStreetMap before it runs out.",
+          module="maps"),
+]
+
+
 def _all_sections() -> typing.List[typing.Tuple[str, typing.List[Field]]]:
     dynamic = _dynamic_secret_fields()
+    dynamic += [f for f in _OPTIONAL_SECRETS if f.key not in {d.key for d in dynamic}]
     return _FIELDS + [("Integration keys", dynamic)] if dynamic else _FIELDS
 
 
@@ -237,13 +268,40 @@ def _field_by_key(key: str) -> typing.Optional[Field]:
     return None
 
 
+# Choice fields where null in config.yaml means "decide for me", and the word
+# the UI shows for it.
+_NULL_CHOICE = {
+    "ai.provider": "auto",
+    "voice.input_device": "Windows default",
+    "voice.output_device": "Windows default",
+}
+
+
+def _device_choices(kind: str) -> typing.Callable[[], typing.List[str]]:
+    def names() -> typing.List[str]:
+        try:
+            from helpers.mic import device_names
+
+            return device_names(kind)
+        except Exception:
+            return []  # no audio stack installed: only "Windows default" is offered
+    return names
+
+
+# Choices that depend on this machine, read when the page asks for them.
+_DYNAMIC_CHOICES: typing.Dict[str, typing.Callable[[], typing.List[str]]] = {
+    "voice.input_device": _device_choices("input"),
+    "voice.output_device": _device_choices("output"),
+}
+
+
 def _current(field: Field) -> typing.Any:
     if field.kind == "secret":
         # Never hand the actual secret to the browser — only whether it's set.
         return bool(os.environ.get(field.key))
     value = Config.get(field.key)
-    if field.key == "ai.provider" and not value:
-        return "auto"
+    if field.key in _NULL_CHOICE and value is None:
+        return _NULL_CHOICE[field.key]
     return value
 
 
@@ -254,6 +312,10 @@ def _choices_for(field: Field, value: typing.Any) -> typing.List[str]:
     just because it is not one of the presets.
     """
     choices = list(field.choices)
+    if field.key in _DYNAMIC_CHOICES:
+        choices += _DYNAMIC_CHOICES[field.key]()
+    if field.key in _NULL_CHOICE and _NULL_CHOICE[field.key] not in choices:
+        choices.insert(0, _NULL_CHOICE[field.key])
     current = "" if value is None else str(value)
     if current and current not in choices:
         choices.append(current)
@@ -349,9 +411,10 @@ def _coerce(field: Field, value: typing.Any) -> typing.Any:
     text = "" if value is None else str(value).strip()
 
     if field.kind == "choice":
-        if text not in _choices_for(field, _current(field)):
-            raise SettingsError(f"{field.label} must be one of: {', '.join(field.choices)}.")
-        if field.key == "ai.provider" and text == "auto":
+        choices = _choices_for(field, _current(field))
+        if text not in choices:
+            raise SettingsError(f"{field.label} must be one of: {', '.join(choices)}.")
+        if text == _NULL_CHOICE.get(field.key):
             return None
         return text
 
@@ -394,12 +457,9 @@ def apply(
         unknown = [name for name in modules if name not in known]
         if unknown:
             raise SettingsError(f"Unknown module(s): {', '.join(unknown)}.")
-        # The always-on modules are not a user choice; the registry treats them
-        # as enabled whatever the file says, and the app has nothing to say
-        # without them.
-        to_write["enabled_modules"] = list(ALWAYS_ON) + [
-            key for key, _, _ in MODULES if key in set(modules)
-        ]
+        # Always-on modules are not written: the registry treats them as on
+        # whatever the file says, and listing them reads like a choice.
+        to_write["enabled_modules"] = [key for key, _, _ in MODULES if key in set(modules)]
         restart = True
 
     written: typing.List[str] = []

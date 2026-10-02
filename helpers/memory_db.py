@@ -802,8 +802,10 @@ def close() -> None:
 
 def _normalize_date(date_str: str) -> str:
     try:
-        import dateparser
-        dt = dateparser.parse(date_str, settings={"RETURN_AS_TIMEZONE_AWARE": False})
+        from helpers.timeutil import parse_when
+
+        # History questions look back: "on Monday" means the one that passed.
+        dt = parse_when(date_str, prefer="past")
         if dt:
             return dt.strftime("%Y-%m-%d")
     except Exception:
