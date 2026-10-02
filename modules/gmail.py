@@ -772,7 +772,7 @@ class Gmail:
             return "No matching email with attachments found."
         name, msg = found
         if not msg.attachments:
-            return f"'{msg.subject}' has no attached files."
+            return f"'{wrap(msg.subject, 'email subject')}' has no attached files."
 
         svc = self._svc(name)
         blocks, saved = [], []
@@ -793,7 +793,10 @@ class Gmail:
             else:
                 blocks.append(f"[{att.filename}] {att.mime} — no text I can read.")
 
-        header = f"Attachments of '{msg.subject}' from {self._format_sender(msg.sender)}:"
+        header = (
+            f"Attachments of '{wrap(msg.subject, 'email subject')}' "
+            f"from {wrap(self._format_sender(msg.sender), 'email sender')}:"
+        )
         footer = f"\nSaved to: {', '.join(saved)}" if saved else ""
         # Attached files are written by the sender.
         return header + "\n" + wrap("\n\n".join(blocks), "email attachment") + footer
@@ -836,10 +839,8 @@ class Gmail:
         lines = [headline, f"With attachments (last 7 days): {attachments}"]
         top = sorted(senders.items(), key=lambda item: item[1], reverse=True)[:5]
         if top:
-            lines.append(
-                "Top unread senders: "
-                + ", ".join(f"{who} ({count})" for who, count in top)
-            )
+            senders_line = ", ".join(f"{who} ({count})" for who, count in top)
+            lines.append("Top unread senders: " + wrap(senders_line, "email sender"))
         return "\n".join(lines)
 
     @capture_response

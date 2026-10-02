@@ -13,9 +13,6 @@ from helpers.paths import repo_path
 HOST = "127.0.0.1"
 LOOPBACK_NAMES = ("127.0.0.1", "localhost")
 
-_VITE_DEV_PORT = 5173
-DEV_ORIGINS = [f"http://{name}:{_VITE_DEV_PORT}" for name in LOOPBACK_NAMES]
-
 _PORT_KV_KEY = "web.port"
 # Read by web/vite.config.ts so the dev server proxies to the running backend.
 _RUNTIME_FILE = repo_path(".wony_server")
@@ -61,12 +58,15 @@ def url(port: int) -> str:
 def allowed_origin(origin: typing.Optional[str], host_header: str) -> bool:
     """Whether a browser page at `origin` may talk to this server.
 
-    Same-origin (the page Wony itself served) or the Vite dev server. A missing
-    Origin means a non-browser client, which no website can drive.
+    Same-origin only — the page Wony itself served. The Vite dev server proxies
+    `/api` and rewrites its requests' Origin to match (web/vite.config.ts), so
+    it reaches this server looking same-origin too, with no separate carve-out
+    needed here. A missing Origin means a non-browser client, which no website
+    can drive.
     """
     if not origin:
         return True
     parts = urlsplit(origin)
     if parts.scheme != "http" or parts.hostname not in LOOPBACK_NAMES:
         return False
-    return parts.netloc == host_header or parts.port == _VITE_DEV_PORT
+    return parts.netloc == host_header

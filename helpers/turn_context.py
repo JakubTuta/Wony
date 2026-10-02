@@ -14,12 +14,17 @@ _local = threading.local()
 @contextlib.contextmanager
 def user_request(text: str = "") -> typing.Iterator[None]:
     """Mark everything inside as started by the user, saying `text`."""
-    previous = (getattr(_local, "present", False), getattr(_local, "text", ""))
-    _local.present, _local.text = True, text
+    previous = (
+        getattr(_local, "present", False),
+        getattr(_local, "text", ""),
+        getattr(_local, "untrusted", False),
+        getattr(_local, "search_hrefs", None),
+    )
+    _local.present, _local.text, _local.untrusted, _local.search_hrefs = True, text, False, set()
     try:
         yield
     finally:
-        _local.present, _local.text = previous
+        _local.present, _local.text, _local.untrusted, _local.search_hrefs = previous
 
 
 def user_present() -> bool:
@@ -29,3 +34,27 @@ def user_present() -> bool:
 def user_text() -> str:
     """What the user said this turn ("" for a click or no user at all)."""
     return getattr(_local, "text", "")
+
+
+def mark_untrusted_read() -> None:
+    """Record that this turn has read text someone other than the user
+    wrote (helpers/untrusted.py). Read back by helpers/confirm.py so a save,
+    an add, or a watcher turned on right after can be asked about instead of
+    silently acting on an instruction smuggled in there."""
+    _local.untrusted = True
+
+
+def untrusted_read() -> bool:
+    return getattr(_local, "untrusted", False)
+
+
+def record_search_hrefs(hrefs: typing.Iterable[str]) -> None:
+    """Remember the links a web_search call returned this turn, so a browse
+    call that only visits one of them can skip the "did the user ask for this
+    site" check — the search itself was the user's request."""
+    existing = getattr(_local, "search_hrefs", None) or set()
+    _local.search_hrefs = existing | set(hrefs)
+
+
+def search_hrefs() -> typing.Set[str]:
+    return getattr(_local, "search_hrefs", None) or set()

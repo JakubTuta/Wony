@@ -62,6 +62,33 @@ class TestLocalOnly(unittest.TestCase):
         resp = self.client.get("/api/jobs", headers={"Host": "evil.example:8123"})
         self.assertEqual(resp.status_code, 403)
 
+    def test_cross_site_fetch_metadata_is_refused_even_with_no_origin(self) -> None:
+        # A same-origin Origin header plus a cross-site Sec-Fetch-Site should
+        # not happen from a real browser, but the second check must still
+        # hold on its own — it is not there to agree with the first.
+        resp = self.client.get("/api/jobs", headers={"Sec-Fetch-Site": "cross-site"})
+        self.assertEqual(resp.status_code, 403)
+
+    def test_same_site_fetch_metadata_is_refused(self) -> None:
+        resp = self.client.get("/api/jobs", headers={"Sec-Fetch-Site": "same-site"})
+        self.assertEqual(resp.status_code, 403)
+
+    def test_same_origin_fetch_metadata_is_accepted(self) -> None:
+        resp = self.client.get("/api/jobs", headers={"Sec-Fetch-Site": "same-origin"})
+        self.assertEqual(resp.status_code, 200)
+
+    def test_no_docs_or_openapi_schema_is_served(self) -> None:
+        # Unregistering docs_url/redoc_url/openapi_url (not a 404: the SPA
+        # catch-all serves index.html for any unmatched path, same as it
+        # would for a typo'd URL) is what matters — no route here may return
+        # the OpenAPI schema or the Swagger/ReDoc UI.
+        for path in ("/docs", "/redoc", "/openapi.json"):
+            with self.subTest(path=path):
+                resp = self.client.get(path)
+                self.assertNotEqual(resp.headers.get("content-type", ""), "application/json")
+                self.assertNotIn("swagger-ui", resp.text.lower())
+                self.assertNotIn("redoc", resp.text.lower())
+
 
 class TestAllowedOrigin(unittest.TestCase):
     def test_rules(self) -> None:
@@ -69,7 +96,7 @@ class TestAllowedOrigin(unittest.TestCase):
 
         self.assertTrue(allowed_origin(None, "127.0.0.1:9000"))
         self.assertTrue(allowed_origin("http://127.0.0.1:9000", "127.0.0.1:9000"))
-        self.assertTrue(allowed_origin("http://localhost:5173", "127.0.0.1:9000"))
+        self.assertFalse(allowed_origin("http://localhost:5173", "127.0.0.1:9000"))
         self.assertFalse(allowed_origin("http://127.0.0.1:9001", "127.0.0.1:9000"))
         self.assertFalse(allowed_origin("http://evil.example:9000", "127.0.0.1:9000"))
         self.assertFalse(allowed_origin("null", "127.0.0.1:9000"))

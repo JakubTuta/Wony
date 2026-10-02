@@ -27,10 +27,23 @@ def _normalize(list_name: str) -> str:
     return (list_name or _DEFAULT_LIST).strip().lower() or _DEFAULT_LIST
 
 
+def _note_needs_confirm(args: typing.Dict[str, typing.Any]) -> bool:
+    """Clearing a list always asks. Adding asks only after this turn has read
+    something someone other than the user wrote — a page that says "add this
+    link to your list" must not get to plant it silently."""
+    wanted = str(args.get("action", "add")).strip().lower()
+    if wanted == "clear":
+        return True
+    if wanted != "add":
+        return False
+    from helpers import confirm
+    return confirm.after_untrusted(args)
+
+
 @register_job(
     module_name="notes",
     summary="Keep shopping and todo lists",
-    confirms={"clear", "empty"},
+    confirms=_note_needs_confirm,
 )
 @capture_response
 def note(

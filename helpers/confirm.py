@@ -79,6 +79,14 @@ def check(job_name: str, args: typing.Dict[str, typing.Any]) -> typing.Optional[
     if not _applies(ServiceRegistry.get_job_confirms().get(job_name), args):
         return None
 
+    from helpers import turn_context
+
+    if not turn_context.user_present():
+        # A trigger or scheduled action nobody is watching cannot be the one
+        # saying "yes" — and arming here would let a later, real user turn
+        # that happens to make the same call spend a confirmation nobody gave.
+        return f"NOT DONE — {job_name} needs the user present to confirm. Do not call it."
+
     key = _fingerprint(job_name, args)
     now = time.monotonic()
 
@@ -102,6 +110,16 @@ def check(job_name: str, args: typing.Dict[str, typing.Any]) -> typing.Optional[
         "Tell them exactly what it will do and ask them to confirm. "
         "If they say yes, call it again with the same arguments."
     )
+
+
+def after_untrusted(args: typing.Dict[str, typing.Any]) -> bool:
+    """A `confirms=` predicate: true once this turn has read text someone
+    other than the user wrote (helpers/untrusted.py). `args` is unused — the
+    risk lives in the turn having read something, not in which call it is —
+    but the signature matches every other confirms callable."""
+    from helpers import turn_context
+
+    return turn_context.untrusted_read()
 
 
 def reset() -> None:

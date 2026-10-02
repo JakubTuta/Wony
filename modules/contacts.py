@@ -117,7 +117,9 @@ def resolve_addresses(text: str, account: str = "") -> typing.Tuple[typing.List[
         if len(options) == 1:
             addresses.append(options[0])
         elif options:
-            return [], f"Which {item} — {', '.join(options[:5])}?"
+            # Entries under "Other contacts" are addresses mail from other
+            # people left behind, not ones the user typed in themselves.
+            return [], f"Which {item} — {wrap(', '.join(options[:5]), 'contacts')}?"
         else:
             return [], f"I don't have an email address for {item}."
     return addresses, ""

@@ -107,7 +107,7 @@ class GoogleAccountsService:
         """
         wanted = (action or "list").strip().lower()
 
-        if wanted in ("list", "show"):
+        if wanted == "list":
             return self._list_accounts()
 
         if not name:
@@ -115,15 +115,15 @@ class GoogleAccountsService:
 
         if wanted == "add":
             return self._add_account(name)
-        if wanted in ("authorize", "auth", "sign_in", "login"):
+        if wanted == "authorize":
             return self._authorize_account(name)
-        if wanted in ("remove", "delete", "forget"):
+        if wanted == "remove":
             return self._remove_account(name)
         if wanted == "rename":
             if not new_name:
                 return "Error: 'new_name' is required to rename an account."
             return self._rename_account(name, new_name)
-        if wanted in ("set_primary", "primary", "default"):
+        if wanted == "set_primary":
             try:
                 GoogleAccounts.set_primary(name)
             except ValueError as e:

@@ -1,8 +1,9 @@
 """Browsing hands a model a real browser, so its boundaries are the point:
-it must not reach the local network, a task on a site the user never named
-must be confirmed first (an email can carry a link built to leak data), and
-the sub-agent must not touch the user's turn — its confirm gate and its
-tool-outcome ledger.
+it must not reach the local network, a page the user never named or searched
+for must be confirmed first — with or without a task, since reading a page
+can leak data exactly as well as clicking through it can — and the sub-agent
+must not touch the user's turn — its confirm gate and its tool-outcome
+ledger.
 
 Run directly: python tests/test_browse.py
 """
@@ -18,10 +19,10 @@ sys.path.insert(0, _REPO_ROOT)
 class TestExfilRule(unittest.TestCase):
     def _needs_ok(self, said: str, url: str, task: str = "find the price") -> bool:
         from helpers.turn_context import user_request
-        from modules.web import _task_needs_ok
+        from modules.web import _needs_ok
 
         with user_request(said), mock.patch("helpers.conversation.Conversation.get_messages", return_value=[]):
-            return _task_needs_ok({"url": url, "task": task})
+            return _needs_ok({"url": url, "task": task})
 
     def test_a_site_the_user_named_runs_without_asking(self) -> None:
         self.assertFalse(self._needs_ok("check the price on shop.example", "https://www.shop.example/item/1"))
@@ -29,15 +30,32 @@ class TestExfilRule(unittest.TestCase):
     def test_a_site_from_somewhere_else_needs_a_yes(self) -> None:
         self.assertTrue(self._needs_ok("summarise my latest email", "https://evil.example/?inbox=secret"))
 
-    def test_plain_reading_is_not_gated(self) -> None:
-        self.assertFalse(self._needs_ok("read my email", "https://evil.example/", task=""))
+    def test_plain_reading_of_an_unnamed_site_needs_a_yes(self) -> None:
+        self.assertTrue(self._needs_ok("read my email", "https://evil.example/", task=""))
+
+    def test_plain_reading_of_a_named_site_runs_without_asking(self) -> None:
+        self.assertFalse(self._needs_ok("read shop.example for me", "https://shop.example/", task=""))
+
+    def test_a_substring_domain_does_not_count_as_named(self) -> None:
+        self.assertTrue(self._needs_ok("summarise notevil.example for me", "https://evil.example/", task=""))
+
+    def test_a_link_from_this_turns_search_runs_without_asking(self) -> None:
+        from helpers.turn_context import record_search_hrefs, user_request
+        from modules.web import _needs_ok
+
+        with user_request("find me a shop"), \
+                mock.patch("helpers.conversation.Conversation.get_messages", return_value=[]):
+            record_search_hrefs(["https://evil.example/?d=secret"])
+            self.assertFalse(_needs_ok({"url": "https://evil.example/?d=secret", "task": ""}))
 
     def test_the_gate_is_wired_into_confirm(self) -> None:
         from helpers import confirm
-        from modules.web import _task_needs_ok
+        from helpers.turn_context import user_request
+        from modules.web import _needs_ok
 
-        with mock.patch("helpers.registry.ServiceRegistry.get_job_confirms", return_value={"browse": _task_needs_ok}), \
-                mock.patch("helpers.conversation.Conversation.get_messages", return_value=[]):
+        with mock.patch("helpers.registry.ServiceRegistry.get_job_confirms", return_value={"browse": _needs_ok}), \
+                mock.patch("helpers.conversation.Conversation.get_messages", return_value=[]), \
+                user_request("summarise my latest email"):
             confirm.reset()
             message = confirm.check("browse", {"url": "https://evil.example/", "task": "click send"})
         self.assertIsNotNone(message)

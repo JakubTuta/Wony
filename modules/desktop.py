@@ -3,8 +3,10 @@ import subprocess
 import typing
 
 from helpers.decorators import capture_response
+from helpers.paths import repo_path
 from helpers.registry import method_job, register_service
 from helpers.requirements import Requirement
+from helpers.untrusted import wrap
 
 
 def _desktop_requirement() -> Requirement:
@@ -45,21 +47,18 @@ _MAX_FILE_CHARS = 6000
 _MAX_DIR_ENTRIES = 100
 
 
-def _resolve_executable(name: str) -> typing.Optional[str]:
-    """Resolve an app name to a launchable executable path, deterministically.
+def _resolve_app_by_name(name: str) -> typing.Optional[str]:
+    """An installed program found by name — on PATH or in the App Paths
+    registry (how Windows resolves 'chrome', 'spotify', …) — never a literal
+    path. "Open spotify" must not be able to resolve to an arbitrary file the
+    user happens to have lying around with that name; that risk belongs to
+    the file-path branch in `open`, which confirms for dangerous extensions.
 
     Avoids handing a bare name to ShellExecute (os.startfile), which pops a
-    Windows error dialog on failure. Checks, in order:
-      1. an existing path as given,
-      2. PATH (shutil.which),
-      3. the App Paths registry (how Windows resolves 'chrome', 'spotify', …).
-    Returns the full path, or None if unresolved.
+    Windows error dialog on failure. Returns the full path, or None if
+    unresolved.
     """
     import shutil
-
-    expanded = os.path.expanduser(name)
-    if os.path.exists(expanded):
-        return os.path.abspath(expanded)
 
     found = shutil.which(name)
     if found:
@@ -106,11 +105,17 @@ def _box_center(box: typing.Dict[str, typing.Tuple[int, int]]) -> typing.Tuple[i
     return (left + right) // 2, (top + bottom) // 2
 
 
-def _known_dirs() -> typing.List[str]:
+def _known_dirs(include_home: bool = True) -> typing.List[str]:
     """Common user folders to resolve bare filenames against.
 
     Includes OneDrive-redirected variants (Win11 commonly moves Desktop/
     Documents under %USERPROFILE%\\OneDrive). Order = search priority.
+
+    include_home=False drops the catch-all home folder itself. Bare-name
+    search wants it — the home folder is a reasonable last resort for
+    finding a file by name. The read-confirm gate (_file_needs_confirm) does
+    not: "within the home folder" is nearly every file a user has, not the
+    handful of places they would expect Wony to read without being asked.
     """
     home = os.path.expanduser("~")
     onedrive = os.environ.get("OneDrive") or os.path.join(home, "OneDrive")
@@ -121,13 +126,37 @@ def _known_dirs() -> typing.List[str]:
         os.path.join(home, "Documents"),
         os.path.join(onedrive, "Documents"),
         os.path.join(home, "Downloads"),
-        home,
     ]
+    if include_home:
+        candidates.append(home)
     seen: typing.List[str] = []
     for d in candidates:
         if d and os.path.isdir(d) and d not in seen:
             seen.append(d)
     return seen
+
+
+def _contains(directory: str, path: str) -> bool:
+    directory = os.path.normcase(os.path.abspath(directory))
+    path = os.path.normcase(os.path.abspath(path))
+    return path == directory or path.startswith(directory + os.sep)
+
+
+_SECRET_PATHS = [
+    repo_path(".env"), repo_path("credentials"), repo_path("cache.json"),
+    repo_path("wony.db"), repo_path("logs"), repo_path("config.yaml"),
+]
+
+
+def _is_wony_secret(path: str) -> bool:
+    """Wony's own config, credentials, cache and logs — off limits to the file
+    job no matter the action, confirmed or not."""
+    expanded = os.path.abspath(os.path.expanduser(path))
+    return any(_contains(secret, expanded) for secret in _SECRET_PATHS)
+
+
+def _within_known_dirs(path: str) -> bool:
+    return any(_contains(d, path) for d in _known_dirs(include_home=False))
 
 
 _FIND_LIMIT = 20
@@ -224,6 +253,50 @@ def _resolve_file(path: str) -> typing.Tuple[typing.Optional[str], typing.List[s
     return None, uniq
 
 
+_DANGEROUS_OPEN_EXTENSIONS = {
+    ".exe", ".bat", ".cmd", ".ps1", ".vbs", ".js", ".lnk", ".url", ".hta", ".msi", ".scr",
+}
+
+
+def _open_needs_confirm(args: typing.Dict[str, typing.Any]) -> bool:
+    """Opening an installed app by name is routine. Opening something that
+    resolves to an executable or script by path is how a downloaded .exe or
+    .bat someone was told to "open" would run — that always asks first."""
+    target = str(args.get("target", "")).strip()
+    if not target or _resolve_app_by_name(target) is not None:
+        return False
+    resolved, _ = _resolve_file(target)
+    if resolved is None:
+        return False
+    return os.path.splitext(resolved)[1].lower() in _DANGEROUS_OPEN_EXTENSIONS
+
+
+def _file_needs_confirm(args: typing.Dict[str, typing.Any]) -> bool:
+    """Writing always asks. Reading asks only when the path falls outside the
+    common user folders and the user did not type it themselves this
+    conversation — a page or email that names an arbitrary path must not read
+    it silently, but "read my resume on the Desktop" should not interrupt."""
+    wanted = str(args.get("action", "read")).strip().lower()
+    if wanted in ("write", "append"):
+        return True
+    if wanted != "read":
+        return False
+
+    path = str(args.get("path", "")).strip()
+    if not path:
+        return False
+    resolved, _ = _resolve_file(path)
+    if resolved is None or _within_known_dirs(resolved):
+        return False
+
+    from helpers.conversation import Conversation
+    from helpers.turn_context import user_text
+
+    said = [user_text()] + [m["content"] for m in Conversation.get_messages() if m["role"] == "user"]
+    needle = path.lower()
+    return not any(needle in str(text).lower() for text in said)
+
+
 @register_service(
     module_name="desktop",
     requires=_desktop_requirement(),
@@ -261,7 +334,8 @@ class Desktop:
             windows = [w.title for w in gw.getAllWindows() if w.title.strip()]
             if not windows:
                 return "No visible windows found."
-            return "Open windows:\n" + "\n".join(f"  - {w}" for w in sorted(set(windows)))
+            listing = "\n".join(f"  - {w}" for w in sorted(set(windows)))
+            return "Open windows:\n" + wrap(listing, "window titles")
 
         if wanted not in ("focus", "minimize", "minimise", "maximize", "maximise", "close"):
             return f"Unknown action '{action}'. Use list, focus, minimize, maximize or close."
@@ -336,7 +410,7 @@ class Desktop:
                 if len(current) > _CLIPBOARD_PREVIEW_CHARS
                 else ""
             )
-            return f"Clipboard content:\n{preview}{suffix}"
+            return f"Clipboard content:\n{wrap(preview + suffix, 'clipboard')}"
 
         if wanted not in ("write", "set", "copy"):
             return f"Unknown action '{action}'. Use read or write."
@@ -384,7 +458,7 @@ class Desktop:
         suffix = f"\n(Showing the first {_FIND_LIMIT}.)" if len(matches) >= _FIND_LIMIT else ""
         return f"Files matching '{query}':\n" + "\n".join(f"  {m}" for m in matches) + suffix + note
 
-    @method_job(confirms={"write", "append"})
+    @method_job(confirms=_file_needs_confirm)
     @capture_response
     def file(
         self,
@@ -413,12 +487,14 @@ class Desktop:
         wanted = (action or "read").strip().lower()
         if not path:
             return "Error: Which file?"
+        if _is_wony_secret(path):
+            return "Error: I don't read or write Wony's own config, credentials or logs."
 
-        if wanted in ("read", "cat", "show"):
+        if wanted == "read":
             return self._read_file(path, offset)
-        if wanted in ("list", "ls", "dir"):
+        if wanted == "list":
             return self._list_dir(path)
-        if wanted not in ("write", "save", "append", "add"):
+        if wanted not in ("write", "append"):
             return f"Unknown action '{action}'. Use read, write, append or list."
 
         blocked = _require_actions(f"file {wanted}")
@@ -426,7 +502,7 @@ class Desktop:
             return blocked
         if not content:
             return "Error: No text to write."
-        return self._write_file(path, content, append=wanted in ("append", "add"))
+        return self._write_file(path, content, append=wanted == "append")
 
     @staticmethod
     def _read_file(path: str, offset: int) -> str:
@@ -436,6 +512,8 @@ class Desktop:
                 listing = "\n".join(f"  {m}" for m in matches[:20])
                 return f"Ambiguous: multiple files match '{path}':\n{listing}"
             return f"Error: No file called '{path}'."
+        if _is_wony_secret(resolved):
+            return "Error: I don't read or write Wony's own config, credentials or logs."
         if os.path.isdir(resolved):
             return Desktop._list_dir(resolved)
 
@@ -465,13 +543,15 @@ class Desktop:
             f"Read on with offset={end}.]"
             if end < len(text) else ""
         )
-        return f"{resolved}:\n{page}{suffix}"
+        return f"{resolved}:\n{wrap(page, 'file')}{suffix}"
 
     @staticmethod
     def _list_dir(path: str) -> str:
         folder = os.path.expanduser(path)
         if not os.path.isdir(folder):
             return f"Error: '{path}' is not a folder."
+        if _is_wony_secret(folder):
+            return "Error: I don't read or write Wony's own config, credentials or logs."
         try:
             entries = sorted(os.listdir(folder))
         except OSError as e:
@@ -492,6 +572,8 @@ class Desktop:
     @staticmethod
     def _write_file(path: str, content: str, append: bool) -> str:
         target = os.path.abspath(os.path.expanduser(path))
+        if _is_wony_secret(target):
+            return "Error: I don't read or write Wony's own config, credentials or logs."
         folder = os.path.dirname(target)
         if folder and not os.path.isdir(folder):
             return f"Error: the folder '{folder}' does not exist."
@@ -509,7 +591,7 @@ class Desktop:
 
     # ------------------------------------------------------------------ action-gated
 
-    @method_job
+    @method_job(confirms=_open_needs_confirm)
     @capture_response
     def open(self, target: str) -> str:
         """
@@ -534,14 +616,15 @@ class Desktop:
         if not target:
             return "Error: Nothing to open."
 
-        # Applications first: a bare "spotify" means the app, not a stray file
-        # of that name. Resolve to a concrete executable BEFORE launching —
-        # handing a bare name to ShellExecute pops a premature "cannot find"
-        # dialog and reports failure even when the app opens moments later.
-        exe = _resolve_executable(target)
-        if exe is not None and os.path.splitext(exe)[1].lower() == ".exe":
+        # Apps by name first: a bare "spotify" means the installed app, not a
+        # stray file of that name. Resolve to a concrete executable BEFORE
+        # launching — handing a bare name to ShellExecute pops a premature
+        # "cannot find" dialog and reports failure even when the app opens
+        # moments later.
+        app = _resolve_app_by_name(target)
+        if app is not None:
             try:
-                subprocess.Popen([exe])
+                subprocess.Popen([app])
                 return f"Opening '{target}'."
             except Exception as e:
                 return f"Error opening '{target}': {e}"
@@ -558,6 +641,8 @@ class Desktop:
                 f"Error: Could not find an app or file called '{target}'. "
                 f"Searched: {', '.join(_known_dirs())}"
             )
+        if _is_wony_secret(resolved):
+            return "Error: I don't read or write Wony's own config, credentials or logs."
 
         try:
             os.startfile(resolved)

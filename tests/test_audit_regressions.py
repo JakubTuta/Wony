@@ -894,11 +894,12 @@ class TestConfirmGate(unittest.TestCase):
         from unittest import mock
 
         from helpers import confirm
+        from helpers.turn_context import user_request
 
         with mock.patch(
             "helpers.registry.ServiceRegistry.get_job_confirms",
             return_value={"delete_it": True},
-        ):
+        ), user_request("delete everything"):
             confirm.begin_turn()
             first = confirm.check("delete_it", {"what": "everything"})
             self.assertIsNotNone(first)
@@ -938,6 +939,55 @@ class TestConfirmGate(unittest.TestCase):
             confirm.begin_turn()
             self.assertIsNone(confirm.check("manage_drafts", {"action": "list"}))
             self.assertIsNotNone(confirm.check("manage_drafts", {"action": "delete"}))
+
+    def test_an_unattended_turn_cannot_arm_or_spend_a_confirmation(self) -> None:
+        """A trigger turn (from_user=False) has nobody to ask, and must not be
+        able to arm a confirmation a later real turn would then spend, nor
+        spend one a real turn armed earlier."""
+        from unittest import mock
+
+        from helpers import confirm
+
+        with mock.patch(
+            "helpers.registry.ServiceRegistry.get_job_confirms",
+            return_value={"delete_it": True},
+        ):
+            confirm.reset()
+            confirm.begin_turn()
+            # No turn_context.user_request() active: nobody is present.
+            self.assertIsNotNone(confirm.check("delete_it", {"what": "everything"}))
+            confirm.begin_turn()
+            # Had the first call armed it, this would now be spent (None).
+            self.assertIsNotNone(confirm.check("delete_it", {"what": "everything"}))
+
+
+class TestValidateArgs(unittest.TestCase):
+    def test_a_value_outside_the_enum_is_rejected(self) -> None:
+        from helpers.tools import validate_args
+        from modules.routines import routine
+
+        self.assertIsNotNone(validate_args(routine, {"action": "update", "name": "x"}))
+        self.assertIsNone(validate_args(routine, {"action": "add", "name": "x", "steps": "y"}))
+
+    def test_an_unknown_action_is_rejected_before_the_job_runs(self) -> None:
+        """The agent loop calls validate_args before confirm.check and before
+        the job itself — "update" used to alias "add" inside routine()'s own
+        body; a value outside the enum must never reach it."""
+        from unittest import mock
+
+        from helpers import agent
+        from modules.routines import routine
+
+        with mock.patch.object(
+            agent, "_extract_all_tool_calls",
+            return_value=[{"id": "1", "name": "routine", "args": {"action": "update", "name": "x"}}],
+        ), mock.patch("helpers.model.send_agent_messages", return_value=object()), \
+                mock.patch("helpers.model.get_text_from_response", return_value=""):
+            result = agent.run_agent(
+                client=None, user_input="rename my routine",
+                available_jobs={"routine": routine}, system_instructions="", max_steps=1,
+            )
+        self.assertIn("must be one of", result.calls[0]["result"])
 
 
 class TestFrontendJobNames(unittest.TestCase):
@@ -1115,6 +1165,97 @@ class TestFileJob(unittest.TestCase):
                 result = Desktop.file(Desktop.__new__(Desktop), "write", path, "hello")
             self.assertIn("allow_actions", result)
             self.assertFalse(os.path.exists(path))
+
+    def test_reading_wonys_own_env_file_is_refused(self) -> None:
+        from helpers.paths import repo_path
+        from modules.desktop import Desktop
+
+        result = Desktop.file(Desktop.__new__(Desktop), "read", repo_path(".env"))
+        self.assertIn("own config, credentials or logs", result)
+
+    def test_reading_a_bare_name_that_resolves_into_a_secret_dir_is_refused(self) -> None:
+        """A bare "logs" or "wony.db" resolves through _known_dirs() (cwd is
+        the repo root) to the real thing — the refusal has to key off the
+        resolved path, not just the literal string the caller typed."""
+        from unittest import mock
+
+        from helpers.paths import repo_path
+        from modules.desktop import Desktop, _known_dirs
+
+        with mock.patch("modules.desktop._known_dirs", return_value=[repo_path()]):
+            result = Desktop.file(Desktop.__new__(Desktop), "read", "wony.db")
+        self.assertIn("own config, credentials or logs", result)
+
+    def test_reading_a_path_outside_the_known_folders_needs_confirm_unless_named(self) -> None:
+        from unittest import mock
+
+        from helpers.turn_context import user_request
+        from modules.desktop import _file_needs_confirm
+
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "secret.txt")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write("x")
+
+            with user_request("summarise the email"), \
+                    mock.patch("helpers.conversation.Conversation.get_messages", return_value=[]):
+                self.assertTrue(_file_needs_confirm({"action": "read", "path": path}))
+
+            with user_request(f"read {path} for me"), \
+                    mock.patch("helpers.conversation.Conversation.get_messages", return_value=[]):
+                self.assertFalse(_file_needs_confirm({"action": "read", "path": path}))
+
+    def test_a_desktop_file_does_not_need_confirm(self) -> None:
+        """_within_known_dirs still allows the ordinary places without asking
+        — only dropping the home folder itself from that set."""
+        from unittest import mock
+
+        from helpers.turn_context import user_request
+        from modules.desktop import _file_needs_confirm
+
+        with tempfile.TemporaryDirectory() as desktop:
+            path = os.path.join(desktop, "resume.pdf")
+            open(path, "w").close()
+            with mock.patch("modules.desktop._known_dirs", side_effect=lambda include_home=True: [desktop]), \
+                    user_request("read my resume"), \
+                    mock.patch("helpers.conversation.Conversation.get_messages", return_value=[]):
+                self.assertFalse(_file_needs_confirm({"action": "read", "path": path}))
+
+    def test_writing_always_needs_confirm(self) -> None:
+        from modules.desktop import _file_needs_confirm
+
+        self.assertTrue(_file_needs_confirm({"action": "write", "path": "x.txt"}))
+        self.assertTrue(_file_needs_confirm({"action": "append", "path": "x.txt"}))
+
+
+class TestOpenGate(unittest.TestCase):
+    def test_a_downloaded_executable_needs_confirm_but_an_installed_app_does_not(self) -> None:
+        from unittest import mock
+
+        from modules.desktop import _open_needs_confirm
+
+        with tempfile.TemporaryDirectory() as folder:
+            exe = os.path.join(folder, "totally_legit_invoice.exe")
+            open(exe, "w").close()
+            # Not found by name: this is a file someone pointed Wony at, not
+            # an installed program on PATH or in the App Paths registry.
+            with mock.patch("modules.desktop._resolve_app_by_name", return_value=None):
+                self.assertTrue(_open_needs_confirm({"target": exe}))
+
+        with mock.patch("modules.desktop._resolve_app_by_name", return_value=r"C:\Windows\notepad.exe"):
+            self.assertFalse(_open_needs_confirm({"target": "notepad"}))
+
+    def test_a_plain_document_does_not_need_confirm(self) -> None:
+        from unittest import mock
+
+        from modules.desktop import _open_needs_confirm
+
+        with tempfile.TemporaryDirectory() as folder:
+            doc = os.path.join(folder, "resume.pdf")
+            open(doc, "w").close()
+            with mock.patch("modules.desktop._known_dirs", return_value=[folder]), \
+                    mock.patch("modules.desktop._resolve_app_by_name", return_value=None):
+                self.assertFalse(_open_needs_confirm({"target": doc}))
 
 
 class TestWeatherForecast(unittest.TestCase):

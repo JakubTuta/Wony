@@ -9,7 +9,6 @@ import os
 import typing
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -176,6 +175,11 @@ class _LocalOnlyMiddleware:
         host = headers.get("host", "")
         if host.rsplit(":", 1)[0] not in LOOPBACK_NAMES:
             return False
+        # Belt and suspenders alongside the Origin check: a fetch() a site
+        # makes to this server is neither same-origin nor absent, whatever
+        # Origin header it happens to send.
+        if headers.get("sec-fetch-site") in ("cross-site", "same-site"):
+            return False
         return allowed_origin(headers.get("origin"), host)
 
 
@@ -217,18 +221,14 @@ def build_app() -> FastAPI:
         finally:
             unsubscribe(_on_event)
 
-    app = FastAPI(title="Wony Web API", lifespan=_lifespan)
-
-    from helpers.server_address import DEV_ORIGINS
+    # No docs/OpenAPI: this API has no auth, so the schema is one more thing
+    # a page in the browser could fetch to learn what is callable.
+    app = FastAPI(
+        title="Wony Web API", lifespan=_lifespan,
+        docs_url=None, redoc_url=None, openapi_url=None,
+    )
 
     app.add_middleware(_LocalOnlyMiddleware)
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=DEV_ORIGINS,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
 
     @app.get("/api/config")
     def get_config() -> typing.Dict[str, typing.Any]:

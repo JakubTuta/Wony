@@ -136,20 +136,22 @@ class Drive:
             return (exact or matches)[0], ""
         if not matches:
             return None, f"No Drive file called '{file}'."
+        # File names in a shared drive are chosen by whoever shared them.
         names = "; ".join(f"{m['name']} (id={m['id']})" for m in matches)
-        return None, f"Several files match '{file}': {names}. Which one?"
+        return None, f"Several files match '{file}': {wrap(names, 'drive')}. Which one?"
 
     def _read(self, file: str, kind: str, offset: int, account: str) -> str:
         found, problem = self._find_one(file, kind, account)
         if found is None:
             return problem
+        name = wrap(found["name"], "drive")
         text = self._text_of(found, account)
         if not text.strip():
-            return f"I couldn't read any text in '{found['name']}' — it may be an image, a scan or a format I can't read."
+            return f"I couldn't read any text in '{name}' — it may be an image, a scan or a format I can't read."
         page = text[offset:offset + _READ_CHARS]
         end = offset + len(page)
         more = f"\n[Characters {offset}–{end} of {len(text)}. Read on with offset={end}.]" if end < len(text) else ""
-        return f"'{found['name']}':\n{wrap(page, 'drive')}{more}"
+        return f"'{name}':\n{wrap(page, 'drive')}{more}"
 
     def _text_of(self, meta: dict, account: str) -> str:
         from helpers.text_extract import extract_bytes

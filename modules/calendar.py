@@ -506,17 +506,17 @@ class Calendar:
         if not calendars:
             return "No calendars found."
 
+        # A shared calendar's name is chosen by whoever shared it.
         if audio:
-            return f"You have {len(calendars)} calendar(s): " + ", ".join(
-                c.get("summary", "Unnamed") for c in calendars
-            )
+            names = ", ".join(c.get("summary", "Unnamed") for c in calendars)
+            return f"You have {len(calendars)} calendar(s): " + wrap(names, "calendar")
         lines = [f"Calendars ({len(calendars)}):"]
         for cal in calendars:
             name = cal.get("summary", "Unnamed")
             cal_id = cal.get("id", "")
             primary = " [primary]" if cal.get("primary") else ""
             access = cal.get("accessRole", "")
-            lines.append(f"  {name}{primary}  ({access})  id: {cal_id}")
+            lines.append(f"  {wrap(name, 'calendar')}{primary}  ({access})  id: {cal_id}")
         return "\n".join(lines)
 
 
@@ -868,10 +868,11 @@ class Calendar:
             return None, "No matching event found."
 
         if len(events) > 1:
-            titles = [e.get("summary", "(untitled)") for e in events[:5]]
+            # An event's title is whatever its organizer called it.
+            titles = wrap(", ".join(e.get("summary", "(untitled)") for e in events[:5]), "calendar")
             return None, (
                 f"Found {len(events)} matching events. Be more specific. "
-                f"First matches: {', '.join(titles)}"
+                f"First matches: {titles}"
             )
 
         return events[0], ""

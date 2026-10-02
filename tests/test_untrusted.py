@@ -55,5 +55,31 @@ class TestJobsFenceTheirOutput(unittest.TestCase):
         self.assertIn("local network", out)
 
 
+class TestTruncate(unittest.TestCase):
+    def test_a_cut_mid_body_closes_the_fence(self) -> None:
+        from helpers.untrusted import CLOSE, truncate, wrap
+
+        fenced = wrap("x" * 500, "email")
+        # 50 chars lands inside the body, well past the header's own line.
+        cut = truncate(fenced, 50)
+        self.assertTrue(cut.startswith(fenced[:50]))
+        self.assertTrue(cut.rstrip("…").endswith(CLOSE))
+
+    def test_a_cut_that_keeps_the_real_close_adds_nothing_extra(self) -> None:
+        from helpers.untrusted import CLOSE, truncate, wrap
+
+        fenced = wrap("short", "email")
+        trailing = "\nplenty of trusted text after it, long enough to cut"
+        full = fenced + trailing
+        # Cut right after the block's own closing marker: already closed.
+        cut = truncate(full, len(fenced))
+        self.assertEqual(cut.count(CLOSE), fenced.count(CLOSE))
+
+    def test_short_text_is_returned_unchanged(self) -> None:
+        from helpers.untrusted import truncate
+
+        self.assertEqual(truncate("hello", 100), "hello")
+
+
 if __name__ == "__main__":
     sys.exit(0 if unittest.main(exit=False).result.wasSuccessful() else 1)
