@@ -96,7 +96,10 @@ export function Settings() {
         <div className={`${CARD} p-4 flex items-center justify-between gap-3`}>
           <div className="flex flex-col gap-0.5">
             <span className="text-sm font-semibold">Wipe all data</span>
-            <span className="text-xs text-muted">Messages, saved facts, reminders, connected accounts and embeddings — gone for good.</span>
+            <span className="text-xs text-muted">
+              Messages, saved facts, reminders, routines, notes and logs — gone for good.
+              API keys and Google sign-ins stay; remove those from Features or the account list above.
+            </span>
           </div>
           <button
             onClick={() =>

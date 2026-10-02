@@ -132,23 +132,34 @@ class ScreenReader:
 
         More than one entry means the words really are on screen more than once
         — the caller decides whether that is safe to act on.
+
+        Local OCR first: the screen can show anything a camera could, and
+        reading it never has to leave this PC when easyocr is installed. The
+        AI provider's vision is the fallback, not the default, for whenever
+        it isn't.
         """
+        try:
+            reader = ScreenReader._get_reader()
+        except ImportError:
+            reader = None
+
+        if reader is not None:
+            try:
+                detections = reader.readtext(screenshot)
+            except Exception as e:
+                import helpers.diagnostics
+                helpers.diagnostics.add("error", "ScreenReader", f"OCR failed: {e}")
+                detections = None
+            if detections is not None:
+                return [
+                    {"caption": str(detection[1]), "box": _bbox_from_ocr(detection[0])}
+                    for detection in _rank_detections(detections, text)
+                ]
+
         if ScreenReader._vision_capable():
             box = ScreenReader._ask_model(screenshot, text)
             return [{"caption": text, "box": box}] if box else []
-
-        reader = ScreenReader._get_reader()
-        try:
-            detections = reader.readtext(screenshot)
-        except Exception as e:
-            import helpers.diagnostics
-            helpers.diagnostics.add("error", "ScreenReader", f"OCR failed: {e}")
-            return []
-
-        return [
-            {"caption": str(detection[1]), "box": _bbox_from_ocr(detection[0])}
-            for detection in _rank_detections(detections, text)
-        ]
+        return []
 
     @staticmethod
     def _ask_model(screenshot: np.ndarray, text: str):

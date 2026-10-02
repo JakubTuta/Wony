@@ -41,11 +41,14 @@ python setup.py configure     # just the keys and sign-ins, any time later
 
 You need one AI key:
 
-| Provider           | Where to get a key                                        | Cost         |
-| ------------------ | --------------------------------------------------------- | ------------ |
-| Anthropic (Claude) | [console.anthropic.com](https://console.anthropic.com)    | paid         |
-| Google Gemini      | [aistudio.google.com](https://aistudio.google.com/apikey) | free tier    |
-| Ollama             | nothing to get — it runs on your own PC                   | free, slower |
+| Provider           | Where to get a key                                        | Cost         | Your requests                                  |
+| ------------------ | --------------------------------------------------------- | ------------ | ----------------------------------------------- |
+| Anthropic (Claude) | [console.anthropic.com](https://console.anthropic.com)    | paid         | not used to train Anthropic's models            |
+| Google Gemini      | [aistudio.google.com](https://aistudio.google.com/apikey) | free tier    | free tier: reviewed and used to train Google's models. A paid key isn't. |
+| Ollama             | nothing to get — it runs on your own PC                   | free, slower | never leave this computer                       |
+
+With both a Claude and a Gemini key set and no provider chosen, Wony answers
+with Claude.
 
 Prefer the terminal? `python setup.py`, then `python wony.py`.
 
@@ -429,13 +432,30 @@ Changing Wony itself? See [docs/developers.md](docs/developers.md).
 ## Privacy
 
 Conversations, remembered facts, lists and reminders are stored in `wony.db` in
-this folder. **Wipe data** in the chat page deletes all of it. Speech recognition
-and speech are local.
+this folder. Speech recognition, speech, the wake word and (when
+[easyocr](https://github.com/JaidedAI/EasyOCR) is installed) screen reading
+all run locally — nothing about your voice, your screen or what you asked
+has to leave this computer for those to work.
 
-What leaves your computer, and only when a request needs it:
+**Wipe data** (Settings page) deletes `wony.db`, the Spotify sign-in cache and
+every log file for good. It does **not** remove your API keys or sign you out
+of Google — those are separate, deliberate steps: remove an account from
+Settings → Google accounts, or delete a key by hand from `.env` (Settings →
+Features can replace a key with a new one, but not clear it).
 
-- The text of your requests, and what Wony reads to answer them — an email, a
-  web page, a file or a Drive document — goes to the AI provider you chose
-  (nowhere at all with Ollama).
-- Map searches go to OpenStreetMap, or to Google if you added a Maps key. Your
-  location itself stays on this computer except as part of such a search.
+What leaves this computer, and only when a feature you switched on needs it:
+
+| Goes to                                | What                                              | When                                       |
+| --------------------------------------- | -------------------------------------------------- | ------------------------------------------- |
+| Your AI provider                        | Your requests, the last few turns, facts it remembered, and whatever it reads to answer you (an email, a web page, a file, a Drive document, a screenshot) | Every request (nowhere at all with Ollama) |
+| OpenStreetMap, or Google with a Maps key | Place and route searches. Your location itself stays here except as part of one | A maps request                             |
+| ipinfo.io                               | Nothing identifying — just enough to guess your city when Windows location is off | Only if Windows can't say where you are    |
+| OpenWeatherMap                          | City name or coordinates                           | A weather request                           |
+| DuckDuckGo, or Tavily with a key        | Your search terms                                  | A web search                                |
+| Whatever site you browse                | The URL, same as any browser                       | Reading or working through a page           |
+| Google (Gmail, Calendar, Drive, Contacts) | Whatever the feature you're using needs         | A Google feature, once signed in            |
+| Spotify                                 | Playback commands                                  | A music request                             |
+| Home Assistant                          | Device commands, to the address you configured, not the internet | A smart-home request      |
+| Shazam                                  | An audio fingerprint, not the recording itself     | Song recognition                            |
+
+No telemetry: nothing is sent back to whoever made Wony.

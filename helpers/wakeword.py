@@ -143,15 +143,22 @@ class WakeWordListener:
             diagnostics.add("warning", "WakeWord", "Disabled — numpy not installed.", hint="pip install -r requirements/wakeword.txt")
             return False
 
-        # Download pre-trained weights on first run (no-op if already present)
+        phrase = cfg.get("phrase", "hey jarvis")
+
+        # Download pre-trained weights on first run (no-op once cached). Scoped
+        # to the configured phrase: called with no model_names, download_models()
+        # fetches every built-in wake word (alexa, hey_mycroft, …) the user never
+        # asked for, not just this one. A custom phrase matches none of the
+        # official names, so this correctly fetches nothing extra for it either
+        # — only the feature/VAD models the function always keeps current.
         try:
             import openwakeword
 
-            openwakeword.utils.download_models()
+            openwakeword.utils.download_models(
+                model_names=[phrase.strip().lower().replace(" ", "_")]
+            )
         except Exception as e:
             diagnostics.add("warning", "WakeWord", f"Model download failed (offline?): {e} — continuing with cached models.")
-
-        phrase = cfg.get("phrase", "hey jarvis")
         model_path = custom_model_path(phrase)
         self._threshold = float(cfg.get("threshold", 0.5))
         self._cooldown = _COOLDOWN_SECONDS

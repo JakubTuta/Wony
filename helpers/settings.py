@@ -131,8 +131,11 @@ _FIELDS: typing.List[typing.Tuple[str, typing.List[Field]]] = [
     ]),
     ("AI", [
         Field("ai.provider", "AI provider", "choice",
-              "Which service answers. Leave on auto to use whichever key is in .env. "
-              "Claude and Gemini always use their fastest model.",
+              "Which service answers. Leave on auto to use whichever key is in .env — "
+              "Anthropic first, then Gemini. Claude and Gemini always use their fastest "
+              "model. Claude isn't used to train Anthropic's models; Gemini's free tier "
+              "is reviewed and used to train Google's, a paid key isn't; Ollama runs on "
+              "this computer and nothing leaves it.",
               choices=("anthropic", "gemini", "ollama"), restart=True),
         Field("ANTHROPIC_API_KEY", "Anthropic API key", "secret",
               "Used when the AI provider is Anthropic (Claude). Get one at "
@@ -258,6 +261,13 @@ def _all_sections() -> typing.List[typing.Tuple[str, typing.List[Field]]]:
     dynamic = _dynamic_secret_fields()
     dynamic += [f for f in _OPTIONAL_SECRETS if f.key not in {d.key for d in dynamic}]
     return _FIELDS + [("Integration keys", dynamic)] if dynamic else _FIELDS
+
+
+def secret_env_keys() -> typing.List[str]:
+    """Every environment-variable key that holds a secret value (API keys,
+    OAuth client secrets). Read by helpers/logger.py so a value never lands
+    in a log file verbatim."""
+    return [field.key for _, fields in _all_sections() for field in fields if field.kind == "secret"]
 
 
 def _field_by_key(key: str) -> typing.Optional[Field]:

@@ -25,8 +25,9 @@ _SCREEN_REQ = Requirement(
 def look_at_screen(question: str = "", save: bool = False) -> str:
     """
     [SCREEN JOB] Looks at what is on screen right now and answers a question about it —
-    what an error says, what is in a picture, what a form is asking for. Can also keep
-    a copy of the screenshot as a file.
+    what an error says, what is in a picture, what a form is asking for. Sends a picture
+    of the screen to the AI provider to answer. Can also keep a copy of the screenshot
+    as a file.
 
     Args:
         question (str): What to answer about the screen. Leave empty just to describe it.

@@ -62,5 +62,29 @@ class TestPickHaiku(unittest.TestCase):
         self.assertIsNone(pick_haiku([_claude("claude-opus-5-5", "2026-08-01")]))
 
 
+class TestGetModelAutoDetect(unittest.TestCase):
+    def test_anthropic_wins_when_both_keys_are_set_and_no_provider_chosen(self) -> None:
+        """Claude isn't used to train Anthropic's models; Gemini's free tier
+        is reviewed and used to train Google's. Auto-detect with both keys
+        present and no explicit choice should prefer the one that does less
+        with the user's data, not whichever key happened to be checked first."""
+        from unittest import mock
+
+        from helpers.model import get_model
+
+        with mock.patch("helpers.config.Config.get", return_value=None), \
+                mock.patch.dict(os.environ, {"GEMINI_API_KEY": "g-key", "ANTHROPIC_API_KEY": "a-key"}):
+            self.assertEqual(get_model(), ["anthropic", "a-key"])
+
+    def test_gemini_is_still_used_when_it_is_the_only_key_set(self) -> None:
+        from unittest import mock
+
+        from helpers.model import get_model
+
+        with mock.patch("helpers.config.Config.get", return_value=None), \
+                mock.patch.dict(os.environ, {"GEMINI_API_KEY": "g-key", "ANTHROPIC_API_KEY": ""}):
+            self.assertEqual(get_model(), ["gemini", "g-key"])
+
+
 if __name__ == "__main__":
     sys.exit(0 if unittest.main(exit=False).result.wasSuccessful() else 1)

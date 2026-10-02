@@ -56,6 +56,23 @@ class Cache:
         return Cache._values.get(key, default)
 
     @staticmethod
+    def wipe() -> None:
+        """Clear every cached value, in memory and on disk.
+
+        cache.json holds Spotify's sign-in tokens alongside plain device-
+        capability flags, so Settings → Wipe has to clear this file too, not
+        just wony.db — and the in-memory copy, or a module already holding a
+        live access token would keep using it until it happened to expire.
+        """
+        with Cache._lock:
+            Cache._values = {}
+            Cache._loaded = True
+            try:
+                os.remove(Cache._filename)
+            except FileNotFoundError:
+                pass
+
+    @staticmethod
     def set_audio(value: bool) -> None:
         global _audio_enabled
         _audio_enabled = bool(value)
