@@ -7,8 +7,6 @@ assistant:
   owner_name: "User"
   # How Wony should talk to you, in your own words.
   personality: "Friendly and concise."
-  # Language for replies: "en" for English, "pl" for Polish, "de" for German...
-  language: "en"
   # Your home address. Used for "near me" when this computer can't tell where
   # it is (Windows location off). Leave empty if you'd rather not say.
   home_address: ""

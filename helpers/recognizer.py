@@ -5,7 +5,6 @@ import typing
 import helpers.diagnostics
 from helpers.audio import Audio
 from helpers.compute import _GPU_FIX_HINT, stt_device
-from helpers.config import Config
 
 _model: typing.Any = None
 _model_lock = threading.RLock()
@@ -31,28 +30,22 @@ def _load_whisper(model_size: str, device: str, compute_type: str) -> typing.Any
 
 
 def _build_model() -> typing.Any:
-    language = str(Config.get("assistant.language", "en")).lower()
-
     device, compute_type = stt_device()
     if device == "cuda":
-        # distil-large-v3 is ~6x faster to load and run than large-v3 with
-        # near-identical English accuracy, but it's an English-only
-        # distillation — non-English languages need full multilingual large-v3.
-        gpu_model = "distil-large-v3" if language.startswith("en") else "large-v3"
+        # English-only distillation of large-v3: ~6x faster to load and run
+        # with near-identical accuracy for Wony's English-only input.
         try:
-            return _load_whisper(gpu_model, device, compute_type)
+            return _load_whisper("distil-large-v3", device, compute_type)
         except Exception as e:
             helpers.diagnostics.add("warning", "STT", f"CUDA detected but model load failed ({e}) — falling back to CPU", hint=_GPU_FIX_HINT)
 
     helpers.diagnostics.add("warning", "STT", "No CUDA GPU — using CPU speech model (slower).", hint=_GPU_FIX_HINT)
 
-    # distil-small.en is faster and more accurate than small but English-only.
-    if language.startswith("en"):
-        try:
-            return _load_whisper("distil-small.en", "cpu", "int8")
-        except Exception:
-            pass
-    return _load_whisper("small", "cpu", "int8")
+    # distil-small.en is faster and more accurate than small, English-only.
+    try:
+        return _load_whisper("distil-small.en", "cpu", "int8")
+    except Exception:
+        return _load_whisper("small", "cpu", "int8")
 
 
 def _get_model() -> typing.Any:
@@ -145,22 +138,13 @@ def transcribe(audio: typing.Any) -> str:
     of this in the web layer raced the voice path and let an actively-used
     model be swept out from under it.
     """
-    raw_lang = str(Config.get("assistant.language", "en")).lower()
-    # Normalize "en-us" / "en_US" → "en"; faster-whisper expects ISO 639-1 codes.
-    language = raw_lang.split("-")[0].split("_")[0]
-    if language != raw_lang:
-        helpers.diagnostics.add(
-            "info", "STT",
-            f"Language '{raw_lang}' normalized to '{language}' for faster-whisper."
-        )
-
     global _last_used
     with _model_lock:
         model = _get_model()
         # no vad_filter: record_command already endpoints with webrtcvad; a second pass over-trims short clips.
         segments, _ = model.transcribe(
             audio,
-            language=language,
+            language="en",
             beam_size=1,
             condition_on_previous_text=False,
             no_speech_threshold=0.6,

@@ -295,7 +295,7 @@ export async function ackNotifications(id?: number): Promise<void> {
 }
 
 export interface AppConfig {
-  assistant: { name: string; language: string };
+  assistant: { name: string };
   voice: { stt: { silence_ms: number; max_seconds: number } };
 }
 

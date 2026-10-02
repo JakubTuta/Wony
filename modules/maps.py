@@ -256,12 +256,6 @@ def _google_key() -> str:
     return os.environ.get("GOOGLE_MAPS_API_KEY", "").strip()
 
 
-def _language() -> str:
-    from helpers.config import Config
-
-    return str(Config.get("assistant.language", "en") or "en")
-
-
 def _here_or_none() -> typing.Optional[typing.Tuple[float, float]]:
     from helpers.location import here
 
@@ -277,7 +271,7 @@ def _search_center(
         from helpers import osm
 
         try:
-            hits = osm.geocode(near, language=_language())
+            hits = osm.geocode(near)
         except osm.OsmError:
             hits = []
         if hits:
@@ -406,7 +400,7 @@ def _osm_places(
 
     tags = _osm_category(query)
     if tags is None:
-        hits = osm.geocode(query, near=center, limit=count, language=_language())
+        hits = osm.geocode(query, near=center, limit=count)
         places = [
             {
                 "name": hit.get("name") or hit.get("display_name", "").split(",")[0],
@@ -487,9 +481,7 @@ def _osm_route(
 def _osm_point(text: str) -> typing.Optional[typing.Tuple[float, float]]:
     from helpers import osm
 
-    hits = osm.geocode(text, near=_here_or_none(), language=_language()) or osm.geocode(
-        text, language=_language()
-    )
+    hits = osm.geocode(text, near=_here_or_none()) or osm.geocode(text)
     return (float(hits[0]["lat"]), float(hits[0]["lon"])) if hits else None
 
 
@@ -579,7 +571,7 @@ def _google_places(
     body: typing.Dict[str, typing.Any] = {
         "textQuery": f"{query} near {near}" if near else query,
         "pageSize": count,
-        "languageCode": _language(),
+        "languageCode": "en",
     }
     if center and not near:
         body["locationBias"] = {
@@ -643,7 +635,7 @@ def _google_route(
         "origin": waypoint(origin, start),
         "destination": waypoint(destination, None),
         "travelMode": _GOOGLE_MODE[how],
-        "languageCode": _language(),
+        "languageCode": "en",
         "units": "IMPERIAL" if current().miles else "METRIC",
     }
     if traffic:

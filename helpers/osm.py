@@ -72,7 +72,6 @@ def geocode(
     query: str,
     near: typing.Optional[typing.Tuple[float, float]] = None,
     limit: int = 1,
-    language: str = "en",
 ) -> typing.List[typing.Dict[str, typing.Any]]:
     """Places matching `query` (an address or a name), nearest `near` first when given."""
     params: typing.Dict[str, typing.Any] = {
@@ -83,10 +82,10 @@ def geocode(
         # About ±10 km: a "near me" search, not a search of the whole country.
         params["viewbox"] = f"{lon - 0.15},{lat + 0.1},{lon + 0.15},{lat - 0.1}"
         params["bounded"] = 1
-    key = f"geocode|{query}|{near}|{limit}|{language}"
+    key = f"geocode|{query}|{near}|{limit}"
     return _cached(key, lambda: _get(
         "nominatim", f"{_NOMINATIM}/search", params=params,
-        headers={"Accept-Language": language},
+        headers={"Accept-Language": "en"},
     ))
 
 

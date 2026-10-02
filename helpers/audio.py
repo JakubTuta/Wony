@@ -87,42 +87,10 @@ CACHED_CLIPS: dict[str, str] = {
     "One moment.": "voice/bot/one_moment.wav",
 }
 
-_LANG_MAP: dict[str, str] = {
-    "en": "en-us",
-    "en-us": "en-us",
-    "en-gb": "en-gb",
-    "fr": "fr-fr",
-    "fr-fr": "fr-fr",
-    "ja": "ja",
-    "ko": "ko",
-    "zh": "zh",
-    "pt": "pt-br",
-    "pt-br": "pt-br",
-    "es": "es",
-    "it": "it",
-    "de": "de",
-    "hi": "hi",
-}
-
-_UNSUPPORTED_LANG_WARNING_SHOWN = False
-
-
-def _resolve_kokoro_lang(bcp47: str) -> str:
-    global _UNSUPPORTED_LANG_WARNING_SHOWN
-    lang = bcp47.lower()
-    if lang in _LANG_MAP:
-        return _LANG_MAP[lang]
-    prefix = lang.split("-")[0]
-    if prefix in _LANG_MAP:
-        return _LANG_MAP[prefix]
-    if not _UNSUPPORTED_LANG_WARNING_SHOWN:
-        helpers.diagnostics.add(
-            "warning", "TTS",
-            f"Language '{bcp47}' not supported by Kokoro v1.0 — falling back to en-us.",
-            hint="Set voice.tts_voice to an English voice or update assistant.language.",
-        )
-        _UNSUPPORTED_LANG_WARNING_SHOWN = True
-    return "en-us"
+def _resolve_kokoro_lang(voice: str) -> str:
+    """Kokoro voice names are "{lang}{gender}_{name}" — "b" is British English,
+    every other prefix in Wony's English-only voice set is American English."""
+    return "en-gb" if voice.lower().startswith("b") else "en-us"
 
 
 def _download_model_files(onnx_path: str, voices_path: str) -> None:
@@ -269,8 +237,7 @@ class TTS_Engine:
         self._voice = Config.get("voice.tts_voice", "af_heart")
         self._speed = float(Config.get("voice.speed", 1.0))
         self._volume = float(Config.get("voice.volume", 0.6))
-        language = str(Config.get("assistant.language", "en"))
-        self._lang = _resolve_kokoro_lang(language)
+        self._lang = _resolve_kokoro_lang(self._voice)
 
         onnx_path = _abs_path(Config.get("voice.model_path", "models/kokoro-v1.0.onnx"))
         voices_path = _abs_path(Config.get("voice.voices_path", "models/voices-v1.0.bin"))
