@@ -26,7 +26,53 @@ def _load_app():
     import modules  # noqa: F401  (import triggers discover_services)
     from helpers.web_app import build_app
 
-    return TestClient(build_app())
+    return TestClient(build_app(), base_url="http://127.0.0.1:8123")
+
+
+class TestLocalOnly(unittest.TestCase):
+    """Browsers do not apply CORS to WebSockets, so before this any website the
+    user visited could open /api/ws, read every turn and send chat messages."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.client = _load_app()
+
+    def test_cross_site_websocket_is_refused(self) -> None:
+        from starlette.websockets import WebSocketDisconnect
+
+        with self.assertRaises(WebSocketDisconnect):
+            with self.client.websocket_connect(
+                "ws://127.0.0.1:8123/api/ws", headers={"Origin": "https://evil.example"}
+            ) as ws:
+                ws.receive_text()
+
+    def test_same_origin_websocket_is_accepted(self) -> None:
+        with self.client.websocket_connect(
+            "ws://127.0.0.1:8123/api/ws", headers={"Origin": "http://127.0.0.1:8123"}
+        ) as ws:
+            ws.send_text("{}")
+
+    def test_cross_site_post_is_refused(self) -> None:
+        resp = self.client.post(
+            "/api/chat/clear", headers={"Origin": "https://evil.example"}
+        )
+        self.assertEqual(resp.status_code, 403)
+
+    def test_rebound_host_is_refused(self) -> None:
+        resp = self.client.get("/api/jobs", headers={"Host": "evil.example:8123"})
+        self.assertEqual(resp.status_code, 403)
+
+
+class TestAllowedOrigin(unittest.TestCase):
+    def test_rules(self) -> None:
+        from helpers.server_address import allowed_origin
+
+        self.assertTrue(allowed_origin(None, "127.0.0.1:9000"))
+        self.assertTrue(allowed_origin("http://127.0.0.1:9000", "127.0.0.1:9000"))
+        self.assertTrue(allowed_origin("http://localhost:5173", "127.0.0.1:9000"))
+        self.assertFalse(allowed_origin("http://127.0.0.1:9001", "127.0.0.1:9000"))
+        self.assertFalse(allowed_origin("http://evil.example:9000", "127.0.0.1:9000"))
+        self.assertFalse(allowed_origin("null", "127.0.0.1:9000"))
 
 
 class TestJobsEndpoint(unittest.TestCase):

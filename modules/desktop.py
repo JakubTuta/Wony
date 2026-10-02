@@ -130,6 +130,56 @@ def _known_dirs() -> typing.List[str]:
     return seen
 
 
+_FIND_LIMIT = 20
+
+
+def _indexed_search(query: str, folder: str = "") -> typing.List[str]:
+    """Files whose name or contents match, from the Windows Search index —
+    the same index the Start menu search uses. Raises when it is unavailable."""
+    import win32com.client
+
+    words = query.replace("'", "''")
+    # LIKE treats % _ [ as patterns; brackets make them literal.
+    like = "".join(f"[{ch}]" if ch in "%_[" else ch for ch in words)
+    scope = "file:" + folder.replace("\\", "/") if folder else "file:"
+    sql = (
+        f"SELECT TOP {_FIND_LIMIT} System.ItemUrl FROM SystemIndex "
+        f"WHERE SCOPE='{scope}' AND (FREETEXT('{words}') OR System.FileName LIKE '%{like}%') "
+        "ORDER BY System.Search.Rank DESC"
+    )
+    connection = win32com.client.Dispatch("ADODB.Connection")
+    connection.Open("Provider=Search.CollatorDSO;Extended Properties='Application=Windows';")
+    records = win32com.client.Dispatch("ADODB.Recordset")
+    records.Open(sql, connection)
+    found = []
+    try:
+        while not records.EOF:
+            url = str(records.Fields.Item("System.ItemUrl").Value or "")
+            if url.startswith("file:"):
+                found.append(os.path.normpath(url[len("file:"):]))
+            records.MoveNext()
+    finally:
+        records.Close()
+        connection.Close()
+    return found
+
+
+def _name_search(query: str, roots: typing.List[str]) -> typing.List[str]:
+    needle = query.lower()
+    matches: typing.List[str] = []
+    for root in roots:
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if not d.startswith(".") and d not in _SKIP_DIRS]
+            for entry in filenames + dirnames:
+                if needle in entry.lower():
+                    full = os.path.join(dirpath, entry)
+                    if full not in matches:
+                        matches.append(full)
+                        if len(matches) >= _FIND_LIMIT:
+                            return matches
+    return matches
+
+
 def _resolve_file(path: str) -> typing.Tuple[typing.Optional[str], typing.List[str]]:
     """Resolve a path or bare filename to an existing file.
 
@@ -303,67 +353,36 @@ class Desktop:
 
     @method_job
     @capture_response
-    def find_file(self, name: str, search_path: str = "") -> str:
+    def find_file(self, query: str, search_path: str = "") -> str:
         """
-        [DESKTOP JOB] Searches for files matching a name or pattern on the filesystem.
-        Searches from the user's home directory by default, or a configured/specified path.
+        [DESKTOP JOB] Finds files on this computer by name or by words written inside
+        them — "the PDF about my lease", "the spreadsheet with the 2025 budget".
 
         Args:
-            name (str): Filename or partial name to search for (case-insensitive). (required)
-            search_path (str): Directory to start searching from. Defaults to home directory.
+            query (str): Part of the file name, or words in the file. (required)
+            search_path (str): Only look inside this folder.
 
         Returns:
-            str: List of matching file paths found.
+            str: Matching file paths, best match first.
         """
-        if not name:
-            return "Error: No filename provided."
+        if not query.strip():
+            return "Error: What should I look for?"
+        folder = os.path.expanduser(search_path) if search_path else ""
+        if folder and not os.path.isdir(folder):
+            return f"Error: There is no folder {search_path}."
 
-        from helpers.config import Config
-
-        # Explicit path overrides; otherwise search common user folders first
-        # (Desktop/Documents/Downloads, incl. OneDrive) then the configured root.
-        if search_path:
-            roots = [os.path.expanduser(search_path)]
-        else:
-            roots = list(_known_dirs())
-            cfg_root = os.path.expanduser(Config.get("modules.desktop.file_search_root", "~"))
-            if cfg_root not in roots:
-                roots.append(cfg_root)
-
-        roots = [r for r in roots if os.path.isdir(r)]
-        if not roots:
-            return f"Error: No valid search path (search_path={search_path!r})."
-
-        needle = name.lower()
-        matches: typing.List[str] = []
-        seen: typing.Set[str] = set()
-        max_results = 20
-
-        for root in roots:
-            if len(matches) >= max_results:
-                break
-            for dirpath, dirnames, filenames in os.walk(root):
-                dirnames[:] = [
-                    d for d in dirnames
-                    if not d.startswith(".") and d not in _SKIP_DIRS
-                ]
-                # Match folders too (docstring promises locating folders).
-                for entry in filenames + dirnames:
-                    if needle in entry.lower():
-                        full = os.path.join(dirpath, entry)
-                        if full not in seen:
-                            seen.add(full)
-                            matches.append(full)
-                            if len(matches) >= max_results:
-                                break
-                if len(matches) >= max_results:
-                    break
+        try:
+            matches = _indexed_search(query, folder)
+            note = ""
+        except Exception:
+            # Windows Search is off or unavailable: names only.
+            matches = _name_search(query, [folder] if folder else _known_dirs())
+            note = "\n(Windows Search isn't available, so I only matched file names, not contents.)"
 
         if not matches:
-            return f"No files found matching '{name}' under: {', '.join(roots)}."
-
-        suffix = f"\n(Showing first {max_results}; there may be more.)" if len(matches) == max_results else ""
-        return f"Found {len(matches)} match(es) for '{name}':\n" + "\n".join(f"  {p}" for p in matches) + suffix
+            return f"No files match '{query}'.{note}"
+        suffix = f"\n(Showing the first {_FIND_LIMIT}.)" if len(matches) >= _FIND_LIMIT else ""
+        return f"Files matching '{query}':\n" + "\n".join(f"  {m}" for m in matches) + suffix + note
 
     @method_job(confirms={"write", "append"})
     @capture_response
@@ -375,7 +394,7 @@ class Desktop:
         offset: int = 0,
     ) -> str:
         """
-        [DESKTOP JOB] Reads a text file's contents, writes or appends text to one, or
+        [DESKTOP JOB] Reads a file's text (PDF and Office documents too), writes or appends text to one, or
         lists what is in a folder. Writing and appending require
         modules.desktop.allow_actions to be enabled in config.
 
@@ -424,7 +443,12 @@ class Desktop:
             with open(resolved, "r", encoding="utf-8") as handle:
                 text = handle.read()
         except UnicodeDecodeError:
-            return f"'{resolved}' isn't a text file."
+            from helpers.text_extract import extract_file
+
+            # PDF, Word, PowerPoint, Excel.
+            text = extract_file(resolved)
+            if not text:
+                return f"'{resolved}' isn't a file I can read text from."
         except OSError as e:
             return f"Error reading {resolved}: {e}"
 
@@ -590,51 +614,28 @@ class Desktop:
 
     @method_job(confirms=True)
     @capture_response
-    def click_at(self, x: int, y: int) -> str:
+    def click(self, text: str = "", x: int = -1, y: int = -1, double: bool = False) -> str:
         """
-        [DESKTOP JOB] Clicks the mouse at the specified screen coordinates.
-        Requires modules.desktop.allow_actions to be enabled in config.
-        Use with caution — coordinates are absolute screen pixels.
-
-        Args:
-            x (int): Horizontal pixel coordinate. (required)
-            y (int): Vertical pixel coordinate. (required)
-
-        Returns:
-            str: Confirmation of the click.
-        """
-        blocked = _require_actions("click_at")
-        if blocked:
-            return blocked
-
-        import pyautogui
-
-        try:
-            pyautogui.click(int(x), int(y))
-            return f"Clicked at ({x}, {y})."
-        except Exception as e:
-            return f"Error clicking at ({x}, {y}): {e}"
-
-    @method_job(confirms=True)
-    @capture_response
-    def click_text(self, text: str, double: bool = False) -> str:
-        """
-        [DESKTOP JOB] Finds words on the screen and clicks them, so a button or a link
-        can be pressed by name instead of by pixel coordinates.
+        [DESKTOP JOB] Clicks on the screen: on words shown there (a button or link by
+        its label — prefer this), or at exact pixel coordinates.
         Requires modules.desktop.allow_actions to be enabled in config.
 
         Args:
-            text (str): The words to click, as they appear on screen. (required)
+            text (str): The words to click, as they appear on screen.
+            x (int): Horizontal pixel coordinate, only when there are no words to click.
+            y (int): Vertical pixel coordinate, with x.
             double (bool): Double-click instead of clicking once.
 
         Returns:
             str: What was clicked, or why nothing was.
         """
-        blocked = _require_actions("click_text")
+        blocked = _require_actions("click")
         if blocked:
             return blocked
         if not text:
-            return "Error: What should I click?"
+            if x < 0 or y < 0:
+                return "Error: What should I click? Give the words on screen or x and y."
+            return self._click_point(int(x), int(y), double)
 
         from helpers.screenReader import ScreenReader
 
@@ -669,3 +670,13 @@ class Desktop:
 
         verb = "Double-clicked" if double else "Clicked"
         return f"{verb} '{matches[0]['caption']}' at ({x}, {y})."
+
+    @staticmethod
+    def _click_point(x: int, y: int, double: bool) -> str:
+        import pyautogui
+
+        try:
+            pyautogui.click(x, y, clicks=2 if double else 1)
+        except Exception as e:
+            return f"Error clicking at ({x}, {y}): {e}"
+        return f"{'Double-clicked' if double else 'Clicked'} at ({x}, {y})."

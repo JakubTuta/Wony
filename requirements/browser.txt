@@ -1,0 +1,4 @@
+# Web browsing: opens pages in a real (logged-out) browser and clicks through them.
+# Uses Edge or Chrome when installed; otherwise setup downloads Playwright's own
+# headless Chromium (about 100 MB).
+playwright>=1.59

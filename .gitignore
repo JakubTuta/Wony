@@ -56,3 +56,4 @@ htmlcov/
 *.sw?
 
 CLAUDE.md
+.wony_server

@@ -7,32 +7,22 @@ import { fileURLToPath } from 'url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
-function readServerConfig(): { host: string; port: number } {
-  const defaults = { host: '127.0.0.1', port: 8000 }
-  const configPath = resolve(__dirname, '../config.yaml')
-  if (!existsSync(configPath)) return defaults
-  try {
-    const content = readFileSync(configPath, 'utf-8')
-    const blockMatch = content.match(/^server:\s*\n((?:[ \t]+[^\n]*\n?)*)/m)
-    if (!blockMatch) return defaults
-    const block = blockMatch[1]
-    const host = block.match(/host:\s*["']?([^"'\s#\n]+)["']?/)?.[1] ?? defaults.host
-    const portStr = block.match(/port:\s*(\d+)/)?.[1]
-    return { host, port: portStr ? parseInt(portStr, 10) : defaults.port }
-  } catch {
-    return defaults
-  }
+// Wony picks its port at startup and writes it here (helpers/server_address.py).
+function backendPort(): number {
+  const runtimeFile = resolve(__dirname, '../.wony_server')
+  if (!existsSync(runtimeFile)) return 8000
+  const port = parseInt(readFileSync(runtimeFile, 'utf-8').trim(), 10)
+  return Number.isFinite(port) ? port : 8000
 }
-
-const { host, port } = readServerConfig()
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
     proxy: {
       '/api': {
-        target: `http://${host}:${port}`,
+        target: `http://127.0.0.1:${backendPort()}`,
         changeOrigin: true,
+        ws: true,
       },
     },
   },

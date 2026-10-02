@@ -1,0 +1,4 @@
+# Google: Gmail, Calendar, Drive and Contacts share one sign-in (helpers/google_auth.py).
+google-api-python-client
+google-auth
+google-auth-oauthlib

@@ -1,6 +1,8 @@
 pyautogui>=0.9
 pygetwindow>=0.0.9
 pyperclip>=1.8
-# click_text screenshots the display to find the words to click. Not in the
+# click screenshots the display to find the words to click. Not in the
 # module's Requirement: without it every other desktop job still works.
 mss
+# Finding files by what is written in them, through the Windows Search index.
+pywin32 ; platform_system == "Windows"

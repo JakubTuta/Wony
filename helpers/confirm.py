@@ -56,10 +56,12 @@ def _applies(declared: typing.Any, args: typing.Dict[str, typing.Any]) -> bool:
     `confirms=True` covers every call. A collection covers only the listed
     values of the job's `action` argument, so a merged job whose default action
     only reads — listing drafts, listing accounts — does not make the user
-    confirm a question.
+    confirm a question. A callable decides from the arguments itself.
     """
     if declared is True:
         return True
+    if callable(declared):
+        return bool(declared(args))
     if not declared:
         return False
     action = str(args.get("action", "")).strip().lower()

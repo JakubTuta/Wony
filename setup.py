@@ -133,6 +133,16 @@ FEATURES = [
         "needs": "A free API key from openweathermap.org/api — setup asks for it.",
     },
     {
+        "key": "maps",
+        "label": "Maps & places",
+        "reqs": ["maps.txt"],
+        "module": "maps",
+        "default": True,
+        "desc": "Places near you and travel times. Free through OpenStreetMap.",
+        "needs": "Nothing for the basics. A Google Maps key (needs a billing account) adds "
+        "ratings, open-now, live traffic and public transport — setup explains.",
+    },
+    {
         "key": "web",
         "label": "Web search + URL fetch",
         "reqs": ["web.txt"],
@@ -140,6 +150,16 @@ FEATURES = [
         "default": True,
         "desc": "Search the web and read pages.",
         "needs": "Works out of the box (DuckDuckGo). Setup can add a Tavily key for better results.",
+    },
+    {
+        "key": "browser",
+        "label": "Web browsing (opens pages and clicks for you)",
+        "reqs": ["browser.txt"],
+        "module": None,
+        "default": False,
+        "desc": "\"Go to this page, open the Specs tab, find the battery size.\" Needs Web search.",
+        "needs": "Uses Edge or Chrome if installed, otherwise downloads a small browser "
+        "(~100 MB). Logged out only: no sign-ins, purchases or downloads.",
     },
     {
         "key": "scheduler",
@@ -193,7 +213,7 @@ FEATURES = [
     {
         "key": "gmail",
         "label": "Gmail (read / search / monitor)",
-        "reqs": ["gmail.txt"],
+        "reqs": ["google.txt"],
         "module": "gmail",
         "default": False,
         "desc": "Read, search and watch your inbox.",
@@ -203,7 +223,7 @@ FEATURES = [
     {
         "key": "calendar",
         "label": "Google Calendar",
-        "reqs": ["calendar.txt"],
+        "reqs": ["google.txt"],
         "module": "calendar",
         "default": False,
         "desc": "Read events, check availability, find free slots.",
@@ -211,13 +231,31 @@ FEATURES = [
         "you in. Writing stays off until you allow it.",
     },
     {
+        "key": "drive",
+        "label": "Google Drive, Docs & Sheets",
+        "reqs": ["google.txt"],
+        "module": "drive",
+        "default": False,
+        "desc": "Find and read your Drive files; create and edit Docs and Sheets.",
+        "needs": "The same Google OAuth client file as Gmail. Read only until you allow changes.",
+    },
+    {
+        "key": "contacts",
+        "label": "Google Contacts",
+        "reqs": ["google.txt"],
+        "module": "contacts",
+        "default": False,
+        "desc": "Look people up, and email or invite them by name.",
+        "needs": "The same Google OAuth client file as Gmail. Read only.",
+    },
+    {
         "key": "google_accounts",
         "label": "Multiple Google accounts",
         "reqs": [],
         "module": "google_accounts",
         "default": False,
-        "desc": "Manage more than one Google account for Gmail/Calendar.",
-        "needs": "Builds on Gmail/Calendar — enable one of those too.",
+        "desc": "Use more than one Google account.",
+        "needs": "Builds on Gmail, Calendar or Drive — enable one of those too.",
     },
     {
         "key": "screen",
@@ -291,11 +329,13 @@ PROBE = {
     "voice": "kokoro_onnx",
     "wakeword": "openwakeword",
     "tray": "pystray",
-    "weather": "geocoder",
     "web": "ddgs",
+    "browser": "playwright",
     "scheduler": "apscheduler",
-    "gmail": "simplegmail",
+    "gmail": "googleapiclient",
     "calendar": "googleapiclient",
+    "drive": "googleapiclient",
+    "contacts": "googleapiclient",
     "screen": "mss",
     "desktop": "pyautogui",
     "mcp": "mcp",
@@ -553,6 +593,9 @@ def _finalize(selected):
     if "wakeword" in keys and "voice" not in keys:
         print(c("\n  ! Wake word needs Voice I/O — adding it too.", "33"))
         keys.add("voice")
+    if "browser" in keys and "web" not in keys:
+        print(c("\n  ! Web browsing needs Web search — adding it too.", "33"))
+        keys.add("web")
     return [f for f in FEATURES if f["key"] in keys]
 
 
@@ -790,11 +833,13 @@ def configure(chosen):
     step_ai(env, pending)
     if "weather" in keys:
         step_weather(env, pending)
+    if "maps" in keys:
+        step_maps(env)
     if "web" in keys:
         step_web(env)
     if "spotify" in keys:
         step_spotify(env, pending)
-    if keys & {"gmail", "calendar"}:
+    if keys & GOOGLE_FEATURES:
         step_google(keys, pending)
     if "home_assistant" in keys:
         step_home_assistant(env, pending)
@@ -956,12 +1001,86 @@ def step_weather(env, pending):
         env_set({"WEATHER_API_KEY": key})
     else:
         pending.append("Weather: no WEATHER_API_KEY yet (openweathermap.org/api).")
-    units = choose(
-        "Temperature units",
-        [("Celsius", "metric"), ("Fahrenheit", "imperial")],
-        default=2 if config_value("modules.weather.default_units") == "imperial" else 1,
+    note("Units follow your Windows region. Say \"remember I prefer Fahrenheit\" to change them.")
+
+
+def check_google_maps(key):
+    """The "IDs only" Text Search field mask is free, so checking costs nothing."""
+    return http_request(
+        "https://places.googleapis.com/v1/places:searchText",
+        {"X-Goog-Api-Key": key, "X-Goog-FieldMask": "places.id"},
+        payload={"textQuery": "pharmacy", "pageSize": 1},
+    )[0]
+
+
+_MAPS_KEY_STEPS = (
+    "1. console.cloud.google.com -> Billing: add a billing account (a card is required).",
+    "   Google gives a free monthly allowance; Wony counts its requests and goes back",
+    "   to OpenStreetMap before the allowance runs out.",
+    "2. APIs & Services -> Library: enable 'Places API (New)' and 'Routes API'.",
+    "3. Credentials -> Create credentials -> API key. Restrict it to those two APIs.",
+    "4. Optional: Quotas -> set a daily cap, so nothing can ever cost money.",
+)
+
+_TRAVEL_MODES = (
+    ("Car", "car"), ("Public transport", "public transport"),
+    ("Walking", "walking"), ("Cycling", "cycling"),
+)
+
+
+def step_maps(env):
+    section("Maps & places")
+    note("Works now, free, through OpenStreetMap: places near you, addresses, travel")
+    note("time by car, bike or on foot, and map links. OpenStreetMap has no ratings,")
+    note("no live traffic and no public transport, and opening hours are often missing.")
+    print("\n  A Google Maps key adds ratings, open-now, live traffic and public transport:")
+    for line in _MAPS_KEY_STEPS:
+        print("  " + line)
+    key = ask_key(
+        "GOOGLE_MAPS_API_KEY",
+        "console.cloud.google.com (optional — Enter keeps OpenStreetMap)",
+        env.get("GOOGLE_MAPS_API_KEY", ""),
+        check_google_maps,
+        rejected_note="A new key can take a few minutes to start working. Check both APIs are enabled.",
     )
-    write_config({"modules.weather.default_units": units})
+    if key:
+        env_set({"GOOGLE_MAPS_API_KEY": key})
+
+    current = config_value("modules.maps.travel_mode", "car")
+    values = [value for _, value in _TRAVEL_MODES]
+    write_config({"modules.maps.travel_mode": choose(
+        "How do you usually get around?", list(_TRAVEL_MODES),
+        default=values.index(current) + 1 if current in values else 1,
+    )})
+
+    _check_windows_location()
+    address = ask(
+        "Home address, for 'near me' when Windows location is off (Enter to skip)",
+        config_value("assistant.home_address", ""),
+    )
+    write_config({"assistant.home_address": address})
+
+
+def _check_windows_location():
+    """Wi-Fi-level location needs a Windows privacy switch most people never flip."""
+    if os.name != "nt":
+        return
+    repo_on_path()
+    try:
+        from helpers.location import windows_status
+
+        status = windows_status()
+    except Exception as e:
+        status = f"unavailable ({e})"
+    if status.startswith("on"):
+        ok(f"Windows location is {status}.")
+        return
+    warn(f"Windows location is {status}.")
+    note("Settings -> Privacy & security -> Location: turn on 'Location services' and")
+    note("'Let desktop apps access your location'. Without it Wony uses your home")
+    note("address, or guesses from your internet connection (roughly the city).")
+    if confirm("Open that Settings page now?", default=True):
+        os.startfile("ms-settings:privacy-location")  # type: ignore[attr-defined]
 
 
 def step_web(env):
@@ -1041,26 +1160,43 @@ def _spotify_sign_in(pending):
 
 # ── Google (Gmail and Calendar) ───────────────────────────────────────────────
 
-_GOOGLE_STEPS = (
-    "1. Open console.cloud.google.com and pick (or create) a project.",
-    "2. APIs & Services → Library: enable 'Gmail API' and 'Google Calendar API'.",
-    "3. APIs & Services → OAuth consent screen: add your own address as a test user.",
-    "4. Credentials → Create credentials → OAuth client ID → Desktop app → Download JSON.",
+# The Google APIs each module talks to, as named in the Cloud Console library.
+_GOOGLE_APIS = {
+    "gmail": ["Gmail API"],
+    "calendar": ["Google Calendar API"],
+    "drive": ["Google Drive API", "Google Docs API", "Google Sheets API"],
+    "contacts": ["People API"],
+}
+GOOGLE_FEATURES = set(_GOOGLE_APIS)
+
+
+def _google_steps(keys):
+    apis = [api for module in sorted(keys & GOOGLE_FEATURES) for api in _GOOGLE_APIS[module]]
+    return (
+        "1. Open console.cloud.google.com and pick (or create) a project.",
+        f"2. APIs & Services -> Library: enable {', '.join(repr(a) for a in apis)}.",
+        "3. OAuth consent screen: choose 'External', leave it in Testing, and add your",
+        "   own Google address under Test users.",
+        "4. Credentials -> Create credentials -> OAuth client ID -> Desktop app -> Download JSON.",
+    )
+
+
+_GOOGLE_SIGN_IN_NOTES = (
+    "Google will say it 'hasn't verified this app'. It is your own app: click",
+    "Advanced, then continue. Because it stays in Testing, Google signs Wony out",
+    "every 7 days — Wony tells you, and signing in again is one click.",
 )
 
 
 def step_google(keys, pending):
-    section("Google — Gmail and Calendar")
-    if not os.path.exists(GOOGLE_CREDENTIALS) and not _install_google_credentials():
+    wants = keys & GOOGLE_FEATURES
+    section("Google — " + ", ".join(sorted(w.capitalize() for w in wants)))
+    if not os.path.exists(GOOGLE_CREDENTIALS) and not _install_google_credentials(keys):
         pending.append("Google: credentials/google_credentials.json is still missing.")
         return
 
-    wants = keys & {"gmail", "calendar"}
-    if confirm("Sign in to your Google account now? This opens your browser.", default=True):
-        _google_sign_in(wants, pending)
-    else:
-        pending.append("Google: not signed in — run 'python setup.py configure'.")
-
+    # Before signing in: the switches decide what Google is asked for, and
+    # switching one on afterwards would mean a second consent screen.
     if "gmail" in wants:
         gate(
             "May Wony send and delete email? (off: it saves drafts for you)",
@@ -1068,16 +1204,28 @@ def step_google(keys, pending):
         )
     if "calendar" in wants:
         gate(
-            "May Wony create, change and delete calendar events?",
+            "May Wony create, change and delete calendar events, and send invitations?",
             "modules.calendar.allow_write",
         )
+    if "drive" in wants:
+        gate(
+            "May Wony create and change files in your Google Drive? (off: read only)",
+            "modules.drive.allow_write",
+        )
+
+    for line in _GOOGLE_SIGN_IN_NOTES:
+        note(line)
+    if confirm("Sign in to your Google account now? This opens your browser.", default=True):
+        _google_sign_in(pending)
+    else:
+        pending.append("Google: not signed in — run 'python setup.py configure'.")
 
 
-def _install_google_credentials():
+def _install_google_credentials(keys):
     """Put the downloaded OAuth client file where the app looks for it."""
     import shutil
 
-    for line in _GOOGLE_STEPS:
+    for line in _google_steps(keys):
         print("  " + line)
 
     found = _downloaded_google_json()
@@ -1130,52 +1278,23 @@ def _google_json_problem(path):
     return "That JSON is not a Google OAuth client file."
 
 
-def _google_sign_in(wants, pending):
-    """Sign the account in through the services' own sign_in() — the same call
-    the 'authorize google account' job makes, so there is one consent path."""
+def _google_sign_in(pending):
+    """One consent for every Google feature, through the same call the
+    'authorize' job and the Sign in again button make."""
     repo_on_path()
-    from helpers.accounts import GoogleAccounts
+    try:
+        from helpers import google_auth
+        from helpers.accounts import GoogleAccounts
+        from helpers.config import Config
 
-    name = GoogleAccounts.get_primary() or GoogleAccounts.add_account("primary")
-    services = []
-    if "gmail" in wants:
-        from modules.gmail import Gmail
-
-        services.append(("gmail", "Gmail", Gmail()))
-    if "calendar" in wants:
-        from modules.calendar import Calendar
-
-        services.append(("calendar", "Calendar", Calendar()))
-
-    email = ""
-    for module, label, service in services:
-        email = _sign_in_service(module, label, service, name, pending) or email
-    if email:
-        GoogleAccounts.set_email(name, email)
-        ok(f"Signed in as {email}.")
-
-
-def _sign_in_service(module, label, service, name, pending):
-    """Sign one service in, retrying once without its stored token.
-
-    A revoked or expired token stays on disk and both Google libraries keep
-    loading it, so the second try is what a person means by "sign me in".
-    """
-    from helpers.accounts import GoogleAccounts
-
-    for attempt in (1, 2):
-        try:
-            email = service.sign_in(name)
-            ok(f"{label} signed in.")
-            return email
-        except Exception as e:
-            if attempt == 2:
-                warn(f"{label} sign-in failed: {e}")
-                pending.append(f"Google ({label}): sign-in failed — {e}")
-                return ""
-            note(f"{label}'s saved sign-in no longer works — asking again.")
-            GoogleAccounts.clear_token(name, module)
-            service.forget_account(name)
+        Config.load()  # the switches just answered decide what is asked for
+        name = GoogleAccounts.get_primary() or GoogleAccounts.add_account("primary")
+        email = google_auth.sign_in(name)
+    except Exception as e:
+        warn(f"Google sign-in did not finish: {e}")
+        pending.append(f"Google: sign-in failed — {e}")
+        return
+    ok(f"Signed in as {email}." if email else "Signed in to Google.")
 
 
 # ── Home Assistant, desktop, voice, autostart ─────────────────────────────────
@@ -1254,12 +1373,12 @@ def step_autostart():
         warn("Autostart was not installed — start Wony from Wony.bat instead.")
 
 
-def set_wake_word_config(phrase, model_path, threshold=0.5):
-    """Point config.yaml at a freshly trained wake-word model."""
+def set_wake_word_config(phrase, threshold=0.5):
+    """Switch the wake word on for `phrase`. Wony finds models/<phrase>.onnx
+    from the phrase itself (helpers/wakeword.custom_model_path)."""
     write_config({
         "voice.wake_word.enabled": True,
         "voice.wake_word.phrase": phrase,
-        "voice.wake_word.model_path": model_path,
         "voice.wake_word.threshold": threshold,
     })
     print(c(f'  ✓ voice.wake_word.phrase = "{phrase}" in config.yaml', "32"))
@@ -1311,7 +1430,7 @@ def cmd_wakeword():
             ]
         )
 
-    set_wake_word_config(phrase, model_path=f"models/{stem}.onnx", threshold=0.5)
+    set_wake_word_config(phrase, threshold=0.5)
 
     print(
         c(
@@ -1331,6 +1450,52 @@ def cmd_wakeword():
         f"  Recorded clips and config.yaml are already in place. Model lands at models/{stem}.onnx."
     )
     print("  When it's done: python wony.py doctor")
+
+
+def prune_config():
+    """Remove keys this version of Wony no longer reads from config.yaml.
+
+    Left in place they look like working settings and do nothing. The old file
+    is kept as config.yaml.bak.
+    """
+    if not os.path.exists(CONFIG):
+        return
+    try:
+        repo_on_path()
+        import yaml
+
+        from helpers.config import dead_keys
+        from helpers.config_writer import remove
+
+        with io.open(CONFIG, "r", encoding="utf-8-sig") as fh:
+            text = fh.read()
+        raw = yaml.safe_load(text) or {}
+    except Exception as e:
+        warn(f"Could not check config.yaml for old settings: {e}")
+        return
+    dead = dead_keys(raw)
+    if not dead:
+        return
+    _carry_over_port(raw)
+    with io.open(CONFIG + ".bak", "w", encoding="utf-8") as bk:
+        bk.write(text)
+    removed = remove(CONFIG, dead)
+    ok(f"removed old settings from config.yaml: {', '.join(removed)} (backup: config.yaml.bak)")
+
+
+def _carry_over_port(raw):
+    """server.port is now picked automatically — keep the one the user had, so
+    their bookmark still works."""
+    port = (raw.get("server") or {}).get("port")
+    if not isinstance(port, int):
+        return
+    try:
+        from helpers.memory_db import get_kv, set_kv
+
+        if not get_kv("web.port", ""):
+            set_kv("web.port", str(port))
+    except Exception:
+        pass
 
 
 def apply_enabled_modules(chosen):
@@ -1487,6 +1652,8 @@ def install(chosen, detected):
 
     _ensure_gpu_onnxruntime(chosen, new)
     _ensure_wony_exe()
+    if any(f["key"] == "browser" for f in chosen):
+        _ensure_browser()
 
     # Download Kokoro (TTS) + faster-whisper (STT) model files once here, then
     # pre-render cached voice clips. Downloading now (interactive terminal,
@@ -1502,6 +1669,27 @@ def install(chosen, detected):
             if os.path.exists(path):
                 print(c(f"\n  Running {script}...", "1;36"))
                 subprocess.call([sys.executable, path])
+
+
+def _ensure_browser():
+    """Edge or Chrome serve as-is; without either, fetch Playwright's own
+    headless Chromium so browsing works at all."""
+    probe = (
+        "from playwright.sync_api import sync_playwright\n"
+        "with sync_playwright() as p:\n"
+        "    for o in ({'channel': 'msedge'}, {'channel': 'chrome'}, {}):\n"
+        "        try:\n"
+        "            p.chromium.launch(headless=True, **o).close(); raise SystemExit(0)\n"
+        "        except SystemExit: raise\n"
+        "        except Exception: pass\n"
+        "raise SystemExit(1)\n"
+    )
+    if subprocess.call([sys.executable, "-c", probe], stderr=subprocess.DEVNULL) == 0:
+        print(c("  . a browser for web browsing is already there.", "90"))
+        return
+    print(c("\n  Downloading a small browser for web browsing (~100 MB)...", "1;36"))
+    if subprocess.call([sys.executable, "-m", "playwright", "install", "--only-shell", "chromium"]) != 0:
+        print(c("  ✗ browser download failed — run: python -m playwright install --only-shell chromium", "31"))
 
 
 def _dist_installed(name):
@@ -1682,6 +1870,7 @@ def cmd_configure():
         warn("Nothing is installed yet — run 'python setup.py' first.")
         return
     ensure_env()
+    prune_config()
     _, detected = detect()
     pending = configure([f for f in FEATURES if f["key"] in detected])
     # Nothing is installed here, so the UI is not built either — but it is
@@ -1745,6 +1934,7 @@ def main():
         return
 
     install(chosen, detected)
+    prune_config()
     apply_enabled_modules(chosen)
     verify_install(chosen)
     pending = build_web(chosen)

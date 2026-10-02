@@ -7,7 +7,7 @@ import { moduleHealthState, moduleMessage } from '../../lib/moduleHealth';
 import { Gated } from '../../components/ModuleGate';
 import { Modal, SectionLabel, Switch } from '../../components/ui';
 import type { NowPlaying, Pin } from '../../api';
-import { isBackgroundJobOn } from './seed';
+import { isToggleOn } from './seed';
 
 const PRESET_MINUTES = [5, 10, 25];
 const SPOTIFY_POLL_MS = 5000;
@@ -102,8 +102,7 @@ function PinCard({
   }, [isSpotifyVolume]);
   const spotifyInactive = isSpotifyVolume && !spotify?.active;
 
-  const backgroundOn = isBackgroundJobOn(pin.job, health?.background ?? []);
-  const isOn = toggledOn ?? backgroundOn ?? pin.args.action === 'start';
+  const isOn = toggledOn ?? isToggleOn(pin, health?.triggers);
 
   const broken = moduleHealthState(pin.module, health) !== 'ok';
 
@@ -130,7 +129,7 @@ function PinCard({
             onChange={() => {
               const next = !isOn;
               setToggledOn(next);
-              runJob(pin.job, { ...pin.args, action: next ? 'start' : 'stop' }, { from: 'Dashboard' });
+              runJob(pin.job, { ...pin.args, action: next ? 'on' : 'off' }, { from: 'Dashboard' });
             }}
           />
         )}

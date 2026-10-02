@@ -120,6 +120,22 @@ class TestConfigWriter(unittest.TestCase):
         self.assertEqual(data["assistant"]["owner_name"], "Tuta: the second")
         self.assertEqual(data["voice"]["hotkeys"]["push_to_talk"], "<ctrl>+<alt>+w")
 
+    def test_remove_takes_the_key_its_comment_and_an_emptied_parent(self) -> None:
+        """setup.py retires old keys this way; a half-removed block would leave
+        config.yaml unparseable or with a dangling section header."""
+        removed = config_writer.remove(
+            self.path, ["server.host", "server.port", "assistant.owner_name", "not.there"]
+        )
+        self.assertEqual(removed, ["server.host", "server.port", "assistant.owner_name"])
+        data = self._load()
+        self.assertNotIn("server", data)
+        self.assertNotIn("owner_name", data["assistant"])
+        text = self._text()
+        self.assertNotIn("# how it addresses you", text)
+        self.assertNotIn("# keep this on localhost", text)
+        self.assertIn("# what you call it", text)
+        self.assertEqual(data["enabled_modules"], ["ai", "basics"])
+
     def test_null_round_trips(self) -> None:
         config_writer.update(self.path, {"voice.hotkeys.push_to_talk": None})
         self.assertIsNone(self._load()["voice"]["hotkeys"]["push_to_talk"])
@@ -165,16 +181,25 @@ class TestSettingsSurface(unittest.TestCase):
         with self.assertRaises(self.settings.SettingsError):
             self.settings.apply({}, modules=["basics", "not_a_module"])
 
-    def test_always_on_modules_are_kept(self) -> None:
+    def test_always_on_modules_are_not_written(self) -> None:
+        """They are on whatever the file says; writing them made every saved
+        config list ai/status/employer as if they were choices."""
         result = self.settings.apply({}, modules=["weather"])
         self.assertTrue(result["restart_required"])
         import yaml
 
         with io.open(self.path, encoding="utf-8") as handle:
             enabled = yaml.safe_load(handle)["enabled_modules"]
-        self.assertIn("ai", enabled)
-        self.assertIn("status", enabled)
-        self.assertIn("weather", enabled)
+        self.assertEqual(enabled, ["weather"])
+
+    def test_null_choice_round_trips(self) -> None:
+        """'Windows default' on the page is null in the file, not the text."""
+        self.settings.apply({"voice.input_device": "Windows default"})
+        import yaml
+
+        with io.open(self.path, encoding="utf-8") as handle:
+            voice = yaml.safe_load(handle)["voice"]
+        self.assertIsNone(voice["input_device"])
 
     def test_every_field_key_exists_in_the_schema(self) -> None:
         """A key that does not resolve reads back as its default no matter what

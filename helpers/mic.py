@@ -1236,6 +1236,25 @@ def playback_session() -> typing.Generator[_PlaybackWriter, None, None]:
         _playback_hub.release()
 
 
+def device_names(kind: str) -> typing.List[str]:
+    """Names of the input or output devices, for the settings page.
+
+    Only the preferred host API's copies: every device also appears under MME
+    and DirectSound, and a list with each microphone three times is unreadable.
+    """
+    channels = "max_input_channels" if kind == "input" else "max_output_channels"
+    api = _preferred_hostapi_index()
+    names: typing.List[str] = []
+    for dev in sd.query_devices():
+        if dev[channels] <= 0 or (api is not None and dev["hostapi"] != api):
+            continue
+        if kind == "input" and _is_excluded_input(dev["name"]):
+            continue
+        if dev["name"] not in names:
+            names.append(dev["name"])
+    return names
+
+
 def resolve_output_device() -> typing.Optional[int]:
     """Return the index of the output device to play through, or None for the
     OS default (sounddevice's device=None binds to sd.default.device[1]).

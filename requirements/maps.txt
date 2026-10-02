@@ -1,0 +1,3 @@
+# Maps & places (requests is in core). OpenStreetMap needs nothing else;
+# a Google Maps key is optional and set in .env.
+-r location.txt

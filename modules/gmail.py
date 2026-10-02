@@ -6,14 +6,12 @@ import typing
 from datetime import datetime
 
 from helpers.accounts import CREDENTIALS_FILE, GoogleAccounts
-from helpers.notify import notify
 from helpers.cache import Cache
 from helpers.config import Config
 from helpers.decorators import capture_response
-from helpers.jobs import BackgroundJobs
-from helpers.logger import logger
 from helpers.registry import method_job, register_service
 from helpers.requirements import Requirement
+from helpers.untrusted import wrap
 
 
 _METADATA_HEADERS = ["From", "To", "Cc", "Bcc", "Subject", "Date"]
@@ -25,18 +23,18 @@ _DEFAULT_MAX_RESULTS = 20
 # Body text kept per message. Above this, a spoken read-out drags and a
 # summarisation request costs tokens for boilerplate and signatures.
 _MAX_BODY_CHARS = 1500
-# Ceiling on messages fed to one AI inbox summary.
-_AI_SUMMARY_MAX_EMAILS = 30
-# How often "check my email every so often" polls when no interval is given.
-_DEFAULT_POLL_INTERVAL_MINUTES = 15
-# Unread messages a poll tick scans. Above the display default so a burst of new
-# mail between two ticks is announced in full rather than partly missed.
+# Unread messages the new_email trigger scans. Above the display default so a
+# burst of new mail between two polls is announced in full.
 _POLL_SCAN_LIMIT = 100
 # Unread messages the overview reads headers for to work out who they are from.
 # Enough to make "top senders" meaningful without a slow batch on a big backlog.
 _OVERVIEW_SENDER_SCAN = 50
 # Rows the inbox panel shows — a widget, not an inbox browser.
 _INBOX_PANEL_LIMIT = 8
+# Attachments past this are not downloaded to be read, and text past this per
+# file is cut — a 40-page contract is not read out in one go.
+_MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024
+_MAX_ATTACHMENT_CHARS = 4000
 
 
 @dataclasses.dataclass
@@ -53,15 +51,22 @@ class Msg:
     plain: str = ""
     html: str = ""
     label_names: typing.List[str] = dataclasses.field(default_factory=list)
-    attachments: typing.List[str] = dataclasses.field(default_factory=list)
+    attachments: typing.List["Attachment"] = dataclasses.field(default_factory=list)
     account: str = ""
 
 
-def _walk_parts(payload: dict) -> typing.Tuple[str, str, typing.List[str]]:
-    """Walk MIME payload tree, return (plain_text, html_text, attachment_filenames)."""
+class Attachment(typing.NamedTuple):
+    filename: str
+    mime: str
+    size: int
+    attachment_id: str
+
+
+def _walk_parts(payload: dict) -> typing.Tuple[str, str, typing.List[Attachment]]:
+    """Walk MIME payload tree, return (plain_text, html_text, attachments)."""
     plain_parts: typing.List[str] = []
     html_parts: typing.List[str] = []
-    attachments: typing.List[str] = []
+    attachments: typing.List[Attachment] = []
 
     def _walk(part: dict) -> None:
         mime = part.get("mimeType", "")
@@ -69,7 +74,9 @@ def _walk_parts(payload: dict) -> typing.Tuple[str, str, typing.List[str]]:
         filename = part.get("filename", "")
 
         if filename:
-            attachments.append(filename)
+            attachments.append(Attachment(
+                filename, mime, int(body.get("size", 0) or 0), body.get("attachmentId", ""),
+            ))
             return
 
         if "parts" in part:
@@ -93,6 +100,22 @@ def _walk_parts(payload: dict) -> typing.Tuple[str, str, typing.List[str]]:
 
     _walk(payload)
     return "".join(plain_parts), "".join(html_parts), attachments
+
+
+def _save_unique(folder: str, filename: str, data: bytes) -> str:
+    """Write `data` into `folder` without replacing a file already there."""
+    import os
+
+    safe = os.path.basename(filename) or "attachment"
+    stem, ext = os.path.splitext(safe)
+    path = os.path.join(folder, safe)
+    counter = 1
+    while os.path.exists(path):
+        path = os.path.join(folder, f"{stem} ({counter}){ext}")
+        counter += 1
+    with open(path, "wb") as fh:
+        fh.write(data)
+    return path
 
 
 def _parse_raw(raw: dict, label_map: typing.Dict[str, str]) -> Msg:
@@ -157,10 +180,6 @@ def _build_mime_raw(
     return result
 
 
-def _gmail_job_name(account_name: str) -> str:
-    return f"gmail_polling_{account_name}"
-
-
 def _sender_name(raw: str) -> str:
     """'Marta K. <marta@x.com>' -> 'Marta K.'; falls back to the bare address."""
     from email.utils import parseaddr
@@ -173,62 +192,25 @@ def _sender_name(raw: str) -> str:
     module_name="gmail",
     requires=Requirement(
         files=[CREDENTIALS_FILE],
-        pip_modules=["simplegmail"],
-        setup_hint=(
-            "Follow simplegmail OAuth setup (pypi.org/project/simplegmail), "
-            "place credentials/google_credentials.json in the credentials/ folder, "
-            "then run: pip install -r requirements/gmail.txt"
-        ),
+        pip_modules=["googleapiclient", "google_auth_oauthlib"],
+        setup_hint="Run: python setup.py configure — it sets up Google sign-in.",
     ),
 )
 class Gmail:
     """Gmail service for email management. Supports multiple Google accounts."""
 
     def __init__(self):
-        self._clients: typing.Dict[str, typing.Any] = {}
         self._label_maps: typing.Dict[str, typing.Dict[str, str]] = {}
 
     # ------------------------------------------------------------------
     # Auth
     # ------------------------------------------------------------------
 
-    def _client(self, account: str) -> typing.Any:
-        # Imported here, not at module scope: a missing simplegmail must leave
-        # the module importable so its Requirement still reaches `doctor`.
-        import simplegmail
-
-        name = GoogleAccounts.resolve(account or None)
-        if name not in self._clients:
-            rec = GoogleAccounts.record(name)
-            self._clients[name] = simplegmail.Gmail(
-                client_secret_file=CREDENTIALS_FILE,
-                creds_file=rec["gmail_token"],
-            )
-        return self._clients[name]
-
     def _svc(self, account: str):
-        """Auto-refreshing raw googleapiclient Gmail resource."""
-        return self._client(account).service
+        """Auto-refreshing googleapiclient Gmail resource (helpers/google_auth.py)."""
+        from helpers import google_auth
 
-    def sign_in(self, account: str) -> str:
-        """Sign `account` in and report the address it belongs to.
-
-        Building the client is what triggers OAuth consent. The accounts job
-        and setup.py both come here, so there is one sign-in path.
-        """
-        self._client(account)
-        try:
-            profile = self._svc(account).users().getProfile(userId="me").execute()
-            return (profile or {}).get("emailAddress", "")
-        except Exception as e:
-            logger.log_error(str(e), f"gmail.sign_in.{account}")
-            return ""
-
-    def forget_account(self, name: str) -> None:
-        """Drop cached state for an account whose token changed or went away —
-        both caches are keyed by name, so a re-auth would reuse the old client."""
-        self._clients.pop(name, None)
-        self._label_maps.pop(name, None)
+        return google_auth.service("gmail", "v1", account)
 
     # ------------------------------------------------------------------
     # Config
@@ -240,20 +222,11 @@ class Gmail:
     def _max_body_chars(self) -> int:
         return _MAX_BODY_CHARS
 
-    def _use_ai(self) -> bool:
-        return bool(Config.module_settings("gmail").get("use_ai", False))
-
-    def _ai_summary_max_emails(self) -> int:
-        return _AI_SUMMARY_MAX_EMAILS
-
     def _write_allowed(self) -> bool:
         return bool(Config.module_settings("gmail").get("allow_write", False))
 
     def _write_disabled_note(self, what: str) -> str:
-        return (
-            f"{what} is disabled. To allow it, set modules.gmail.allow_write: true "
-            "in config.yaml (or switch it on in the web UI under Settings)."
-        )
+        return f"{what} is switched off. Turn on 'Change my mailbox' in Settings to allow it."
 
     # ------------------------------------------------------------------
     # Raw API helpers
@@ -463,7 +436,7 @@ class Gmail:
             parts.append(f"Read: {'No' if 'UNREAD' in labels else 'Yes'}")
 
             if message.attachments:
-                parts.append(f"Attachments: {', '.join(message.attachments)}")
+                parts.append(f"Attachments: {', '.join(a.filename for a in message.attachments)}")
 
             body = ""
             if message.plain:
@@ -512,30 +485,10 @@ class Gmail:
         for msg in messages:
             lines.append("")
             lines.append(self._format_message(msg, verbose=verbose, max_body=max_body))
-        raw = "\n".join(lines)
-
-        if not self._use_ai() or not messages:
-            return raw
-
-        from helpers.ai_assist import summarize
-
-        cap = self._ai_summary_max_emails()
-        body_limit = self._max_body_chars()
-        payload_parts = [header, count_msg]
-        for msg in messages[:cap]:
-            payload_parts.append("")
-            payload_parts.append(self._format_message(msg, verbose=True, max_body=body_limit))
-        payload = "\n".join(payload_parts)
-
-        instruction = (
-            f"Summarize the following emails for the user. "
-            f"Highlight key senders, main topics, and anything that looks like it needs a reply or action. "
-            f"Context: {header}"
-        )
-        result = summarize(payload, instruction, audio)
-        if result is None:
-            return raw
-        return f"{header}\n{count_msg}\n\n{result}"
+        if not messages:
+            return "\n".join(lines)
+        # Senders, subjects and bodies are all written by other people.
+        return "\n".join(lines[:2]) + "\n" + wrap("\n".join(lines[2:]), "email")
 
     # ------------------------------------------------------------------
     # Internal fetch helpers
@@ -571,18 +524,11 @@ class Gmail:
             out.extend(msgs)
         return self._sort_desc(out)
 
-    def _get_new_messages(self, account: str) -> typing.List[Msg]:
-        """Unread messages not yet announced by background polling. ID-based
-        dedup mirrors the calendar poller — robust against Gmail's day-granular
-        date filters re-announcing the same mail every interval."""
-        name = GoogleAccounts.resolve(account or None)
-        cache_key = f"announced_email_ids_{name}"
-        messages = self._fetch(self._scope("is:unread"), _POLL_SCAN_LIMIT, name)
-        announced: typing.List[str] = Cache.get_value(cache_key) or []
-        new = [m for m in messages if m.id not in announced]
-        if new:
-            Cache.set_value(cache_key, (announced + [m.id for m in new])[-500:])
-        return new
+    def new_messages(self, seen: typing.Set[str]) -> typing.List[Msg]:
+        """Unread inbox mail from the last day whose ids are not in `seen`, across
+        every account — for the new_email trigger."""
+        scoped = self._scope("is:unread newer_than:1d")
+        return [m for m in self._fetch(scoped, _POLL_SCAN_LIMIT, "") if m.id not in seen]
 
     def search_messages(
         self, query: str, max_results: int = 0, account: str = "", folder: str = ""
@@ -693,15 +639,17 @@ class Gmail:
         important: bool = False,
         has_attachment: bool = False,
         max_results: int = 0,
-        view: typing.Literal["list", "full", "thread", "overview"] = "list",
+        view: typing.Literal["list", "full", "thread", "overview", "attachments"] = "list",
+        save_attachments: bool = False,
         account: str = "",
     ) -> str:
         """
         [EMAIL MANAGEMENT JOB] Finds and reads email. This is the single tool for every
         kind of email lookup — unread mail, recent mail, mail from a person, by label,
         starred, important, or with attachments — and `view` decides how much comes
-        back: a list of previews, one full message, a whole conversation, or a summary
-        of the inbox. Combine filters freely; with no filters it lists recent inbox mail.
+        back: a list of previews, one full message, a whole conversation, a summary
+        of the inbox, or what the attached files say. Combine filters freely; with no
+        filters it lists recent inbox mail.
 
         Args:
             query (str): Raw Gmail search syntax, e.g. 'from:boss subject:report'. Use
@@ -719,7 +667,10 @@ class Gmail:
             view (str): How much to return. "list" (the default) is headers and
                 previews for several; "full" is the whole body of the best match;
                 "thread" is the entire conversation it belongs to; "overview" is
-                unread counts and top senders instead of messages.
+                unread counts and top senders instead of messages; "attachments" is
+                the text of the best match's attached files.
+            save_attachments (bool): With view "attachments", also save the files to
+                the Downloads folder.
             account (str): Google account to use (default: primary).
 
         Returns:
@@ -732,8 +683,10 @@ class Gmail:
             return self._read_one(query, sender, subject, folder, account)
         if wanted == "thread":
             return self._read_thread(query, subject, account)
+        if wanted == "attachments":
+            return self._read_attachments(query, sender, subject, folder, save_attachments, account)
         if wanted not in ("list", ""):
-            return f"Unknown view '{view}'. Use list, full, thread or overview."
+            return f"Unknown view '{view}'. Use list, full, thread, overview or attachments."
 
         terms: typing.List[str] = []
         described: typing.List[str] = []
@@ -804,7 +757,46 @@ class Gmail:
             return "No matching email found."
 
         max_body = self._max_body_chars() if audio else 0
-        return self._format_message(messages[0], verbose=True, max_body=max_body)
+        return wrap(self._format_message(messages[0], verbose=True, max_body=max_body), "email")
+
+    def _read_attachments(
+        self, query: str, sender: str, subject: str, folder: str, save: bool, account: str,
+    ) -> str:
+        """The attached files of the newest matching email that has any (view="attachments")."""
+        from helpers.paths import downloads_dir
+        from helpers.text_extract import extract_bytes
+
+        locator = " ".join(p for p in (self._locator(query, sender, subject), "has:attachment") if p)
+        found = self._find_latest(self._scope(locator, folder=folder), account)
+        if found is None:
+            return "No matching email with attachments found."
+        name, msg = found
+        if not msg.attachments:
+            return f"'{msg.subject}' has no attached files."
+
+        svc = self._svc(name)
+        blocks, saved = [], []
+        for att in msg.attachments:
+            if att.size > _MAX_ATTACHMENT_BYTES:
+                blocks.append(f"[{att.filename}] too large to read ({att.size // 1_000_000} MB).")
+                continue
+            raw = svc.users().messages().attachments().get(
+                userId="me", messageId=msg.id, id=att.attachment_id,
+            ).execute()
+            data = base64.urlsafe_b64decode(raw.get("data", "") + "==")
+            if save:
+                saved.append(_save_unique(downloads_dir(), att.filename, data))
+            text = extract_bytes(data, att.filename, att.mime)
+            if text:
+                cut = text[:_MAX_ATTACHMENT_CHARS] + ("…" if len(text) > _MAX_ATTACHMENT_CHARS else "")
+                blocks.append(f"[{att.filename}]\n{cut}")
+            else:
+                blocks.append(f"[{att.filename}] {att.mime} — no text I can read.")
+
+        header = f"Attachments of '{msg.subject}' from {self._format_sender(msg.sender)}:"
+        footer = f"\nSaved to: {', '.join(saved)}" if saved else ""
+        # Attached files are written by the sender.
+        return header + "\n" + wrap("\n\n".join(blocks), "email attachment") + footer
 
     def _inbox_overview(self, locator: str = "", account: str = "") -> str:
         """How much unread mail there is and who it is from (view="overview").
@@ -932,75 +924,16 @@ class Gmail:
         ]
         thread_msgs.sort(key=Gmail._parse_date)
 
-        seed_subject = thread_msgs[0].subject if thread_msgs else (subject or "")
         max_body = self._max_body_chars() if audio else 0
-        lines = [f"Thread: '{seed_subject}' — {len(thread_msgs)} message(s)"]
+        lines = []
         for i, message in enumerate(thread_msgs, 1):
             lines.append(f"\n--- Message {i} ---")
             lines.append(self._format_message(message, verbose=True, max_body=max_body))
-        return "\n".join(lines)
+        return f"Thread with {len(thread_msgs)} message(s):\n" + wrap("\n".join(lines), "email")
 
     # ------------------------------------------------------------------
     # Jobs — background polling
     # ------------------------------------------------------------------
-
-    @capture_response
-    @method_job
-    def watch_inbox(
-        self,
-        action: typing.Literal["start", "stop"] = "start",
-        interval_minutes: int = 0,
-        account: str = "",
-    ) -> str:
-        """
-        [EMAIL MANAGEMENT JOB] Starts or stops background inbox monitoring. While it
-        runs, new mail is announced as it arrives.
-
-        Args:
-            action (str): "start" (the default) or "stop".
-            interval_minutes (int): How often to check when starting (defaults to 15).
-            account (str): Google account to watch. Stopping with no account stops all.
-
-        Returns:
-            str: Confirmation of what is now running.
-        """
-        wanted = (action or "start").strip().lower()
-
-        if wanted in ("stop", "off", "cancel"):
-            if account:
-                name = GoogleAccounts.resolve(account)
-                stopped = BackgroundJobs.stop(_gmail_job_name(name))
-                return (f"Stopped watching '{name}'." if stopped
-                        else f"'{name}' was not being watched.")
-            watched = [j for j in BackgroundJobs.list_jobs() if j.startswith("gmail_polling_")]
-            stopped_any = any(BackgroundJobs.stop(job) for job in watched)
-            return "Stopped watching the inbox." if stopped_any else "The inbox was not being watched."
-
-        if wanted not in ("start", "on", "watch"):
-            return f"Unknown action '{action}'. Use start or stop."
-
-        name = GoogleAccounts.resolve(account or None)
-        job_name = _gmail_job_name(name)
-        if BackgroundJobs.is_running(job_name):
-            return f"Already watching '{name}'."
-
-        if not interval_minutes or interval_minutes <= 0:
-            interval_minutes = _DEFAULT_POLL_INTERVAL_MINUTES
-
-        def _poll() -> None:
-            messages = self._get_new_messages(name)
-            if not messages:
-                return
-            headline = f"You have {len(messages)} new email(s) in {name}."
-            logger.log_system_event("gmail_poll", headline)
-            notify(
-                [headline] + [self._format_message(m, verbose=False) for m in messages],
-                kind="alert",
-                source="gmail",
-            )
-
-        BackgroundJobs.start(job_name, _poll, interval=interval_minutes * 60)
-        return f"Watching '{name}' — checking every {interval_minutes} minutes."
 
     # ------------------------------------------------------------------
     # Jobs — write
@@ -1022,7 +955,8 @@ class Gmail:
         switched off it saves the message as a Gmail draft instead, so nothing is lost.
 
         Args:
-            to (str): Recipient email address. (required for a new message)
+            to (str): Recipient — an email address or a contact's name; several
+                separated by commas. (required for a new message)
             subject (str): Email subject line (provide subject or body or both).
             body (str): Plain text body of the email. (required when replying)
             reply_to_query (str): Search for the email to reply to — a sender, a
@@ -1037,6 +971,12 @@ class Gmail:
 
         if not to:
             return "Error: Recipient address (to) is required."
+        from modules.contacts import resolve_addresses
+
+        addresses, problem = resolve_addresses(to, account)
+        if problem:
+            return problem
+        to = ", ".join(addresses)
         if not subject and not body:
             return "Error: Email must have a subject or body."
 

@@ -76,8 +76,9 @@ class Employer:
                 self.job_on_command(first_text)
             return
 
-        stt_cfg = Config.get("voice.stt", {}) or {}
-        clarify_timeout = float(stt_cfg.get("start_timeout", 4.0))
+        from helpers.audio import START_TIMEOUT_SECONDS
+
+        clarify_timeout = START_TIMEOUT_SECONDS
         follow_up_timeout = float(cfg.get("follow_up_timeout", 3.0))
         stop_phrases = [
             "thanks",
@@ -183,7 +184,10 @@ class Employer:
                 else "unknown_command"
             )
             logger.log_function_call(function_name, user_input)
-            result = function()
+            from helpers.turn_context import user_request
+
+            with user_request(user_input):
+                result = function()
             logger.log_function_response(
                 function_name, str(result) if result else "No response", user_input
             )
@@ -295,9 +299,9 @@ class Employer:
     @staticmethod
     def background_jobs(action: typing.Literal["list", "stop"] = "list") -> str:
         """
-        [SYSTEM CONTROL JOB] Lists what is running in the background — inbox and
-        calendar watchers and the like — or stops all of it. This is not about timers
-        and reminders: those are add_reminder and manage_reminders.
+        [SYSTEM CONTROL JOB] Lists what is running in the background or stops all of
+        it. Not timers and reminders (manage_reminders), and not what Wony watches for
+        (manage_triggers).
 
         Args:
             action (str): "list" (the default) or "stop".
@@ -363,9 +367,23 @@ class Employer:
     def _check_if_user_input_is_command(
         self, user_input: str
     ) -> typing.Optional[typing.Callable]:
+        """A job whose exact name was said or typed, to run without the model.
+
+        Never one that confirms: this path has no second turn to ask in, so it
+        would skip the gate. Typed "exit" is the one exception — someone at the
+        console typing it is the confirmation.
+        """
+        from helpers import confirm
+
         normalized_input = user_input.lower().strip()
+        confirms = ServiceRegistry.get_job_confirms()
         for func in self.available_functions:
             func_name = func.__name__.replace("_", " ").lower()
-
-            if normalized_input == func_name:
+            if normalized_input != func_name:
+                continue
+            if func.__name__ == "exit" and not Cache.get_audio():
                 return func
+            if confirm._applies(confirms.get(func.__name__), {}):
+                return None
+            return func
+        return None

@@ -56,9 +56,8 @@ def _install_refusal(action: str, what: str) -> str:
     answer is still useful: the user can read it and run it themselves.
     """
     return (
-        f"MCP server '{action}' is disabled — it would have started: {what}\n"
-        "To allow it, set modules.mcp.allow_install: true in config.yaml "
-        "(or switch it on in the web UI under Settings)."
+        f"MCP server '{action}' is switched off — it would have started: {what}\n"
+        "Turn on 'Install MCP tool servers' in Settings to allow it."
     )
 
 
@@ -72,48 +71,12 @@ def _valid_json(value: str, shape: type) -> bool:
 @register_job(
     module_name="mcp",
     requires=_MCP_REQUIREMENT,
-    summary="List MCP server connections and their status",
-)
-@capture_response
-def list_mcp_servers() -> str:
-    """
-    [MCP JOB] Lists every configured MCP server connection and whether it is
-    currently connected.
-
-    Returns:
-        str: Each server with its transport, address, and status.
-    """
-    from helpers.memory_db import all_mcp_servers
-
-    records = all_mcp_servers()
-    connected = set(_client().all_connected())
-
-    if not records:
-        return "No MCP servers configured. Use manage_mcp_server to add one."
-
-    lines = [f"{len(records)} MCP server(s) configured:"]
-    for record in records:
-        name = record["name"]
-        if name in connected:
-            status = "connected"
-        elif not bool(record["enabled"]):
-            status = "disabled"
-        else:
-            status = "disconnected"
-        address = record.get("url") or record.get("command") or ""
-        lines.append(f"  [{name}] {record['transport']} {address!r} — {status}")
-    return "\n".join(lines)
-
-
-@register_job(
-    module_name="mcp",
-    requires=_MCP_REQUIREMENT,
-    summary="Add, edit, remove, connect or disconnect an MCP server",
-    confirms=True,
+    summary="List, add, edit, remove, connect or disconnect MCP servers",
+    confirms={"add", "edit", "remove", "delete", "connect", "disconnect"},
 )
 @capture_response
 def manage_mcp_server(
-    action: typing.Literal["add", "edit", "remove", "connect", "disconnect"] = "add",
+    action: typing.Literal["list", "add", "edit", "remove", "connect", "disconnect"] = "list",
     name: str = "",
     transport: typing.Literal["", "stdio", "sse", "http"] = "",
     command: str = "",
@@ -123,13 +86,15 @@ def manage_mcp_server(
     enabled: str = "",
 ) -> str:
     """
-    [MCP JOB] Adds, edits, removes, connects or disconnects one MCP server — an
-    external tool server that gives Wony extra abilities. Adding connects straight
-    away. Editing keeps any field left empty as it was.
+    [MCP JOB] Lists the MCP servers — external tool servers that give Wony extra
+    abilities — and whether each is connected, or adds, edits, removes, connects or
+    disconnects one. Adding connects straight away. Editing keeps any field left
+    empty as it was.
 
     Args:
-        action (str): "add" (the default), "edit", "remove", "connect" or "disconnect".
-        name (str): The server name, e.g. "notion", "github". (required)
+        action (str): "list" (the default), "add", "edit", "remove", "connect" or
+            "disconnect".
+        name (str): The server name, e.g. "notion", "github". (required except for list)
         transport (str): "stdio" (the default), "sse" or "http".
         command (str): Executable command for stdio transport, e.g. "npx @notionhq/mcp".
         args (str): JSON array of command arguments, e.g. '["--token", "xyz"]'.
@@ -142,7 +107,9 @@ def manage_mcp_server(
     """
     from helpers.memory_db import delete_mcp_server, get_mcp_server, upsert_mcp_server
 
-    wanted = (action or "add").strip().lower()
+    wanted = (action or "list").strip().lower()
+    if wanted == "list":
+        return _server_list()
     if not name:
         return "Error: server name is required."
 
@@ -240,4 +207,26 @@ def manage_mcp_server(
         _client().disconnect_server(name)
         return f"Disconnected from '{name}'."
 
-    return f"Unknown action '{action}'. Use add, edit, remove, connect or disconnect."
+    return f"Unknown action '{action}'. Use list, add, edit, remove, connect or disconnect."
+
+
+def _server_list() -> str:
+    from helpers.memory_db import all_mcp_servers
+
+    records = all_mcp_servers()
+    if not records:
+        return "No MCP servers configured. Add one with action 'add'."
+
+    connected = set(_client().all_connected())
+    lines = [f"{len(records)} MCP server(s) configured:"]
+    for record in records:
+        name = record["name"]
+        if name in connected:
+            status = "connected"
+        elif not bool(record["enabled"]):
+            status = "disabled"
+        else:
+            status = "disconnected"
+        address = record.get("url") or record.get("command") or ""
+        lines.append(f"  [{name}] {record['transport']} {address!r} — {status}")
+    return "\n".join(lines)

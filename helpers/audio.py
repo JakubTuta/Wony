@@ -43,6 +43,10 @@ _VAD_AGGRESSIVENESS = 2
 # VAD rather than someone still talking.
 _MAX_CAPTURE_SECONDS = 12.0
 
+# How long the mic waits for the first word before giving up. Also the follow-up
+# window after Wony asks a question (modules/employer.py).
+START_TIMEOUT_SECONDS = 4.0
+
 # Play a short tone when a listening turn opens while Wony is muted — otherwise
 # a muted assistant is indistinguishable from a broken one.
 _EARCON_WHEN_MUTED = True
@@ -469,16 +473,10 @@ class Audio:
         """Record a spoken command with VAD endpointing. Returns float32 @16kHz mono."""
         from helpers import events, mic
 
-        cfg = Config.get("voice.stt", {}) or {}
-        effective_timeout = (
-            start_timeout
-            if start_timeout is not None
-            else float(cfg.get("start_timeout", 4.0))
-        )
         return mic.record_until_silence(
             max_seconds=_MAX_CAPTURE_SECONDS,
-            start_timeout=effective_timeout,
-            silence_ms=int(cfg.get("silence_ms", 700)),
+            start_timeout=start_timeout if start_timeout is not None else START_TIMEOUT_SECONDS,
+            silence_ms=int(Config.get("voice.stt.silence_ms", 700)),
             vad_aggressiveness=_VAD_AGGRESSIVENESS,
             cancel_event=events.session_cancel,
         )

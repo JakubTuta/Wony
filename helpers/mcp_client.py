@@ -146,6 +146,7 @@ class MCPServerSession:
                     if hasattr(t.inputSchema, "model_dump")
                     else dict(t.inputSchema)
                 ) if t.inputSchema else {"type": "object", "properties": {}},
+                "read_only": bool(getattr(t.annotations, "readOnlyHint", False)),
             }
             for t in result.tools
         ]
@@ -368,6 +369,9 @@ def _register_tools(session: MCPServerSession) -> None:
         ServiceRegistry._jobs[tool_name] = fn
         ServiceRegistry._job_modules[tool_name] = module_name
         ServiceRegistry._job_summaries[tool_name] = description[:80]
+        # The MCP spec treats an unannotated tool as destructive, and the server
+        # is third-party code: only a declared read-only tool skips the confirm.
+        ServiceRegistry._job_confirms[tool_name] = not tool.get("read_only", False)
 
     ServiceRegistry._module_status[module_name] = ("enabled", "")
     logger.log_system_event(
@@ -385,6 +389,7 @@ def _unregister_tools(server_name: str) -> None:
         ServiceRegistry._jobs.pop(k, None)
         ServiceRegistry._job_modules.pop(k, None)
         ServiceRegistry._job_summaries.pop(k, None)
+        ServiceRegistry._job_confirms.pop(k, None)
     ServiceRegistry._module_status.pop(module_name, None)
 
 

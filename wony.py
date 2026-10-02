@@ -6,7 +6,7 @@ Usage:
   python wony.py tray         # always-on tray with system tray icon
   python wony.py text         # console text REPL
   python wony.py voice        # console voice mode (push-to-talk hotkey + optional wake word)
-  python wony.py web          # web server only (FastAPI on configured host:port)
+  python wony.py web          # web server only (FastAPI on 127.0.0.1)
   python wony.py doctor       # validate setup and exit
   python wony.py autostart install    # add Windows logon task
   python wony.py autostart uninstall  # remove Windows logon task
@@ -242,10 +242,11 @@ def cmd_web(args: argparse.Namespace) -> None:
 
     import uvicorn
 
-    host = str(Config.get("server.host", "127.0.0.1"))
-    port = int(Config.get("server.port", 8000))
-    print(f"\nWony Web Server → http://{host}:{port}\n")
-    uvicorn.run(app, host=host, port=port)
+    from helpers import server_address
+
+    port = server_address.pick_port()
+    print(f"\nWony Web Server → {server_address.url(port)}\n")
+    uvicorn.run(app, host=server_address.HOST, port=port)
 
 
 def cmd_doctor(args: argparse.Namespace) -> None:

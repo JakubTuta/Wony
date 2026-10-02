@@ -1,19 +1,10 @@
 import os
-import time
 import typing
 
 from helpers.decorators import capture_response
 from helpers.logger import logger
 from helpers.registry import register_job
 from helpers.requirements import Requirement
-
-# How long an IP-geolocation result is reused. A desktop does not move, and a
-# laptop that does will be right again within the day. Kept in the process
-# rather than in Profile on purpose: every Profile fact is injected into every
-# system prompt, and a pair of coordinates helps the model with nothing.
-_LOCATION_TTL_SECONDS = 6 * 3600
-_located: typing.Optional[typing.Tuple[float, float, str]] = None
-_located_at: float = 0.0
 
 # Forecast entries are 3 hours apart; this is the free plan's whole window.
 _FORECAST_DAYS = 5
@@ -23,11 +14,8 @@ _FORECAST_DAYS = 5
     module_name="weather",
     requires=Requirement(
         env_vars=["WEATHER_API_KEY"],
-        pip_modules=["geocoder", "requests"],
-        setup_hint=(
-            "Add WEATHER_API_KEY to .env (free key at openweathermap.org/api). "
-            "pip install -r requirements/weather.txt"
-        ),
+        pip_modules=["requests"],
+        setup_hint="Add WEATHER_API_KEY to .env (free key at openweathermap.org/api).",
     ),
 )
 @capture_response
@@ -287,42 +275,36 @@ def _forecast_report(city: str, when: str) -> str:
 def _here() -> typing.Tuple[
     typing.Optional[float], typing.Optional[float], str
 ]:
-    """Where this device is, by IP. Rough, but it needs no setup from the user."""
-    global _located, _located_at
+    """Where this device is (helpers/location.py)."""
+    from helpers.location import here
 
-    if _located is not None and time.time() - _located_at < _LOCATION_TTL_SECONDS:
-        return _located
-
-    import geocoder
-
-    try:
-        located = geocoder.ip("me")
-        lat, lon = located.latlng or (None, None)
-    except Exception as e:
-        logger.log_error(str(e), "weather_geolocate")
+    place = here()
+    if place is None:
         return None, None, "your location"
-
-    result = (lat, lon, located.city or "your location")
-    if lat is not None:
-        _located, _located_at = result, time.time()
-    return result
+    return place.lat, place.lon, place.label or "your location"
 
 
 def units() -> str:
-    """OpenWeatherMap units name from modules.weather.default_units."""
-    from helpers.config import Config
+    """OpenWeatherMap units name: the country's convention or the user's preference."""
+    from helpers import units as unit_rules
 
-    configured = str(Config.get("modules.weather.default_units", "metric")).lower()
-    return configured if configured in ("metric", "imperial", "standard") else "metric"
+    return "imperial" if unit_rules.current().fahrenheit else "metric"
 
 
 def temperature_symbol() -> str:
-    return {"metric": "°C", "imperial": "°F", "standard": "K"}[units()]
+    return "°F" if units() == "imperial" else "°C"
 
 
 def _wind_unit() -> str:
-    """OpenWeatherMap reports mph only for imperial; metric and standard are m/s."""
+    """OpenWeatherMap reports mph only for imperial; metric is m/s."""
     return "mph" if units() == "imperial" else "m/s"
+
+
+def _language() -> str:
+    """Descriptions ("light rain") in the language Wony answers in."""
+    from helpers.config import Config
+
+    return str(Config.get("assistant.language", "en") or "en").lower().replace("-", "_")
 
 
 def _get_coordinates_for_city_name(
@@ -365,7 +347,7 @@ def _get_weather_for_coordinates(
                 "lon": lon,
                 "appid": api_key,
                 "units": units(),
-                "lang": "en",
+                "lang": _language(),
             },
         )
         response.raise_for_status()
@@ -390,7 +372,7 @@ def _get_forecast_for_coordinates(
                 "lon": lon,
                 "appid": api_key,
                 "units": units(),
-                "lang": "en",
+                "lang": _language(),
             },
         )
         response.raise_for_status()

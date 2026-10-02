@@ -182,8 +182,6 @@ def run_tray() -> None:
         True  # tray is always voice-response mode (same feedback loop as voice mode)
     )
 
-    host = str(Config.get("server.host", "127.0.0.1"))
-    port = int(Config.get("server.port", 8000))
     notify_on_ready = bool(Config.get("tray.notify_on_ready", True))
     open_browser_on_start = bool(Config.get("tray.open_browser_on_start", False))
 
@@ -217,9 +215,11 @@ def run_tray() -> None:
     from modules.employer import Employer
 
     app = build_app()
+    from helpers import server_address
     from helpers.web_runner import WebServerController
 
-    web = WebServerController(app, host, port)
+    web = WebServerController(app, server_address.HOST, server_address.pick_port())
+    web_url = web.url
 
     # Build wake-word listener (no-op if disabled or deps missing)
     from helpers.wakeword import WakeWordListener
@@ -281,7 +281,7 @@ def run_tray() -> None:
         import webbrowser
 
         controller.ensure_web()
-        webbrowser.open(f"http://{host}:{port}")
+        webbrowser.open(web_url)
 
     def _on_open_web(icon, item) -> None:
         _open_web()
@@ -304,6 +304,33 @@ def run_tray() -> None:
                 print(message)
 
         threading.Thread(target=_check, daemon=True, name="update-check").start()
+
+    def _accounts_needing_sign_in() -> typing.List[str]:
+        try:
+            from helpers import google_auth
+            from helpers.accounts import GoogleAccounts
+
+            return [n for n in GoogleAccounts.list_accounts() if google_auth.status(n)["needs_sign_in"]]
+        except Exception:
+            return []  # no Google set up
+
+    def _google_sign_in_visible(item) -> bool:
+        return bool(_accounts_needing_sign_in())
+
+    def _on_google_sign_in(icon, item) -> None:
+        def _sign_in() -> None:
+            from helpers import google_auth
+            from helpers.turn_context import user_request
+
+            for name in _accounts_needing_sign_in():
+                try:
+                    with user_request():
+                        google_auth.sign_in(name)
+                except Exception as e:
+                    _toast(f"Google sign-in for '{name}' did not finish: {e}", "google")
+            icon.update_menu()
+
+        threading.Thread(target=_sign_in, daemon=True, name="google-sign-in").start()
 
     def _on_toggle(icon, item) -> None:
         if controller.is_running():
@@ -376,6 +403,7 @@ def run_tray() -> None:
             _wakeword_label, _on_wakeword_toggle, visible=_wakeword_visible
         ),
         pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Sign in to Google again", _on_google_sign_in, visible=_google_sign_in_visible),
         pystray.MenuItem("Settings", _on_settings),
         pystray.MenuItem("Check for updates", _on_check_updates),
         pystray.MenuItem(_toggle_label, _on_toggle),
@@ -435,13 +463,13 @@ def run_tray() -> None:
         try:
             import webbrowser
 
-            webbrowser.open(f"http://{host}:{port}")
+            webbrowser.open(web_url)
         except Exception:
             pass
 
     print(
         f"{assistant_name} is running in the system tray.\n"
-        f"  Web UI:    http://{host}:{port}\n"
+        f"  Web UI:    {web_url}\n"
         f"  {hotkey_label()}:  push-to-talk from anywhere\n"
         f"  Tray icon: right-click for menu (listen now, mute, pause, exit)"
     )

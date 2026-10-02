@@ -2,14 +2,10 @@
 # Required for: voice.wake_word.enabled: true in config.yaml
 # First run auto-downloads the pre-trained models (~tens of MB).
 # Built-in phrases: "hey jarvis", "alexa", "hey mycroft", "hey rhasspy"
-# For a custom phrase, train a .onnx model via the openWakeWord docs and set
-# voice.wake_word.model_path. Mic capture uses sounddevice (also in voice.txt).
+# For your own phrase run: python setup.py wakeword
+# Mic capture uses sounddevice (also in voice.txt).
 openwakeword
 onnxruntime
 sounddevice
 soxr
 numpy
-# Optional: far-field noise suppression for wake detection (set
-# voice.wake_word.noise_suppression: true). speexdsp-ns is effectively
-# Linux-only; on Windows/macOS the listener silently runs without it.
-# speexdsp-ns

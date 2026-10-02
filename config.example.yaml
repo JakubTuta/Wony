@@ -1,172 +1,145 @@
-# config.example.yaml — copy to config.yaml and fill in your values.
-# Secrets (API keys) go in .env, not here.
-# Run `python wony.py doctor` to validate your setup.
+# Wony settings. Everything here can also be changed on the Settings page.
+# API keys and passwords live in .env, not here.
+# Not sure something works? Run:  python wony.py doctor
 
 assistant:
   name: "Wony"
   owner_name: "User"
-  # Free-form text injected into AI system prompts.
+  # How Wony should talk to you, in your own words.
   personality: "Friendly and concise."
-  # Language for AI responses and TTS. BCP-47 codes, e.g. "en", "pl".
+  # Language for replies: "en" for English, "pl" for Polish, "de" for German...
   language: "en"
+  # Your home address. Used for "near me" when this computer can't tell where
+  # it is (Windows location off). Leave empty if you'd rather not say.
+  home_address: ""
   proactive:
-    # Let Wony start a conversation on its own — a low battery, a drive nearly
-    # full, a meeting about to start, important mail. Off by default; ask
-    # "what do you watch for" to see the list and switch one off.
+    # Let Wony speak up on its own: a low battery, a nearly full disk, a meeting
+    # about to start, important mail. Ask "what do you watch for" to see the list.
     enabled: false
   memory:
-    # Safety gate — set to true to let Wony work out facts about you from your
-    # own conversations (and, with gmail on, how you write from your sent mail)
-    # and keep them without being asked. While false it remembers only what you
-    # tell it to remember. Ask "what do you know about me" to see and correct
-    # what it has kept.
+    # Let Wony work out facts about you from your conversations (and, with Gmail
+    # on, how you write from your sent mail) without being asked. While off it
+    # remembers only what you tell it to. Ask "what do you know about me" to see
+    # and correct what it kept.
     learn_from_my_data: false
 
 voice:
-  # Run `python -c "from kokoro_onnx import Kokoro; k=Kokoro('models/kokoro-v1.0.onnx','models/voices-v1.0.bin'); print(k.get_voices())"` to list all voices.
-  tts_voice: "af_heart"   # af_heart, af_sarah, am_michael, bf_emma, bm_george …
-  speed: 1.0              # 0.5–2.0 speaking rate
-  volume: 0.6             # 0.0–1.0 how loud Wony speaks
+  tts_voice: "af_heart"   # the Settings page lists the voices
+  speed: 1.0              # 0.5 (slow) to 2.0 (fast)
+  volume: 0.6             # 0.0 (silent) to 1.0 (loudest)
 
-  # Which microphone / speakers to use. null = follow whatever Windows is set to
-  # (recommended). Set to a device name substring only if the wrong one is picked.
-  # Run `python wony.py doctor` to see what was selected.
+  # Which microphone and speakers to use. null follows whatever Windows uses
+  # (recommended). Pick another one on the Settings page if the wrong one is used.
   input_device: null
   output_device: null
 
   stt:
-    start_timeout: 4   # seconds to wait for you to start speaking before giving up
-    silence_ms: 700    # how long you have to stop talking before Wony answers
-                       # raise if she cuts you off mid-sentence
+    # How long you can pause (in milliseconds) before Wony treats your sentence
+    # as finished. Raise it if Wony cuts you off.
+    silence_ms: 700
 
-  # Global push-to-talk key, in pynput syntax. null disables it.
-  # Keep it to three keys and away from common shortcuts: this hook is
-  # system-wide and does not consume the keystroke, and pynput ignores extra
-  # modifiers — so "<ctrl>+l" also fires on ctrl+shift+l and ctrl+alt+l, and
-  # would trigger on the browser address bar, clear-terminal, and VS Code
-  # select-line.
   hotkeys:
+    # Key combination that starts listening, from any app. null switches it off.
+    # Use three keys: Windows does not swallow the keys, so a single key like
+    # "<home>" also starts listening every time you press it anywhere.
     push_to_talk: "<ctrl>+<alt>+w"
 
-  # Continuous conversation: mic reopens after each response for chained commands.
-  # Session ends on silence or a stop phrase ("stop", "thanks", "done", …).
   conversation:
+    # Keep listening after a reply, so you can carry on without the hotkey or
+    # wake word. Say "thanks" or "stop" to end.
     enabled: true
-    follow_up_timeout: 3.0  # seconds of silence before closing the session
+    follow_up_timeout: 3.0  # seconds of silence before Wony stops listening
 
-  # Let you interrupt Wony by talking over her.
   barge_in:
+    # Talking over a reply stops it.
     enabled: true
 
-  # Pause other apps' media (Spotify, browser tabs, VLC, ...) while Wony speaks or
-  # listens, resuming after (Windows-only; no-ops elsewhere).
   media_pause:
+    # Pause Spotify, videos and other players while Wony talks or listens.
     enabled: true
-    # resume_linger_seconds: 3.0  # uncomment to override how long a pause is held
-    #                             # between back-to-back turns before resuming
 
-  # Hands-free trigger. Requires: pip install -r requirements/wakeword.txt
   wake_word:
+    # Start a conversation hands-free by saying the phrase.
     enabled: false
-    # Built-in phrase names: "hey jarvis", "alexa", "hey mycroft", "hey rhasspy"
+    # Built in: "hey jarvis", "alexa", "hey mycroft", "hey rhasspy".
+    # For your own phrase, run:  python setup.py wakeword
     phrase: "hey jarvis"
-    # Path to a custom .onnx model (overrides phrase).
-    # Train with training/train_hey_wony.ipynb (Colab) or training/train_hey_wony.sh (WSL).
-    model_path: null
-    threshold: 0.5   # 0.0–1.0 sensitivity; lower = triggers more easily
+    threshold: 0.5   # lower reacts more easily, and more often by mistake
 
 ai:
-  # Options: anthropic | gemini | ollama | null (auto-detect from .env keys).
+  # Which service answers: anthropic, gemini, ollama, or null to use whichever
+  # key is in .env. Claude and Gemini always use their fastest model.
   provider: null
-  anthropic_model: null   # null = latest
-  gemini_model: null      # null = latest
-  ollama_model: "llama3.1"  # required when provider is 'ollama'
-  # Reasoning policy (all providers):
-  #   on (default) — think only on direct knowledge questions; never on
-  #                  tool-using steps, so voice replies stay fast.
-  #   off          — never think anywhere (lowest latency).
-  thinking: "on"
+  ollama_model: "llama3.1"  # only used with ollama
   history:
-    max_turns: 5   # how many past exchanges Wony remembers within a session
+    max_turns: 5   # how many past exchanges Wony keeps in mind during a chat
 
-# Only listed modules load. A module still won't run if credentials/deps are missing.
-# Ask Wony "check my setup" to see what each broken module needs.
-# Conversation, module health and the agent loop itself are always on and are
-# not listed here.
+# Which features are on. A feature that is missing a key or a sign-in tells you
+# what it needs. Ask Wony "check my setup" to see.
 enabled_modules:
-  - basics         # time, date, shutdown
-  - routines       # named sets of steps you run by name, incl. the morning briefing
-  - scheduler      # timers, alarms and reminders; can run another job when they fire
-  - notes          # shopping / todo lists kept in wony.db
-  - weather        # current weather and forecasts
-  # - system         # battery, disk space, memory, network (pip install -r requirements/system.txt)
-  # - spotify        # playback control (play, pause, skip, search, volume)
-  # - screen         # screenshot capture and OCR text extraction
-  # - gmail          # read, search, and monitor Gmail (requires Google OAuth)
-  # - calendar       # read Google Calendar events and check availability (requires Google OAuth)
-  # - google_accounts  # manage multiple Google accounts
-  # - league         # League of Legends: launch/close the client, auto-accept queue pop-ups
-  # - shazam         # identify the song currently playing on this PC
-  # - home_assistant # Control your whole house through Home Assistant (needs HOME_ASSISTANT_TOKEN)
-  # - web            # Web search and URL fetch (pip install -r requirements/web.txt)
-  # - desktop        # Desktop control: open apps, windows, clipboard (pip install -r requirements/desktop.txt)
-  # - mcp            # MCP client: connect external tool servers (pip install mcp)
+  - basics         # time and date, shut down or lock the PC
+  - routines       # named sets of steps, like the morning briefing
+  - scheduler      # timers, alarms and reminders
+  - notes          # shopping and todo lists
+  - weather        # weather now and the next few days
+  # - system         # battery, disk space, memory, network
+  # - spotify        # play, pause, skip, search, volume
+  # - screen         # look at the screen and read text on it
+  # - gmail          # read, search and write email
+  # - calendar       # your Google Calendar
+  # - drive          # find and read your Google Drive files, edit Docs and Sheets
+  # - contacts       # look people up; email and invite them by name
+  # - google_accounts  # use more than one Google account
+  # - league         # League of Legends: launch the game, accept queue pop-ups
+  # - shazam         # name the song that is playing
+  # - home_assistant # lights, blinds, heating and more through Home Assistant
+  # - maps           # places near you and travel times
+  # - web            # search the web and read pages
+  # - desktop        # open apps and windows, clipboard, files
+  # - mcp            # connect extra tool servers
 
-# Per-module non-secret settings.
 modules:
   home_assistant:
-    # Address of your Home Assistant, exactly as you open it in a browser.
+    # The address you open Home Assistant at in a browser.
     base_url: "http://homeassistant.local:8123"
-    # Safety gate — set to true to let Wony unlock doors, open the garage and
-    # disarm alarms. Lights, switches, blinds and thermostats always work.
+    # Let Wony unlock doors, open the garage and disarm alarms. Lights, blinds
+    # and heating work either way.
     allow_locks: false
-  weather:
-    default_units: "metric"   # metric | imperial
   gmail:
-    # Safety gate — set to true to let Wony send, reply, delete and mark mail
-    # as read. While false it saves everything as a draft for you to send
-    # yourself.
+    # Let Wony send, reply, delete and mark mail as read. While off it saves
+    # emails as drafts for you to send yourself.
     allow_write: false
-    # Set to true to have AI summarize email lists (sends content to your AI provider).
-    use_ai: false
   calendar:
-    work_start_hour: 9        # your working day, used when finding free slots
+    work_start_hour: 9        # your working day, used when finding free time
     work_end_hour: 18
-    # Safety gate — set to true to allow creating, editing, and deleting events.
-    # Note: requires re-authentication after upgrading from the old readonly scope.
+    # Let Wony create, change and delete events, and send invitations to the
+    # people on them. While off it tells you what to add instead.
+    allow_write: false
+  drive:
+    # Let Wony create Google Docs, add to Docs and Sheets, and upload files.
+    # While off it can find and read your files, and tells you what it would write.
     allow_write: false
   desktop:
-    # Safety gate — set to true to enable type/click/clipboard-write/file-open actions.
+    # Let Wony type, click, write to the clipboard and change files. While off
+    # it can look at the screen and read files, but not act on them.
     allow_actions: false
-    file_search_root: "~"     # root dir for find_file searches
-    # Privacy gate — set to true to send the title of the window you have in
-    # front to your AI provider with every message, so "what does this mean"
-    # has something to point at. Window titles name documents, browser tabs and
-    # who you are chatting to.
+    # Send the title of the window in front to your AI provider with every
+    # message, so "what does this mean" has something to point at. Window
+    # titles name documents, browser tabs and who you are chatting to.
     share_window_title: false
+  maps:
+    # How you usually get around: car, public transport, walking or cycling.
+    travel_mode: "car"
   mcp:
-    # Safety gate — an MCP server is a program Wony starts on this computer with
-    # your privileges. While false, adding/editing/connecting one tells you the
-    # command instead of running it.
+    # Let Wony start tool servers itself. These are programs that run on this
+    # computer. While off it tells you the command instead.
     allow_install: false
 
 tray:
-  notify_on_ready: true
-  open_browser_on_start: false
-
-server:
-  # Keep this at 127.0.0.1. The web API has no password, and it can run every
-  # command Wony has — send email, delete calendar events, control the desktop,
-  # erase her memory. Any other address hands all of that to whoever can reach
-  # the port.
-  host: "127.0.0.1"
-  port: 8000
-
-logging:
-  keep_days: 14   # log/csv files older than this are deleted at startup
+  notify_on_ready: true          # show a notification when Wony has started
+  open_browser_on_start: false   # open the web page when Wony starts
 
 models:
-  # false (recommended): load the speech models on first wake, so an idle tray
-  # stays light. true: load them at startup — instant first response, but holds
-  # GPU/RAM the whole time the app runs.
+  # Load the speech models when Wony starts: the first reply is faster, but
+  # they hold memory the whole time. Off loads them the first time you talk.
   preload: false

@@ -1,12 +1,18 @@
-import os
+import subprocess
+import sys
+import threading
 import typing
 from datetime import datetime
 
-from helpers.audio import Audio
-from helpers.cache import Cache
 from helpers.decorators import capture_response
 from helpers.logger import logger
 from helpers.registry import register_job
+
+# Seconds before a shutdown or restart, so the spoken reply finishes and other
+# apps get Windows' normal chance to save.
+_SHUTDOWN_DELAY_SECONDS = 10
+# Sleep cuts the reply off mid-word without a short pause first.
+_SLEEP_DELAY_SECONDS = 3
 
 
 # --- clock ---
@@ -37,32 +43,43 @@ def get_datetime(part: typing.Literal["time", "date", "both"] = "both") -> str:
 # --- system ---
 
 
-@register_job(module_name="basics", confirms=True)
+@register_job(module_name="basics", confirms={"shutdown", "restart"})
 @capture_response
-def close_computer() -> str:
+def power(action: typing.Literal["shutdown", "restart", "sleep", "lock"]) -> str:
     """
-    [SYSTEM CONTROL JOB] Immediately shuts down the entire computer system.
-    This is a critical system operation that forcefully terminates all processes
-    and powers off the machine. Use with extreme caution as it will close all applications.
+    [SYSTEM CONTROL JOB] Shuts down, restarts, puts to sleep or locks this computer.
+
+    Args:
+        action (str): "shutdown", "restart", "sleep" or "lock". (required)
 
     Returns:
-        str: Confirmation of shutdown, cancellation, or why it couldn't be confirmed.
+        str: What is about to happen.
     """
-    try:
-        confirmation = input("Shut down the computer? Type 'yes' to confirm: ").strip().lower()
-    except (EOFError, RuntimeError):
-        # No console attached (tray/pythonw mode) — input() can't prompt at all.
-        # Refuse rather than either hanging forever or shutting down unconfirmed.
-        logger.log_system_event("shutdown_refused", "No console available to confirm shutdown.")
-        return "Can't confirm a shutdown without a console — run 'wony.py text' or 'wony.py voice' to do this."
+    if sys.platform != "win32":
+        return "Power control only works on Windows."
 
-    if confirmation != "yes":
-        logger.log_system_event("shutdown_cancelled", "User did not confirm shutdown.")
-        return "Shutdown cancelled."
+    wanted = (action or "").strip().lower()
+    logger.log_system_event("power", wanted)
 
-    audio = Cache.get_audio()
-    if audio:
-        Audio.play_cached("Closing computer. o7")
-    logger.log_system_event("shutdown", "Shutting down computer.")
-    os.system("shutdown /s /f /t 0")
-    return "Shutting down now."
+    if wanted == "shutdown":
+        subprocess.run(["shutdown", "/s", "/t", str(_SHUTDOWN_DELAY_SECONDS)], check=False)
+        return f"Shutting down in {_SHUTDOWN_DELAY_SECONDS} seconds."
+    if wanted == "restart":
+        subprocess.run(["shutdown", "/r", "/t", str(_SHUTDOWN_DELAY_SECONDS)], check=False)
+        return f"Restarting in {_SHUTDOWN_DELAY_SECONDS} seconds."
+    if wanted == "lock":
+        import ctypes
+
+        ctypes.windll.user32.LockWorkStation()  # type: ignore[attr-defined]
+        return "Locked."
+    if wanted == "sleep":
+        threading.Timer(_SLEEP_DELAY_SECONDS, _sleep_now).start()
+        return "Going to sleep."
+    return f"Unknown action '{action}'. Use shutdown, restart, sleep or lock."
+
+
+def _sleep_now() -> None:
+    import ctypes
+
+    # (hibernate=False, force=False, disable_wake_events=False)
+    ctypes.windll.PowrProf.SetSuspendState(0, 0, 0)  # type: ignore[attr-defined]

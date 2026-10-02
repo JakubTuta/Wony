@@ -1,7 +1,7 @@
 import os
 import typing
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 from pydantic_settings.sources import YamlConfigSettingsSource
 
@@ -32,28 +32,27 @@ class AssistantSettings(BaseModel):
     owner_name: str = "User"
     personality: str = "Friendly and concise."
     language: str = "en"
+    # Used for "near me" when Windows can't tell where this computer is.
+    home_address: str = ""
     proactive: ProactiveSettings = Field(default_factory=ProactiveSettings)
     memory: MemorySettings = Field(default_factory=MemorySettings)
 
 
 class SttSettings(BaseModel):
-    start_timeout: float = 4.0
     silence_ms: int = 700
 
 
 class MediaPauseSettings(BaseModel):
     enabled: bool = True
-    # None = use the built-in default (see MediaPause._RESUME_LINGER).
-    resume_linger_seconds: typing.Optional[float] = None
 
 
 class ConversationSettings(BaseModel):
     enabled: bool = True
-    follow_up_timeout: float = 4.0
+    follow_up_timeout: float = 3.0
 
 
 class BargeInSettings(BaseModel):
-    enabled: bool = False
+    enabled: bool = True
 
 
 class HotkeySettings(BaseModel):
@@ -69,8 +68,8 @@ class HotkeySettings(BaseModel):
 
 class WakeWordSettings(BaseModel):
     enabled: bool = False
+    # A built-in phrase, or a custom one trained into models/ (helpers/wakeword.py).
     phrase: str = "hey jarvis"
-    model_path: typing.Optional[str] = None
     threshold: float = 0.5
 
 
@@ -96,13 +95,8 @@ class HistorySettings(BaseModel):
 
 class AiSettings(BaseModel):
     provider: typing.Optional[str] = None
-    anthropic_model: typing.Optional[str] = None
-    gemini_model: typing.Optional[str] = None
+    # Claude and Gemini always use their fastest model (helpers/model.py).
     ollama_model: str = "llama3.1"
-    # Reasoning policy: "on" (default) thinks only on direct knowledge
-    # questions, never on tool-dispatch steps (keeps voice latency low);
-    # "off" disables thinking everywhere.
-    thinking: str = "on"
     history: HistorySettings = Field(default_factory=HistorySettings)
 
 
@@ -111,19 +105,10 @@ class TraySettings(BaseModel):
     open_browser_on_start: bool = False
 
 
-class LoggingSettings(BaseModel):
-    keep_days: int = 14
-
-
 class ModelsSettings(BaseModel):
     # False: load Whisper/Kokoro lazily on first wake instead of at startup,
     # so idle tray holds only the tiny always-on wake-word model.
     preload: bool = False
-
-
-class ServerSettings(BaseModel):
-    host: str = "127.0.0.1"
-    port: int = 8000
 
 
 class HomeAssistantSettings(BaseModel):
@@ -132,13 +117,8 @@ class HomeAssistantSettings(BaseModel):
     allow_locks: bool = False
 
 
-class WeatherSettings(BaseModel):
-    default_units: str = "metric"
-
-
 class GmailSettings(BaseModel):
     allow_write: bool = False
-    use_ai: bool = False
 
 
 class CalendarSettings(BaseModel):
@@ -147,12 +127,20 @@ class CalendarSettings(BaseModel):
     allow_write: bool = False
 
 
+class DriveSettings(BaseModel):
+    allow_write: bool = False
+
+
 class DesktopSettings(BaseModel):
     allow_actions: bool = False
-    file_search_root: str = "~"
     # Ships off: a window title names documents, browser tabs and who you are
     # chatting to, and this sends it to the AI provider on every request.
     share_window_title: bool = False
+
+
+class MapsSettings(BaseModel):
+    # car | public transport | walking | cycling (modules/maps.py reads aliases).
+    travel_mode: str = "car"
 
 
 class McpSettings(BaseModel):
@@ -160,13 +148,12 @@ class McpSettings(BaseModel):
 
 
 class ModulesSettings(BaseModel):
-    model_config = ConfigDict(extra="allow")
-
     home_assistant: HomeAssistantSettings = Field(default_factory=HomeAssistantSettings)
-    weather: WeatherSettings = Field(default_factory=WeatherSettings)
     gmail: GmailSettings = Field(default_factory=GmailSettings)
     calendar: CalendarSettings = Field(default_factory=CalendarSettings)
+    drive: DriveSettings = Field(default_factory=DriveSettings)
     desktop: DesktopSettings = Field(default_factory=DesktopSettings)
+    maps: MapsSettings = Field(default_factory=MapsSettings)
     mcp: McpSettings = Field(default_factory=McpSettings)
 
 
@@ -185,12 +172,10 @@ class AppSettings(BaseSettings):
     voice: VoiceSettings = Field(default_factory=VoiceSettings)
     ai: AiSettings = Field(default_factory=AiSettings)
     enabled_modules: list[str] = Field(
-        default_factory=lambda: ["basics", "routines", "weather", "spotify", "screen"]
+        default_factory=lambda: ["basics", "routines", "scheduler", "notes", "weather"]
     )
     modules: ModulesSettings = Field(default_factory=ModulesSettings)
     tray: TraySettings = Field(default_factory=TraySettings)
-    server: ServerSettings = Field(default_factory=ServerSettings)
-    logging: LoggingSettings = Field(default_factory=LoggingSettings)
     models: ModelsSettings = Field(default_factory=ModelsSettings)
 
     @classmethod
@@ -208,6 +193,29 @@ class AppSettings(BaseSettings):
                 YamlConfigSettingsSource(settings_cls, yaml_file=cls._yaml_file, yaml_file_encoding="utf-8")
             )
         return tuple(sources)
+
+
+def dead_keys(node: dict, model: type = None, prefix: str = "") -> typing.List[str]:
+    """YAML key paths in `node` that the schema silently drops (extra='ignore').
+
+    Used by setup.py to clean old keys out of config.yaml, and by the tests to
+    keep config.example.yaml honest.
+    """
+    model = model or AppSettings
+    dead: typing.List[str] = []
+    for key, value in node.items():
+        field = model.model_fields.get(key)
+        if field is None:
+            dead.append(f"{prefix}{key}")
+            continue
+        annotation = field.annotation
+        if (
+            isinstance(value, dict)
+            and isinstance(annotation, type)
+            and issubclass(annotation, BaseModel)
+        ):
+            dead += dead_keys(value, annotation, f"{prefix}{key}.")
+    return dead
 
 
 def _resolve_yaml_path(path: str) -> typing.Optional[str]:

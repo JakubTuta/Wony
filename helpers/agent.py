@@ -59,6 +59,8 @@ def run_agent(
     max_steps: int = 5,
     on_text: typing.Optional[typing.Callable[[str], None]] = None,
     cancel_event: typing.Optional[threading.Event] = None,
+    isolated: bool = False,
+    keep_full_results: typing.Optional[int] = None,
 ) -> AgentResult:
     """Run the agent loop for one user turn.
 
@@ -73,7 +75,15 @@ def run_agent(
     cancel_event: checked before each step and before each tool execution; if
     set, the turn aborts immediately with empty text rather than continuing to
     call tools or narrate a result the user already walked away from.
+
+    isolated: a sub-agent with its own private tools (helpers/browser.py). It
+    skips the confirm gate and the turn's tool-outcome ledger, both of which
+    belong to the user's turn and must not be touched off agent_lock.
+
+    keep_full_results: cut all but this many latest tool results short before
+    each step — for tools whose every result is a whole page.
     """
+    record = (lambda *a: None) if isolated else record_tool_outcome
     available_functions = list(available_jobs.values())
 
     # Build initial message list from history + current user input
@@ -95,6 +105,8 @@ def run_agent(
         text = ""
         tool_calls: typing.List[typing.Dict[str, typing.Any]] = []
         streamed = False
+        if keep_full_results is not None:
+            _trim_old_results(messages, keep_full_results)
 
         if on_text is not None:
             try:
@@ -161,10 +173,10 @@ def run_agent(
             if exec_name is not None:
                 from helpers import confirm as _confirm
 
-                needs_ok = _confirm.check(exec_name, args)
+                needs_ok = None if isolated else _confirm.check(exec_name, args)
                 if needs_ok is not None:
                     logger.log_function_response(name, needs_ok, user_input)
-                    record_tool_outcome(exec_name, False, False)
+                    record(exec_name, False, False)
                     calls_made.append({"name": name, "args": args, "result": needs_ok, "needs_confirm": True})
                     messages.append(
                         {"role": "tool_result", "id": tool_id, "name": name, "content": needs_ok}
@@ -180,16 +192,16 @@ def run_agent(
                     result = func(**args)
                     result_str = str(result) if result is not None else ""
                     if not self_recording:
-                        record_tool_outcome(exec_name, False, True)
+                        record(exec_name, False, True)
                 except Exception as e:
                     result_str = f"Error executing {exec_name}: {e}"
                     logger.log_error(result_str, "agent_loop.execute")
                     if not self_recording:
-                        record_tool_outcome(exec_name, False, False)
+                        record(exec_name, False, False)
             else:
                 result_str = f"Unknown function: {name}"
                 logger.log_error(result_str, "agent_loop.execute")
-                record_tool_outcome(name, False, False)
+                record(name, False, False)
 
             logger.log_function_response(name, result_str[:200], user_input)
             calls_made.append({"name": name, "args": args, "result": result_str})
@@ -229,6 +241,17 @@ def run_agent(
         _emit(text)
 
     return AgentResult(text=text, calls=calls_made)
+
+
+_TRIMMED_RESULT_CHARS = 300
+
+
+def _trim_old_results(messages: typing.List[typing.Dict[str, typing.Any]], keep: int) -> None:
+    results = [m for m in messages if m.get("role") == "tool_result"]
+    for message in results[:-keep] if keep else results:
+        content = message["content"]
+        if len(content) > _TRIMMED_RESULT_CHARS:
+            message["content"] = content[:_TRIMMED_RESULT_CHARS] + " … (older view, trimmed)"
 
 
 def _extract_all_tool_calls(
