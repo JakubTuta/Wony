@@ -23,10 +23,9 @@ def _persona() -> str:
     name = Config.get("assistant.name", "Wony")
     owner = Config.get("assistant.owner_name", "User")
     personality = Config.get("assistant.personality", "Friendly and concise.")
-    language = Config.get("assistant.language", "en")
     base = (
         f"You are {name}, a personal AI assistant for {owner}. "
-        f"{personality} Respond in {language}."
+        f"{personality} Always reply in English."
     )
     profile_text = Profile.as_text()
     if profile_text:

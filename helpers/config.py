@@ -31,7 +31,6 @@ class AssistantSettings(BaseModel):
     name: str = "Wony"
     owner_name: str = "User"
     personality: str = "Friendly and concise."
-    language: str = "en"
     # Used for "near me" when Windows can't tell where this computer is.
     home_address: str = ""
     proactive: ProactiveSettings = Field(default_factory=ProactiveSettings)

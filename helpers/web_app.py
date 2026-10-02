@@ -238,7 +238,6 @@ def build_app() -> FastAPI:
         return {
             "assistant": {
                 "name": Config.get("assistant.name", "Wony"),
-                "language": Config.get("assistant.language", "en"),
             },
             "voice": {
                 "stt": {

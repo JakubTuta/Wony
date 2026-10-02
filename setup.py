@@ -865,10 +865,6 @@ def step_assistant():
             "assistant.owner_name": ask(
                 "What should it call you?", config_value("assistant.owner_name", "User")
             ),
-            "assistant.language": ask(
-                "Language it should answer in (en, pl, de, ...)",
-                config_value("assistant.language", "en"),
-            ),
         }
     )
 
