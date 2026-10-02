@@ -26,9 +26,6 @@ def _seed_from_config() -> None:
         language = Config.get("assistant.language")
         if language and language != "en":
             data["language"] = language
-        units = Config.get("modules.weather.default_units")
-        if units:
-            data["preferred_units"] = units
         if data:
             import_facts_from_dict(data)
     except Exception:

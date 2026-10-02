@@ -1,7 +1,7 @@
 import os
 import typing
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 from pydantic_settings.sources import YamlConfigSettingsSource
 
@@ -32,6 +32,9 @@ class AssistantSettings(BaseModel):
     owner_name: str = "User"
     personality: str = "Friendly and concise."
     language: str = "en"
+    # Where the device is, for local weather. Without it the internet
+    # connection decides, which is good to roughly the city.
+    home_address: str = ""
     proactive: ProactiveSettings = Field(default_factory=ProactiveSettings)
     memory: MemorySettings = Field(default_factory=MemorySettings)
 
@@ -55,18 +58,9 @@ class HistorySettings(BaseModel):
 
 class AiSettings(BaseModel):
     provider: typing.Optional[str] = None
-    anthropic_model: typing.Optional[str] = None
-    gemini_model: typing.Optional[str] = None
+    # Claude and Gemini always use their fastest model (helpers/model.py).
     ollama_model: str = "llama3.1"
-    # Reasoning policy: "on" (default) thinks only on direct knowledge
-    # questions, never on tool-dispatch steps (keeps voice latency low);
-    # "off" disables thinking everywhere.
-    thinking: str = "on"
     history: HistorySettings = Field(default_factory=HistorySettings)
-
-
-class LoggingSettings(BaseModel):
-    keep_days: int = 14
 
 
 class ServerSettings(BaseModel):
@@ -81,18 +75,13 @@ class HomeAssistantSettings(BaseModel):
 
 
 class BasicsSettings(BaseModel):
-    # Safety gate for power_device. There is no console on this device to type a
+    # Safety gate for power. There is no console on this device to type a
     # confirmation into, so the gate lives here instead.
     allow_power_off: bool = False
 
 
-class WeatherSettings(BaseModel):
-    default_units: str = "metric"
-
-
 class GmailSettings(BaseModel):
     allow_write: bool = False
-    use_ai: bool = False
 
 
 class CalendarSettings(BaseModel):
@@ -101,19 +90,11 @@ class CalendarSettings(BaseModel):
     allow_write: bool = False
 
 
-class McpSettings(BaseModel):
-    allow_install: bool = False
-
-
 class ModulesSettings(BaseModel):
-    model_config = ConfigDict(extra="allow")
-
     basics: BasicsSettings = Field(default_factory=BasicsSettings)
     home_assistant: HomeAssistantSettings = Field(default_factory=HomeAssistantSettings)
-    weather: WeatherSettings = Field(default_factory=WeatherSettings)
     gmail: GmailSettings = Field(default_factory=GmailSettings)
     calendar: CalendarSettings = Field(default_factory=CalendarSettings)
-    mcp: McpSettings = Field(default_factory=McpSettings)
 
 
 class AppSettings(BaseSettings):
@@ -130,12 +111,11 @@ class AppSettings(BaseSettings):
     assistant: AssistantSettings = Field(default_factory=AssistantSettings)
     ai: AiSettings = Field(default_factory=AiSettings)
     enabled_modules: list[str] = Field(
-        default_factory=lambda: ["basics", "routines", "scheduler", "weather"]
+        default_factory=lambda: ["basics", "routines", "scheduler", "notes", "weather"]
     )
     modules: ModulesSettings = Field(default_factory=ModulesSettings)
     kiosk: KioskSettings = Field(default_factory=KioskSettings)
     server: ServerSettings = Field(default_factory=ServerSettings)
-    logging: LoggingSettings = Field(default_factory=LoggingSettings)
 
     @classmethod
     def settings_customise_sources(
@@ -152,6 +132,29 @@ class AppSettings(BaseSettings):
                 YamlConfigSettingsSource(settings_cls, yaml_file=cls._yaml_file, yaml_file_encoding="utf-8")
             )
         return tuple(sources)
+
+
+def dead_keys(node: dict, model: type = None, prefix: str = "") -> typing.List[str]:
+    """YAML key paths in `node` that the schema silently drops (extra='ignore').
+
+    Used by setup.py to clean old keys out of config.yaml, and by the tests to
+    keep config.example.yaml honest.
+    """
+    model = model or AppSettings
+    dead: typing.List[str] = []
+    for key, value in node.items():
+        field = model.model_fields.get(key)
+        if field is None:
+            dead.append(f"{prefix}{key}")
+            continue
+        annotation = field.annotation
+        if (
+            isinstance(value, dict)
+            and isinstance(annotation, type)
+            and issubclass(annotation, BaseModel)
+        ):
+            dead += dead_keys(value, annotation, f"{prefix}{key}.")
+    return dead
 
 
 def _resolve_yaml_path(path: str) -> typing.Optional[str]:

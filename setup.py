@@ -27,6 +27,7 @@ Google sign-in paths). The feature menu is a scrollable arrow-key checklist
 back to a numeric toggle prompt.
 """
 
+import io
 import os
 import re
 import subprocess
@@ -106,15 +107,6 @@ FEATURES = [
         "needs": "A free API key from openweathermap.org/api — setup asks for it.",
     },
     {
-        "key": "web",
-        "label": "Web search + URL fetch",
-        "reqs": ["web.txt"],
-        "module": "web",
-        "default": True,
-        "desc": "Search the web and read pages.",
-        "needs": "Works out of the box (DuckDuckGo). Setup can add a Tavily key for better results.",
-    },
-    {
         "key": "scheduler",
         "label": "Timers, alarms & reminders",
         # Its deps ship in core.txt — every install needs a working timer.
@@ -166,7 +158,7 @@ FEATURES = [
     {
         "key": "gmail",
         "label": "Gmail (read / search / monitor)",
-        "reqs": ["gmail.txt"],
+        "reqs": ["google.txt"],
         "module": "gmail",
         "default": False,
         "desc": "Read, search and watch your inbox.",
@@ -176,7 +168,7 @@ FEATURES = [
     {
         "key": "calendar",
         "label": "Google Calendar",
-        "reqs": ["calendar.txt"],
+        "reqs": ["google.txt"],
         "module": "calendar",
         "default": False,
         "desc": "Read events, check availability, find free slots.",
@@ -204,15 +196,6 @@ FEATURES = [
         "until you allow them.",
     },
     {
-        "key": "mcp",
-        "label": "MCP client (external tool servers)",
-        "reqs": ["mcp.txt"],
-        "module": "mcp",
-        "default": False,
-        "desc": "Connect external Model Context Protocol tool servers.",
-        "needs": "Configure servers in config.yaml under the mcp module.",
-    },
-    {
         "key": "semantic",
         "label": "Semantic memory (RAG recall)",
         "reqs": ["semantic.txt"],
@@ -226,12 +209,9 @@ FEATURES = [
 # Representative import per feature — used to detect what's already installed.
 PROBE = {
     "kiosk": "uvicorn",
-    "weather": "geocoder",
-    "web": "ddgs",
     "scheduler": "apscheduler",
-    "gmail": "simplegmail",
+    "gmail": "googleapiclient",
     "calendar": "googleapiclient",
-    "mcp": "mcp",
     "semantic": "fastembed",
     "system": "psutil",
 }
@@ -737,16 +717,12 @@ def configure(chosen):
     step_ai(env, pending)
     if "weather" in keys:
         step_weather(env, pending)
-    if "web" in keys:
-        step_web(env)
     if "spotify" in keys:
         step_spotify(env, pending)
     if keys & {"gmail", "calendar"}:
         step_google(keys, pending)
     if "home_assistant" in keys:
         step_home_assistant(env, pending)
-    if "mcp" in keys:
-        step_mcp()
     if "kiosk" in keys:
         step_autostart()
     return pending
@@ -878,14 +854,6 @@ def check_weather(key):
     )[0]
 
 
-def check_tavily(key):
-    return http_request(
-        "https://api.tavily.com/search",
-        {"Authorization": f"Bearer {key}"},
-        payload={"query": "wony setup check", "max_results": 1},
-    )[0]
-
-
 def step_weather(env, pending):
     section("Weather")
     key = ask_key(
@@ -899,25 +867,11 @@ def step_weather(env, pending):
         env_set({"WEATHER_API_KEY": key})
     else:
         pending.append("Weather: no WEATHER_API_KEY yet (openweathermap.org/api).")
-    units = choose(
-        "Temperature units",
-        [("Celsius", "metric"), ("Fahrenheit", "imperial")],
-        default=2 if config_value("modules.weather.default_units") == "imperial" else 1,
-    )
-    write_config({"modules.weather.default_units": units})
-
-
-def step_web(env):
-    section("Web search")
-    note("Search already works through DuckDuckGo. A Tavily key gives better results.")
-    key = ask_key(
-        "TAVILY_API_KEY",
-        "tavily.com — free tier",
-        env.get("TAVILY_API_KEY", ""),
-        check_tavily,
-    )
-    if key:
-        env_set({"TAVILY_API_KEY": key})
+    note("Units follow the device's region. Say \"remember I prefer Fahrenheit\" to change them.")
+    write_config({"assistant.home_address": ask(
+        "Where is this device, for local weather? (Enter to let Wony guess)",
+        config_value("assistant.home_address", ""),
+    )})
 
 
 # ── Spotify ───────────────────────────────────────────────────────────────────
@@ -984,10 +938,17 @@ def _spotify_sign_in(pending):
 
 # ── Google (Gmail and Calendar) ───────────────────────────────────────────────
 
+_GOOGLE_SIGN_IN_NOTES = (
+    "Google will say it 'hasn't verified this app'. It is your own app: click",
+    "Advanced, then continue. Because it stays in Testing, Google signs Wony out",
+    "every 7 days — the screen tells you, and signing in again is one tap.",
+)
+
 _GOOGLE_STEPS = (
     "1. Open console.cloud.google.com and pick (or create) a project.",
     "2. APIs & Services → Library: enable 'Gmail API' and 'Google Calendar API'.",
-    "3. APIs & Services → OAuth consent screen: add your own address as a test user.",
+    "3. OAuth consent screen: choose 'External', leave it in Testing, and add your",
+    "   own Google address under Test users.",
     "4. Credentials → Create credentials → OAuth client ID → Desktop app → Download JSON.",
 )
 
@@ -999,11 +960,8 @@ def step_google(keys, pending):
         return
 
     wants = keys & {"gmail", "calendar"}
-    if confirm("Sign in to your Google account now? This opens your browser.", default=True):
-        _google_sign_in(wants, pending)
-    else:
-        pending.append("Google: not signed in — run 'python setup.py configure'.")
-
+    # Before signing in: the switches decide what Google is asked for, and
+    # switching one on afterwards would mean a second consent screen.
     if "gmail" in wants:
         gate(
             "May Wony send and delete email? (off: it saves drafts for you)",
@@ -1014,6 +972,13 @@ def step_google(keys, pending):
             "May Wony create, change and delete calendar events?",
             "modules.calendar.allow_write",
         )
+
+    for line in _GOOGLE_SIGN_IN_NOTES:
+        note(line)
+    if confirm("Sign in to your Google account now? This opens a browser.", default=True):
+        _google_sign_in(pending)
+    else:
+        pending.append("Google: not signed in — run 'python setup.py configure'.")
 
 
 def _install_google_credentials():
@@ -1073,52 +1038,23 @@ def _google_json_problem(path):
     return "That JSON is not a Google OAuth client file."
 
 
-def _google_sign_in(wants, pending):
-    """Sign the account in through the services' own sign_in() — the same call
-    the 'authorize google account' job makes, so there is one consent path."""
+def _google_sign_in(pending):
+    """One consent for Gmail and Calendar, through the same call the
+    'authorize' job and the Sign in again button make."""
     repo_on_path()
-    from helpers.accounts import GoogleAccounts
+    try:
+        from helpers import google_auth
+        from helpers.accounts import GoogleAccounts
+        from helpers.config import Config
 
-    name = GoogleAccounts.get_primary() or GoogleAccounts.add_account("primary")
-    services = []
-    if "gmail" in wants:
-        from modules.gmail import Gmail
-
-        services.append(("gmail", "Gmail", Gmail()))
-    if "calendar" in wants:
-        from modules.calendar import Calendar
-
-        services.append(("calendar", "Calendar", Calendar()))
-
-    email = ""
-    for module, label, service in services:
-        email = _sign_in_service(module, label, service, name, pending) or email
-    if email:
-        GoogleAccounts.set_email(name, email)
-        ok(f"Signed in as {email}.")
-
-
-def _sign_in_service(module, label, service, name, pending):
-    """Sign one service in, retrying once without its stored token.
-
-    A revoked or expired token stays on disk and both Google libraries keep
-    loading it, so the second try is what a person means by "sign me in".
-    """
-    from helpers.accounts import GoogleAccounts
-
-    for attempt in (1, 2):
-        try:
-            email = service.sign_in(name)
-            ok(f"{label} signed in.")
-            return email
-        except Exception as e:
-            if attempt == 2:
-                warn(f"{label} sign-in failed: {e}")
-                pending.append(f"Google ({label}): sign-in failed — {e}")
-                return ""
-            note(f"{label}'s saved sign-in no longer works — asking again.")
-            GoogleAccounts.clear_token(name, module)
-            service.forget_account(name)
+        Config.load()  # the switches just answered decide what is asked for
+        name = GoogleAccounts.get_primary() or GoogleAccounts.add_account("primary")
+        email = google_auth.sign_in(name)
+    except Exception as e:
+        warn(f"Google sign-in did not finish: {e}")
+        pending.append(f"Google: sign-in failed — {e}")
+        return
+    ok(f"Signed in as {email}." if email else "Signed in to Google.")
 
 
 # ── Home Assistant and starting at boot ───────────────────────────────────────
@@ -1157,15 +1093,6 @@ def step_home_assistant(env, pending):
     )
 
 
-def step_mcp():
-    section("MCP tool servers")
-    gate(
-        "May Wony start MCP servers itself? These are programs that run on this "
-        "device (off: it tells you the command instead)",
-        "modules.mcp.allow_install",
-    )
-
-
 def step_autostart():
     """A screen on a wall has nobody to start it — offer the systemd units that
     bring Wony and the browser up at boot."""
@@ -1175,6 +1102,52 @@ def step_autostart():
     command = [sys.executable, os.path.join(ROOT, "wony.py"), "autostart", "install"]
     if subprocess.call(command) != 0:
         warn("The boot units were not installed — 'python wony.py' still starts Wony.")
+
+
+def prune_config():
+    """Remove keys this version of Wony no longer reads from config.yaml.
+
+    Left in place they look like working settings and do nothing. The old file
+    is kept as config.yaml.bak.
+    """
+    if not os.path.exists(CONFIG):
+        return
+    try:
+        repo_on_path()
+        import yaml
+
+        from helpers.config import dead_keys
+        from helpers.config_writer import remove
+
+        with io.open(CONFIG, "r", encoding="utf-8-sig") as fh:
+            text = fh.read()
+        raw = yaml.safe_load(text) or {}
+    except Exception as e:
+        warn(f"Could not check config.yaml for old settings: {e}")
+        return
+    dead = dead_keys(raw)
+    if not dead:
+        return
+    _carry_over_port(raw)
+    with io.open(CONFIG + ".bak", "w", encoding="utf-8") as bk:
+        bk.write(text)
+    removed = remove(CONFIG, dead)
+    ok(f"removed old settings from config.yaml: {', '.join(removed)} (backup: config.yaml.bak)")
+
+
+def _carry_over_port(raw):
+    """server.port is now picked automatically — keep the one the user had, so
+    their bookmark still works."""
+    port = (raw.get("server") or {}).get("port")
+    if not isinstance(port, int):
+        return
+    try:
+        from helpers.memory_db import get_kv, set_kv
+
+        if not get_kv("web.port", ""):
+            set_kv("web.port", str(port))
+    except Exception:
+        pass
 
 
 def apply_enabled_modules(chosen):
@@ -1423,6 +1396,7 @@ def cmd_configure():
         warn("Nothing is installed yet — run 'python setup.py' first.")
         return
     ensure_env()
+    prune_config()
     _, detected = detect()
     pending = configure([f for f in FEATURES if f["key"] in detected])
     # Nothing is installed here, so the screen is not built either — but it is
@@ -1483,6 +1457,7 @@ def main():
         return
 
     install(chosen, detected)
+    prune_config()
     apply_enabled_modules(chosen)
     verify_install(chosen)
     pending = build_kiosk(chosen)

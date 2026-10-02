@@ -27,6 +27,9 @@ _shutdown_lock = threading.Lock()
 # How often failed modules are retried (helpers/health_watcher.py).
 _HEALTH_CHECK_INTERVAL_MINUTES = 5.0
 
+# Two weeks covers "it broke last week" without logs growing forever.
+_LOG_KEEP_DAYS = 14
+
 
 class BootstrapError(Exception):
     pass
@@ -51,13 +54,6 @@ def shutdown() -> None:
         from helpers.jobs import BackgroundJobs
 
         BackgroundJobs.stop_all()
-    except Exception:
-        pass
-
-    try:
-        from helpers.mcp_client import disconnect_all
-
-        disconnect_all()
     except Exception:
         pass
 
@@ -110,7 +106,7 @@ def bootstrap(
     try:
         from helpers.logger import logger
 
-        logger.cleanup_old_logs(int(Config.get("logging.keep_days", 14)))
+        logger.cleanup_old_logs(_LOG_KEEP_DAYS)
     except Exception:
         pass
 
@@ -173,7 +169,6 @@ def bootstrap(
         pass
 
     _warn_if_web_exposed(Config)
-    _reconnect_mcp_servers(Config, quiet)
     _start_health_watcher(quiet)
     _start_triggers(quiet)
     _start_learning(quiet)
@@ -210,17 +205,6 @@ def _warn_if_web_exposed(Config: typing.Any) -> None:
     )
 
 
-def _reconnect_mcp_servers(Config: typing.Any, quiet: bool) -> None:
-    if not Config.is_module_enabled("mcp"):
-        return
-    try:
-        from helpers.mcp_client import reconnect_enabled_servers
-        reconnect_enabled_servers()
-    except Exception as exc:
-        if not quiet:
-            print(f"[mcp] Startup reconnect failed (non-fatal): {exc}")
-
-
 def _start_health_watcher(quiet: bool) -> None:
     try:
         from helpers.health_watcher import start as _watcher_start
@@ -236,7 +220,7 @@ def _start_health_watcher(quiet: bool) -> None:
 
 
 def _start_triggers(quiet: bool) -> None:
-    """Start the proactive watcher. No-op unless assistant.proactive.enabled."""
+    """Start the watcher thread. No-op while every trigger is off."""
     try:
         from helpers import triggers
 

@@ -38,6 +38,16 @@ def _loop(interval_minutes: float) -> None:
     # Wait first so we don't retry immediately after a fresh startup failure.
     while not _stop_event.wait(interval_minutes * 60):
         _check_all()
+        _google_heads_up()
+
+
+def _google_heads_up() -> None:
+    try:
+        from helpers.google_auth import warn_before_sign_out
+
+        warn_before_sign_out()
+    except Exception:
+        pass  # no Google set up, or accounts.json unreadable: nothing to warn about
 
 
 def _check_all() -> None:

@@ -716,22 +716,6 @@ def all_embeddings(
         return [dict(r) for r in rows]
 
 
-def delete_embeddings_by_key_prefix(source_type: str, prefix: str) -> None:
-    """Delete every embedding whose ref_key starts with `prefix`.
-
-    Documents are stored as `<path>#<chunk>` keys, so re-indexing a file must
-    clear its old chunks — otherwise a shortened document keeps answering from
-    text it no longer contains.
-    """
-    conn = _get_conn()
-    with _lock:
-        conn.execute(
-            "DELETE FROM embeddings WHERE source_type = ? AND ref_key LIKE ? ESCAPE '\\'",
-            (source_type, prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"),
-        )
-        conn.commit()
-
-
 def delete_embedding_by_ref(
     source_type: str,
     ref_id: typing.Optional[int] = None,
@@ -802,8 +786,10 @@ def close() -> None:
 
 def _normalize_date(date_str: str) -> str:
     try:
-        import dateparser
-        dt = dateparser.parse(date_str, settings={"RETURN_AS_TIMEZONE_AWARE": False})
+        from helpers.timeutil import parse_when
+
+        # History questions look back: "on Monday" means the one that passed.
+        dt = parse_when(date_str, prefer="past")
         if dt:
             return dt.strftime("%Y-%m-%d")
     except Exception:

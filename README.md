@@ -2,8 +2,9 @@
 
 Wony runs on a small Linux box with a touch screen — a Raspberry Pi 4B is the
 target. Tap a tile or type a question, and the answer appears on the display.
-She can read your calendar and mail, control your lights, run your music, set
-timers and search the web.
+She can read your calendar and mail, control your lights, run your music and
+set timers. (The full assistant, with web browsing, maps and Drive, is the PC
+version.)
 
 You only get the parts you set up. Anything you skip is quietly left out.
 
@@ -159,7 +160,7 @@ ai:
 
 # Only what is listed here is switched on.
 enabled_modules:
-  - basics # time, date, power off
+  - basics # time, date, sleep, power off
   - routines # the briefing, and any you save yourself
   - scheduler # timers, alarms, reminders
   - notes # shopping and todo lists
@@ -169,8 +170,6 @@ enabled_modules:
   # - system           # disk space, memory, processor load, network
   # - spotify
   # - home_assistant
-  # - web              # web search
-  # - mcp
 
 kiosk:
   idle_minutes: 15 # minutes untouched before the clock screen appears
@@ -182,7 +181,7 @@ The Home tab's own tile layout is arranged by touch (**Edit**, on the panel)
 and saved on the device — there is no `tiles:` list in `config.yaml` to hand-edit.
 
 A few things are switched off until you say otherwise, so nothing surprising can
-happen by accident. All seven are on the settings screen too:
+happen by accident. All six are on the settings screen too:
 
 | Setting                              | Allows                                                                   |
 | ------------------------------------ | ------------------------------------------------------------------------ |
@@ -190,15 +189,18 @@ happen by accident. All seven are on the settings screen too:
 | `modules.gmail.allow_write`          | Sending, replying to and deleting email. Off, Wony saves a draft instead |
 | `modules.calendar.allow_write`       | Creating, changing and deleting events                                   |
 | `modules.home_assistant.allow_locks` | Unlocking doors, opening the garage, disarming alarms                    |
-| `modules.mcp.allow_install`          | Starting an MCP server — a program that runs on this device. Off, Wony tells you the command instead |
 | `assistant.proactive.enabled`        | Speaking up on its own about a drive nearly full, the device running hot, a meeting about to start, or important mail |
 | `assistant.memory.learn_from_my_data` | Keeping facts it works out from your own conversations, and how you write from your sent mail |
 
 **Speaking up on its own** says it in Wony's own words rather than a canned
 alert. Ask _"what do you watch for"_ to see the list, or _"stop watching for
-important email"_ to switch one off until the next restart. A meeting about to
-start comes with who is coming, what you last wrote to them and anything on
-your lists with its name on it.
+important email"_ to switch one off. A meeting about to start comes with who is
+coming, what you last wrote to them and anything on your lists with its name on
+it. _"Watch my inbox"_ and _"watch my calendar"_ add new mail and new events to
+the list, whatever that switch says. What you turn on or off is remembered.
+
+Temperatures follow the device's region; say _"remember I prefer Fahrenheit"_ to
+change that. Claude and Gemini always use their fastest model.
 
 **Learning about you** keeps the things you mention in passing — the dog's name,
 that you cycle to work — instead of only what you say "remember that" about.
@@ -222,11 +224,19 @@ Wony tells you what it is about to do and waits for an answer.
 
 ### Gmail and Calendar
 
-1. In [Google Cloud Console](https://console.cloud.google.com/), create an OAuth
-   client of type **Desktop** with the Gmail and Calendar APIs enabled, and add
-   your own address as a test user on the consent screen
+Both share **one sign-in per account**, and Wony asks Google only for what your
+switches allow: read-only until "Change my mailbox" or "Change my calendar" is
+on, which then asks Google once more.
+
+1. In [Google Cloud Console](https://console.cloud.google.com/), enable the Gmail
+   and Calendar APIs, set the OAuth consent screen to **External** in
+   **Testing**, add your own address as a test user, and create an OAuth client
+   of type **Desktop**
 2. Download the JSON. Setup offers the one it finds in your Downloads folder, or
    takes the path — it files it away and opens the browser for consent
+
+Google will say it **hasn't verified this app** — it is your own app: tap
+**Advanced**, then continue.
 
 Want a second mailbox? Tap **Accounts** on the home screen and add one. Give it a
 short name — "work", "personal" — and a browser opens for you to sign in with
@@ -236,9 +246,10 @@ when you don't say which.
 Signing in has to happen on the Pi's own screen, or on another computer with the
 `credentials/` folder copied across afterwards.
 
-If an account stops working — Google expires these on its own, and changing your
-password expires them all — open it from the Accounts screen and tap **Sign in
-again**.
+**Google signs Wony out every 7 days** — its rule for apps in Testing (publishing
+needs a public website, privacy policy and terms). Wony tells you once, warns you
+the day before, and the Accounts screen shows **Sign in again**. Updating from a
+version with separate Gmail and Calendar sign-ins asks you to sign in once.
 
 ### Spotify
 
@@ -282,10 +293,6 @@ The **Devices** tile then lists your devices by room, one card each, with its
 switch, slider and settings on it. Doors, garages and alarms are shown but stay
 locked until you set `modules.home_assistant.allow_locks: true`.
 
-### Web search
-
-Tick **web** during setup. No key and nothing else to set up.
-
 ### Ollama, for a local AI
 
 ```bash
@@ -298,15 +305,9 @@ another machine on your network.
 
 ### Long-term memory
 
-Lets Wony search everything she has been told by meaning rather than by keyword,
-and read documents you give her. No key needed — tick it during setup. Ask her
-to "index document" to add a file. Uses about 120 MB of memory, so leave it out
-if the device is short on it.
-
-### Connecting other tools (MCP)
-
-Tick `mcp` during setup, then ask Wony in plain words, for example: _"Add an MCP
-server called filesystem at command npx -y @modelcontextprotocol/server-filesystem"_.
+Lets Wony search everything she has been told by meaning rather than by keyword.
+No key needed — tick it during setup. Uses about 120 MB of memory, so leave it
+out if the device is short on it.
 
 ## If something goes wrong
 

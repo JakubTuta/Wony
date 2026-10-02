@@ -1,2 +1,2 @@
-# Weather module dependencies.
-geocoder
+# Weather module dependencies (requests is in core). Location comes from the
+# home address in Settings, or a guess from the internet connection.

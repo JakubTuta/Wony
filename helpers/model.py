@@ -1,4 +1,5 @@
 import os
+import re
 import typing
 import uuid
 
@@ -21,8 +22,14 @@ _CACHE_CONTROL = {"type": "ephemeral"}
 # so don't pay the write cost on a prompt that can never be read back.
 _MIN_CACHEABLE_CHARS = 4096
 
-_FALLBACK_GEMINI_MODEL = "gemini-2.0-flash"
-_FALLBACK_ANTHROPIC_MODEL = "claude-sonnet-4-6"
+# Voice needs the fastest reply, so Wony always runs the newest Flash / Haiku.
+# These are used only when the provider's model list cannot be fetched.
+_FALLBACK_GEMINI_MODEL = "gemini-3.5-flash"
+_FALLBACK_ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
+
+# "gemini-3.5-flash" or "gemini-3-flash-preview" — and nothing with another
+# suffix (lite, image, tts, live, dated audio previews).
+_FLASH_NAME = re.compile(r"^(?:models/)?gemini-(\d+(?:\.\d+)?)-flash(-preview)?$")
 
 # Ceiling on a single reply. Generous enough that nothing Wony says is ever cut
 # off mid-sentence, and it costs nothing when unused — output is billed on what
@@ -37,24 +44,35 @@ _resolved_model_cache: typing.Dict[str, str] = {}
 _thinking_unsupported: typing.Set[str] = set()
 
 
-def _get_gemini_model(client: "genai.Client") -> str:
-    from helpers.config import Config
+def pick_flash(models: typing.Iterable[typing.Any]) -> typing.Optional[str]:
+    """Newest stable Flash that can chat; a preview only when no stable one exists."""
+    stable: typing.List[typing.Tuple[typing.Tuple[int, ...], str]] = []
+    preview: typing.List[typing.Tuple[typing.Tuple[int, ...], str]] = []
+    for m in models:
+        if "generateContent" not in (getattr(m, "supported_actions", None) or []):
+            continue
+        match = _FLASH_NAME.match(m.name)
+        if not match:
+            continue
+        version = tuple(int(part) for part in match.group(1).split("."))
+        entry = (version, m.name.removeprefix("models/"))
+        (preview if match.group(2) else stable).append(entry)
+    pool = stable or preview
+    return max(pool)[1] if pool else None
 
-    if user_model := Config.get("ai.gemini_model"):
-        return user_model
+
+def pick_haiku(models: typing.Iterable[typing.Any]) -> typing.Optional[str]:
+    """Newest Haiku by release date."""
+    haikus = [m for m in models if "haiku" in m.id]
+    return max(haikus, key=lambda m: m.created_at).id if haikus else None
+
+
+def _get_gemini_model(client: "genai.Client") -> str:
     if "gemini" in _resolved_model_cache:
         return _resolved_model_cache["gemini"]
     try:
-        models = list(client.models.list())
-        candidates = [
-            m.name
-            for m in models
-            if "generateContent" in (getattr(m, "supported_actions", None) or [])
-            and "gemini" in m.name
-        ]
-        if candidates:
-            candidates.sort(reverse=True)
-            resolved = candidates[0].removeprefix("models/")
+        resolved = pick_flash(client.models.list())
+        if resolved:
             _resolved_model_cache["gemini"] = resolved
             return resolved
     except Exception:
@@ -63,22 +81,32 @@ def _get_gemini_model(client: "genai.Client") -> str:
 
 
 def _get_anthropic_model(client: "anthropic.Anthropic") -> str:
-    from helpers.config import Config
-
-    if user_model := Config.get("ai.anthropic_model"):
-        return user_model
     if "anthropic" in _resolved_model_cache:
         return _resolved_model_cache["anthropic"]
     try:
-        models = client.models.list()
-        if models.data:
-            sorted_models = sorted(models.data, key=lambda m: m.created_at, reverse=True)
-            resolved = sorted_models[0].id
+        resolved = pick_haiku(client.models.list())
+        if resolved:
             _resolved_model_cache["anthropic"] = resolved
             return resolved
     except Exception:
         pass
     return _FALLBACK_ANTHROPIC_MODEL
+
+
+def current_model_name(provider: str) -> typing.Optional[str]:
+    """The model id in use, for display."""
+    from helpers.config import Config
+    from helpers.registry import ServiceRegistry
+
+    if provider == "ollama":
+        return Config.get("ai.ollama_model") or None
+    ai = ServiceRegistry.get_service_instance("ai")
+    client = getattr(ai, "client", None)
+    if provider == "gemini" and client is not None:
+        return _get_gemini_model(client)
+    if provider == "anthropic" and client is not None:
+        return _get_anthropic_model(client)
+    return None
 
 
 def _system_blocks(system: SystemInstructions) -> typing.List[str]:
@@ -141,24 +169,13 @@ _NO_ADAPTIVE_THINKING = ("claude-3", "haiku-4-5", "sonnet-4-5", "opus-4-5", "opu
 def _should_think(has_tools: bool) -> bool:
     """Whether the model should think (reason) for this call.
 
-    Policy (config key ai.thinking: "on" | "off"):
-      - "off": never think — lowest latency everywhere.
-      - "on" (default): think only on pure-generation calls
-        (no tools). Tool-dispatch steps never think, because:
-          1. They're in the voice critical path — thinking delays the first
-             spoken word or the tool call with no user-visible benefit.
-          2. Anthropic requires thinking blocks to be echoed back unchanged in
-             a multi-turn tool loop; our provider-neutral message list doesn't
-             carry them, so thinking + tools would corrupt the next request.
-        Deep reasoning is reserved for direct knowledge questions
-        (ask_question / screenshot), where it improves the answer and there's
-        no tool loop to break.
+    Only on pure-generation calls (no tools: describing a screenshot). Every
+    conversational turn runs the tool loop, and that never thinks:
+      1. It is the voice critical path — thinking delays the first spoken word.
+      2. Anthropic requires thinking blocks to be echoed back unchanged in a
+         multi-turn tool loop; the provider-neutral message list doesn't carry
+         them, so thinking + tools would corrupt the next request.
     """
-    from helpers.config import Config
-
-    mode = str(Config.get("ai.thinking", "on")).lower()
-    if mode in ("off", "false", "none", "disabled"):
-        return False
     return not has_tools
 
 
@@ -599,9 +616,6 @@ def stream_agent_step(
 
     if isinstance(client, anthropic.Anthropic):
 
-        # ai.thinking used to be honoured on the Gemini path only, so the main
-        # (streaming) Anthropic path silently ignored it. _should_think still
-        # keeps tool-dispatch steps thinking-free.
         model = _get_anthropic_model(client)
         text_parts: typing.List[str] = []
         with client.messages.stream(

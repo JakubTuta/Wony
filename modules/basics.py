@@ -42,8 +42,8 @@ def _run_power_command(verb: str, systemctl_action: str) -> str:
     if not bool(Config.get("modules.basics.allow_power_off", False)):
         logger.log_system_event(f"{systemctl_action}_refused", "Power control is disabled.")
         return (
-            f"Power control is off. Set modules.basics.allow_power_off: true in "
-            f"config.yaml to let me {verb} this device."
+            f"Power control is off. Turn on 'Power off this device' in Settings "
+            f"to let me {verb} this device."
         )
 
     logger.log_system_event(systemctl_action, f"Running systemctl {systemctl_action}.")
@@ -68,61 +68,42 @@ def _run_power_command(verb: str, systemctl_action: str) -> str:
     return f"{verb.capitalize()}ing now. o7"
 
 
-@register_job(module_name="basics", summary="Power off or restart this device", confirms=True)
+# Sleep is reversible, but it blanks the display: worth confirming, because if
+# the touchscreen does not wake it the way back is an SSH session.
+@register_job(module_name="basics", summary="Shut down, restart, sleep or wake this device",
+              confirms={"shutdown", "restart", "sleep"})
 @capture_response
-def power_device(action: str = "off") -> str:
+def power(action: str = "sleep", wake_at: str = "") -> str:
     """
-    [SYSTEM CONTROL JOB] Shuts down or restarts this device.
+    [SYSTEM CONTROL JOB] Shuts down or restarts this device, puts the screen to sleep,
+    or wakes it. Sleep is not a shutdown: timers still fire and waking is instant.
 
     Args:
-        action (str): "off" to shut down (the default), or "restart".
-
-    Returns:
-        str: Confirmation, or why it did not happen.
-    """
-    wanted = (action or "off").strip().lower()
-    if wanted in ("restart", "reboot"):
-        return _run_power_command("restart", "reboot")
-    if wanted in ("off", "shutdown", "shut down", "power off"):
-        return _run_power_command("shut down", "poweroff")
-    return f"Unknown action '{action}'. Use off or restart."
-
-
-# Reversible, but it blanks the display: worth confirming, because if the
-# touchscreen does not wake it the way back is an SSH session.
-@register_job(module_name="basics", summary="Send the screen to sleep, or wake it",
-              confirms={"sleep", "off", "doze", "rest"})
-@capture_response
-def sleep_device(action: str = "sleep", wake_at: str = "") -> str:
-    """
-    [SYSTEM CONTROL JOB] Puts the display to sleep, or wakes it up again.
-
-    This is not a shutdown and not a suspend — a Raspberry Pi cannot suspend to
-    RAM. The screen goes dark and the pollers stop; every process keeps
-    running, so timers still fire and waking up is instant.
-
-    Args:
-        action (str): "sleep" (the default) or "wake".
-        wake_at (str): When to wake by itself — a clock time like "07:00", or a
-            duration like "8h" or "90m". Empty means it sleeps until someone
+        action (str): "shutdown", "restart", "sleep" (the default) or "wake".
+        wake_at (str): With sleep, when to wake by itself — a clock time like
+            "07:00", or a duration like "8h" or "90m". Empty means until someone
             touches the screen.
 
     Returns:
-        str: What happened, and when it will wake.
+        str: What happened, or why it did not.
     """
     from helpers import lowpower
 
     wanted = (action or "sleep").strip().lower()
-
+    if wanted in ("restart", "reboot"):
+        return _run_power_command("restart", "reboot")
+    if wanted in ("shutdown", "shut down", "off", "power off"):
+        return _run_power_command("shut down", "poweroff")
     if wanted in ("wake", "wake up", "on"):
         if not lowpower.is_asleep():
             return "The screen is already awake."
         lowpower.wake(reason="asked")
         return "Awake. 🤍"
+    if wanted not in ("sleep", "doze", "rest"):
+        return f"Unknown action '{action}'. Use shutdown, restart, sleep or wake."
 
-    if wanted not in ("sleep", "off", "doze", "rest"):
-        return f"Unknown action '{action}'. Use sleep or wake."
-
+    # A Raspberry Pi cannot suspend to RAM: the screen goes dark and the
+    # pollers stop, every process keeps running.
     try:
         state = lowpower.enter(wake_at=wake_at, reason="asked")
     except lowpower.WakeTimeError as e:

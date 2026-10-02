@@ -117,6 +117,50 @@ class SettingsRequest(BaseModel):
     modules: typing.Optional[typing.List[str]] = None
 
 
+_LOOPBACK = ("127.0.0.1", "localhost")
+_DEV_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
+
+
+class _LocalOnlyMiddleware:
+    """Refuse requests a website could have made on the user's behalf.
+
+    The API has no password, so any page open in a browser could otherwise post
+    to it or open /api/ws (browsers do not apply CORS to WebSockets). The Host
+    check stops DNS rebinding; the Origin check stops cross-site requests. A
+    screen on another machine (server.host set to this device's address) is
+    the same site as far as its own page is concerned, so it still works.
+    """
+
+    def __init__(self, app: typing.Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: dict, receive: typing.Any, send: typing.Any) -> None:
+        if scope["type"] in ("http", "websocket") and not _allowed(scope):
+            if scope["type"] == "websocket":
+                await send({"type": "websocket.close", "code": 1008})
+            else:
+                from fastapi.responses import JSONResponse
+
+                await JSONResponse({"detail": "Forbidden"}, status_code=403)(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
+def _allowed(scope: dict) -> bool:
+    from urllib.parse import urlsplit
+
+    headers = {k.decode("latin-1"): v.decode("latin-1") for k, v in scope.get("headers", [])}
+    host = headers.get("host", "")
+    configured = str(Config.get("server.host", "127.0.0.1"))
+    # Bound to every interface, any name may reach it; only Origin can be checked.
+    if configured not in ("0.0.0.0", "::") and host.rsplit(":", 1)[0] not in _LOOPBACK + (configured,):
+        return False
+    origin = headers.get("origin")
+    if not origin:
+        return True  # not a browser: no website can drive it
+    return urlsplit(origin).netloc == host or origin in _DEV_ORIGINS
+
+
 def build_app() -> FastAPI:
     """Build and return the FastAPI application. Must be called after bootstrap()."""
     from contextlib import asynccontextmanager
@@ -156,10 +200,11 @@ def build_app() -> FastAPI:
             unsubscribe(_on_event)
 
     app = FastAPI(title="Wony Web API", lifespan=_lifespan)
+    app.add_middleware(_LocalOnlyMiddleware)
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+        allow_origins=_DEV_ORIGINS,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -193,14 +238,9 @@ def build_app() -> FastAPI:
             pass
 
         provider = model_info[0] if model_info else "unknown"
-        if provider == "anthropic":
-            model_name = Config.get("ai.anthropic_model") or "claude (auto)"
-        elif provider == "gemini":
-            model_name = Config.get("ai.gemini_model") or "gemini (auto)"
-        elif provider == "ollama":
-            model_name = Config.get("ai.ollama_model") or "ollama"
-        else:
-            model_name = None
+        from helpers.model import current_model_name
+
+        model_name = current_model_name(provider)
 
         modules_out: typing.Dict[str, typing.Any] = {}
         for name, (st, reason) in status.items():
@@ -295,8 +335,11 @@ def build_app() -> FastAPI:
             # Same lock every agent turn takes — a button press reaches the same
             # jobs and the same Conversation state as a typed sentence.
             from helpers.decorators import agent_lock, set_agent_active
+            from helpers.turn_context import user_request
 
-            with agent_lock:
+            # A tap is the user asking, so a Sign in again button may open
+            # Google's consent page.
+            with agent_lock, user_request():
                 set_agent_active(True)
                 try:
                     result = func(**coerced)

@@ -12,6 +12,7 @@ WebSocket path needs the turn id and needs to suppress the automatic broadcast
 so it can send one enriched with its session id.
 """
 
+import contextlib
 import threading
 import typing
 
@@ -42,8 +43,13 @@ class TurnResult(typing.NamedTuple):
 def run_turn(
     user_input: str,
     on_text: typing.Optional[typing.Callable[[str], None]] = None,
+    from_user: bool = True,
 ) -> TurnResult:
-    """Run one agent turn. Never raises — failures come back in TurnResult.error."""
+    """Run one agent turn. Never raises — failures come back in TurnResult.error.
+
+    from_user=False for turns nobody asked for (triggers): nothing in them may
+    open a sign-in window or follow a link the user never mentioned.
+    """
     from helpers import confirm
     from helpers.agent import run_agent
     from helpers.bootstrap import get_ai_client
@@ -51,6 +57,7 @@ def run_turn(
     from helpers.decorators import agent_lock, set_agent_active
     from helpers.events import clear_cancel, emit_state, session_cancel
     from helpers.registry import ServiceRegistry
+    from helpers.turn_context import user_request
     from modules.ai import build_agent_system_prompt
 
     timed_out = threading.Event()
@@ -66,8 +73,9 @@ def run_turn(
     agent_result = None
     agent_err: typing.Optional[Exception] = None
 
+    presence = user_request(user_input) if from_user else contextlib.nullcontext()
     try:
-        with agent_lock:
+        with agent_lock, presence:
             # Inside the lock: a cancel raised against a previous turn must not
             # abort this one, but clearing it before acquiring could cancel a
             # turn that is still running.

@@ -11,7 +11,7 @@ import os
 import typing
 
 from helpers import config_writer
-from helpers.config import ALWAYS_ON, Config
+from helpers.config import Config
 from helpers.paths import repo_path
 
 CONFIG_FILE = repo_path("config.yaml")
@@ -24,14 +24,12 @@ MODULES: typing.List[typing.Tuple[str, str, str]] = [
     ("scheduler", "Timers & reminders", "Timers and alarms that survive a restart."),
     ("notes", "Lists", "Shopping and todo lists you can add to by asking."),
     ("weather", "Weather", "Now and the next few days, here or any city."),
-    ("web", "Web search", "Search the web and read pages."),
     ("system", "Device health", "Disk space, memory, processor load and network."),
     ("spotify", "Spotify", "Play, pause, skip, search, volume."),
     ("gmail", "Gmail", "Read, search and watch your inbox."),
     ("calendar", "Google Calendar", "Events, availability and free slots."),
     ("google_accounts", "Google accounts", "Use more than one Google account."),
     ("home_assistant", "Home Assistant", "Lights, blinds, thermostats, vacuums, scenes."),
-    ("mcp", "MCP tool servers", "Connect external Model Context Protocol servers."),
 ]
 
 
@@ -56,14 +54,18 @@ _FIELDS: typing.List[typing.Tuple[str, typing.List[Field]]] = [
         Field("assistant.owner_name", "Your name", "text", "How it addresses you."),
         Field("assistant.personality", "Personality", "longtext",
               "Free text describing how it should talk to you."),
+        Field("assistant.home_address", "Home address", "text",
+              "Where this device is, for local weather. Optional — without it the "
+              "internet connection decides, which is good to roughly the city."),
     ]),
     ("AI", [
         Field("ai.provider", "AI provider", "choice",
-              "Which service answers. Leave on auto to use whichever key is in .env.",
+              "Which service answers. Leave on auto to use whichever key is in .env. "
+              "Claude and Gemini always use their fastest model.",
               choices=("auto", "anthropic", "gemini", "ollama"), restart=True),
-        Field("ai.thinking", "Thinking", "choice",
-              "'on' reasons harder on knowledge questions; 'off' is fastest.",
-              choices=("on", "off")),
+        Field("ai.ollama_model", "Ollama model", "text",
+              "The model name you pulled, e.g. llama3.1. Only used with Ollama.",
+              restart=True),
         Field("ai.history.max_turns", "Conversation memory", "number",
               "How many past exchanges it keeps in mind during a chat.",
               minimum=1, maximum=50, step=1),
@@ -82,15 +84,10 @@ _FIELDS: typing.List[typing.Tuple[str, typing.List[Field]]] = [
         Field("modules.basics.allow_power_off", "Power off this device", "toggle",
               "Off: it refuses to shut down or restart the Pi.",
               module="basics"),
-        Field("modules.mcp.allow_install", "Install MCP tool servers", "toggle",
-              "Off: it tells you the command instead of running it. "
-              "An MCP server is a program that runs on this device.",
-              module="mcp"),
         Field("assistant.proactive.enabled", "Speak up on its own", "toggle",
               "Off: Wony only answers. On: it can start a conversation about a "
-              "full disk, the device running hot, a meeting about to start, "
-              "important mail, or a web page you asked it to watch. "
-              "Ask 'what do you watch for' to see the full list.",
+              "full disk, the device running hot, a meeting about to start or "
+              "important mail. Ask 'what do you watch for' to see the full list.",
               restart=True),
         Field("assistant.memory.learn_from_my_data", "Learn about me on its own", "toggle",
               "Off: Wony remembers only what you tell it to remember. On: it reads "
@@ -98,14 +95,10 @@ _FIELDS: typing.List[typing.Tuple[str, typing.List[Field]]] = [
               "save facts about you and how you write. Ask 'what do you know about "
               "me' to see and correct them.",
               restart=True),
-        Field("modules.gmail.use_ai", "Summarise email with AI", "toggle",
-              "Sends the text of your emails to your AI provider.", module="gmail"),
     ]),
     ("This device", [
         Field("modules.home_assistant.base_url", "Home Assistant address", "text",
               "The same address you open in a browser.", module="home_assistant"),
-        Field("modules.weather.default_units", "Units", "choice",
-              "Celsius or Fahrenheit.", choices=("metric", "imperial"), module="weather"),
         Field("modules.calendar.work_start_hour", "Working day starts", "number",
               "Used when finding free time.", minimum=0, maximum=23, step=1, module="calendar"),
         Field("modules.calendar.work_end_hour", "Working day ends", "number",
@@ -258,12 +251,9 @@ def apply(
         unknown = [name for name in modules if name not in known]
         if unknown:
             raise SettingsError(f"Unknown module(s): {', '.join(unknown)}.")
-        # The always-on modules are not a user choice; the registry treats them
-        # as enabled whatever the file says, and the app has nothing to say
-        # without them.
-        to_write["enabled_modules"] = list(ALWAYS_ON) + [
-            key for key, _, _ in MODULES if key in set(modules)
-        ]
+        # Always-on modules are not written: the registry treats them as on
+        # whatever the file says, and listing them reads like a choice.
+        to_write["enabled_modules"] = [key for key, _, _ in MODULES if key in set(modules)]
         restart = True
 
     if not to_write:

@@ -40,12 +40,13 @@ def system_status(scope: str = "modules") -> str:
 def manage_triggers(action: str = "list", name: str = "") -> str:
     """
     [SYSTEM INFORMATION JOB] Lists the things Wony watches for on its own — the device
-    running hot, a full disk, a meeting about to start, important mail — and turns one
-    of them off or back on for the rest of this session.
+    running hot, a full disk, a meeting about to start, important mail, new mail, new
+    calendar events — and turns one on or off. "Watch my inbox" is turning on
+    new_email; "watch my calendar" is new_event. The choice is remembered.
 
     Args:
         action (str): "list" (the default), "off" or "on".
-        name (str): Which one, e.g. "too_hot". (required for off and on)
+        name (str): Which one, e.g. "new_email". (required for off and on)
 
     Returns:
         str: What is being watched, or confirmation of the change.
@@ -69,22 +70,21 @@ def manage_triggers(action: str = "list", name: str = "") -> str:
     turning_on = wanted in ("on", "enable", "start")
     triggers.set_enabled(name, turning_on)
     state = "watching for" if turning_on else "no longer watching for"
-    return f"I'm {state} {name.replace('_', ' ')} until Wony restarts."
+    return f"I'm {state} {name.replace('_', ' ')}."
 
 
 def _trigger_list() -> str:
     from helpers import triggers
 
-    if not triggers.enabled():
-        return (
-            "I don't start conversations on my own. Turn on "
-            "'Speak up on its own' in Settings to change that."
-        )
-
-    lines = ["I speak up on my own about:"]
+    lines = ["Things I can watch for on my own:"]
     for trigger in triggers.all_triggers():
-        mark = "" if triggers.is_on(trigger.name) else "  (off for now)"
-        lines.append(f"  - {trigger.name}: {trigger.watches}{mark}")
+        state = "on" if triggers.is_on(trigger.name) else "off"
+        lines.append(f"  - {trigger.name} ({state}): {trigger.watches}")
+    if not triggers.enabled():
+        lines.append(
+            "'Speak up on its own' is off in Settings, so only the ones you "
+            "turned on yourself are watched."
+        )
     return "\n".join(lines)
 
 

@@ -1,92 +1,72 @@
-# config.example.yaml — copy to config.yaml and fill in your values.
-# Secrets (API keys) go in .env, not here.
-# Run `python wony.py doctor` to validate your setup.
+# Wony settings. Everything here can also be changed on the Settings screen.
+# API keys and passwords live in .env, not here.
+# Not sure something works? Run:  python wony.py doctor
 
 assistant:
   name: "Wony"
   owner_name: "User"
-  # Free-form text injected into AI system prompts.
+  # How Wony should talk to you, in your own words.
   personality: "Friendly and concise."
-  # Language for AI responses. BCP-47 codes, e.g. "en", "pl".
+  # Language for replies: "en" for English, "pl" for Polish, "de" for German...
   language: "en"
+  # Where this device is, for local weather. Leave empty and Wony guesses from
+  # the internet connection, which is good to roughly the city.
+  home_address: ""
   proactive:
-    # Let Wony start a conversation on its own — a drive nearly full, the
-    # device running hot, a meeting about to start, important mail. Off by
-    # default; ask "what do you watch for" to see the list and switch one off.
+    # Let Wony speak up on its own: a nearly full disk, the device running hot,
+    # a meeting about to start, important mail. Ask "what do you watch for" to
+    # see the list.
     enabled: false
   memory:
-    # Safety gate — set to true to let Wony work out facts about you from your
-    # own conversations (and, with gmail on, how you write from your sent mail)
-    # and keep them without being asked. While false it remembers only what you
-    # tell it to remember. Ask "what do you know about me" to see and correct
-    # what it has kept.
+    # Let Wony work out facts about you from your conversations (and, with Gmail
+    # on, how you write from your sent mail) without being asked. While off it
+    # remembers only what you tell it to. Ask "what do you know about me" to see
+    # and correct what it kept.
     learn_from_my_data: false
 
 ai:
-  # Options: anthropic | gemini | ollama | null (auto-detect from .env keys).
+  # Which service answers: anthropic, gemini, ollama, or null to use whichever
+  # key is in .env. Claude and Gemini always use their fastest model.
   provider: null
-  anthropic_model: null   # null = latest
-  gemini_model: null      # null = latest
-  ollama_model: "llama3.1"  # required when provider is 'ollama'
-  # Reasoning policy (all providers):
-  #   on (default) — think only on direct knowledge questions; never on
-  #                  tool-using steps, so replies stay fast.
-  #   off          — never think anywhere (lowest latency).
-  thinking: "on"
+  ollama_model: "llama3.1"  # only used with ollama
   history:
-    max_turns: 5   # how many past exchanges Wony remembers within a session
+    max_turns: 5   # how many past exchanges Wony keeps in mind during a chat
 
-# Only listed modules load. A module still won't run if credentials/deps are missing.
-# Ask Wony "check my setup" to see what each broken module needs.
-# Conversation, module health and the agent loop itself are always on and are
-# not listed here.
+# Which features are on. A feature that is missing a key or a sign-in tells you
+# what it needs. Ask Wony "check my setup" to see.
 enabled_modules:
-  - basics         # time, date, power off/restart
-  - routines       # named sets of steps you run by name, incl. the morning briefing
-  - scheduler      # timers, alarms and reminders; can run another job when they fire
-  - notes          # shopping / todo lists kept in wony.db
-  - weather        # current weather and forecasts
-  # - system         # disk space, memory, processor load, network (pip install -r requirements/system.txt)
-  # - spotify        # playback control (play, pause, skip, search, volume)
-  # - gmail          # read, search, and monitor Gmail (requires Google OAuth)
-  # - calendar       # read Google Calendar events and check availability (requires Google OAuth)
+  - basics         # time and date, sleep, power off or restart this device
+  - routines       # named sets of steps, like the morning briefing
+  - scheduler      # timers, alarms and reminders
+  - notes          # shopping and todo lists
+  - weather        # weather now and the next few days
+  # - system         # disk space, memory, processor load, temperature
+  # - spotify        # play, pause, skip, search, volume
+  # - gmail          # read, search and write email
+  # - calendar       # your Google Calendar
   # - google_accounts  # add and sign in to Google accounts from the screen
-  # - home_assistant # Control your whole house through Home Assistant (needs HOME_ASSISTANT_TOKEN)
-  # - web            # Web search and URL fetch (pip install -r requirements/web.txt)
-  # - mcp            # MCP client: connect external tool servers (pip install mcp)
+  # - home_assistant # lights, blinds, heating and more through Home Assistant
 
-# Per-module non-secret settings.
 modules:
   basics:
-    # Safety gate — set to true to let Wony power off or restart this device
-    # from the screen.
+    # Let Wony power off or restart this device from the screen.
     allow_power_off: false
   home_assistant:
-    # Address of your Home Assistant, exactly as you open it in a browser.
+    # The address you open Home Assistant at in a browser.
     base_url: "http://homeassistant.local:8123"
-    # Safety gate — set to true to let Wony unlock doors, open the garage and
-    # disarm alarms. Lights, switches, blinds and thermostats always work.
+    # Let Wony unlock doors, open the garage and disarm alarms. Lights, blinds
+    # and heating work either way.
     allow_locks: false
-  weather:
-    default_units: "metric"   # metric | imperial
   gmail:
-    # Safety gate — set to true to let Wony send, reply, delete and mark mail
-    # as read. While false it saves everything as a draft for you to send
-    # yourself.
+    # Let Wony send, reply, delete and mark mail as read. While off it saves
+    # emails as drafts for you to send yourself.
     allow_write: false
-    # Set to true to have AI summarize email lists (sends content to your AI provider).
-    use_ai: false
   calendar:
-    work_start_hour: 9        # your working day, used when finding free slots
+    work_start_hour: 9        # your working day, used when finding free time
     work_end_hour: 18
-    # Safety gate — set to true to allow creating, editing, and deleting events.
-    # Note: requires re-authentication after upgrading from the old readonly scope.
+    # Let Wony create, change and delete events. While off it tells you what
+    # to add instead.
     allow_write: false
-  mcp:
-    # Safety gate — an MCP server is a program Wony starts on this device with
-    # your privileges. While false, adding/editing/connecting one tells you the
-    # command instead of running it.
-    allow_install: false
 
 kiosk:
   # After this many minutes of nobody touching the screen, it switches to a
@@ -96,25 +76,19 @@ kiosk:
   # 3 or 4 tiles across on the Home tab.
   home_columns: 3
 
-  # Off (default): tapping a light, blind, thermostat or vacuum on the panel
-  # runs it right away — the tap is the confirmation. On: every device asks
-  # first, same as a lock. Locks and alarms always ask, either way.
+  # Off: tapping a light, blind, thermostat or vacuum on the panel runs it
+  # right away — the tap is the confirmation. On: every device asks first, same
+  # as a lock. Locks and alarms always ask, either way.
   confirm_all_devices: false
 
   # The Home tab's tile layout is arranged by touch (Edit, on the panel
   # itself) and saved on the device, not here — there is nothing to hand-edit.
 
-  # The Sleep tile has nothing to configure. It asks for a wake time when you
-  # tap it and remembers what you answered; how this particular screen is
-  # switched off is worked out on the device. See the README.
-
 server:
   # Keep this at 127.0.0.1 unless the screen and Wony run on different machines.
-  # The web API has no password, and it can run every command Wony has — send
-  # email, delete calendar events, power off the device, erase her memory. Any
-  # other address hands all of that to whoever can reach the port.
+  # The web page has no password, and it can do everything Wony can — send
+  # email, delete calendar events, power off the device. It refuses requests
+  # from other websites, but any other address hands all of that to whoever can
+  # reach the port.
   host: "127.0.0.1"
   port: 8000
-
-logging:
-  keep_days: 14   # log/csv files older than this are deleted at startup

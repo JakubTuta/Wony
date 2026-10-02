@@ -82,15 +82,6 @@ class TestMemoryDb(unittest.TestCase):
         rows = {r["ref_key"] or r["ref_id"]: r["text"] for r in self.db.all_embeddings()}
         self.assertEqual(rows, {"boss": "boss: Bea", 7: "same turn again"})
 
-    def test_delete_embeddings_by_key_prefix(self) -> None:
-        for i in range(3):
-            self.db.upsert_embedding("doc", None, f"/tmp/a.txt#{i}", "text", b"\x00" * 4)
-        self.db.upsert_embedding("doc", None, "/tmp/b.txt#0", "text", b"\x00" * 4)
-
-        self.db.delete_embeddings_by_key_prefix("doc", "/tmp/a.txt#")
-        keys = {row["ref_key"] for row in self.db.all_embeddings(["doc"])}
-        self.assertEqual(keys, {"/tmp/b.txt#0"})
-
     def test_facts_roundtrip_and_overwrite(self) -> None:
         self.db.set_fact("preferred_units", "metric")
         self.assertEqual(self.db.get_fact("preferred_units"), "metric")

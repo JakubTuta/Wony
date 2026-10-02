@@ -133,6 +133,73 @@ def set_value(lines: typing.List[str], dotted_key: str, value: typing.Any) -> No
         indent += len(INDENT)
 
 
+def _comment_start(lines: typing.List[str], at: int, indent: int) -> int:
+    """First line of the comment block sitting directly on top of line `at`."""
+    start = at
+    while start > 0:
+        above = lines[start - 1]
+        own_indent = len(above) - len(above.lstrip(" "))
+        if not above.strip().startswith("#") or own_indent != indent:
+            break
+        start -= 1
+    return start
+
+
+def _has_children(lines: typing.List[str], header: int, indent: int) -> bool:
+    return _block_end(lines, header, indent) > header + 1
+
+
+def remove_value(lines: typing.List[str], dotted_key: str) -> bool:
+    """Delete one dotted key with its block and the comment above it.
+
+    A parent block left with nothing in it goes too, so retiring the last key
+    of a section does not leave a dangling `section:` line behind.
+    """
+    parts = dotted_key.split(".")
+    start, end, indent = 0, len(lines), 0
+    headers: typing.List[typing.Tuple[int, int]] = []
+    for depth, part in enumerate(parts):
+        at = _find_key(lines, part, indent, start, end)
+        if at is None:
+            return False
+        if depth < len(parts) - 1:
+            headers.append((at, indent))
+            start, end = at + 1, _block_end(lines, at, indent)
+            indent += len(INDENT)
+            continue
+        stop = _block_end(lines, at, indent) if _has_children(lines, at, indent) else at + 1
+        start = _comment_start(lines, at, indent)
+        del lines[start:stop]
+        _drop_double_blank(lines, start)
+
+    for header, header_indent in reversed(headers):
+        if _has_children(lines, header, header_indent):
+            break
+        start = _comment_start(lines, header, header_indent)
+        del lines[start : header + 1]
+        _drop_double_blank(lines, start)
+    return True
+
+
+def _drop_double_blank(lines: typing.List[str], at: int) -> None:
+    """A removed section leaves its spacer line next to the next one's."""
+    while 0 < at < len(lines) and not lines[at].strip() and not lines[at - 1].strip():
+        del lines[at]
+
+
+def remove(path: str, dotted_keys: typing.Iterable[str]) -> typing.List[str]:
+    """Delete `dotted_keys` from the YAML file at `path`. Returns those removed."""
+    if not os.path.exists(path):
+        return []
+    with io.open(path, "r", encoding="utf-8-sig") as handle:
+        lines = handle.readlines()
+    removed = [key for key in dotted_keys if remove_value(lines, key)]
+    if removed:
+        with io.open(path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.writelines(lines)
+    return removed
+
+
 def update(path: str, updates: typing.Dict[str, typing.Any]) -> typing.List[str]:
     """Apply `updates` (dotted key -> value) to the YAML file at `path`.
 

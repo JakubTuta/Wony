@@ -167,9 +167,12 @@ export interface GoogleAccount {
   name: string
   email: string
   primary: boolean
-  /** A stored token per service. True means signed in at some point, not that
-   *  Google still accepts it — only using it can prove that. */
-  tokens: { gmail: boolean; calendar: boolean }
+  signed_in: boolean
+  /** Google signed Wony out (weekly in Testing mode), or a switch needs a new OK. */
+  needs_sign_in: boolean
+  /** Which Google services the one sign-in covers (helpers/google_auth.py). */
+  modules: { gmail: boolean; calendar: boolean }
+  signed_in_at: string
 }
 
 export interface GoogleAccountsSnapshot {

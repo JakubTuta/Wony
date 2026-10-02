@@ -6,14 +6,11 @@ import typing
 from datetime import datetime
 
 from helpers.accounts import CREDENTIALS_FILE, GoogleAccounts
-from helpers.notify import notify
-from helpers.cache import Cache
 from helpers.config import Config
 from helpers.decorators import capture_response
-from helpers.jobs import BackgroundJobs
-from helpers.logger import logger
 from helpers.registry import method_job, register_service
 from helpers.requirements import Requirement
+from helpers.untrusted import wrap
 
 
 _METADATA_HEADERS = ["From", "To", "Cc", "Bcc", "Subject", "Date"]
@@ -25,12 +22,8 @@ _DEFAULT_MAX_RESULTS = 20
 # Body text kept per message. Above this, a spoken read-out drags and a
 # summarisation request costs tokens for boilerplate and signatures.
 _MAX_BODY_CHARS = 1500
-# Ceiling on messages fed to one AI inbox summary.
-_AI_SUMMARY_MAX_EMAILS = 30
-# How often "check my email every so often" polls when no interval is given.
-_DEFAULT_POLL_INTERVAL_MINUTES = 15
-# Unread messages a poll tick scans. Above the display default so a burst of new
-# mail between two ticks is announced in full rather than partly missed.
+# Unread messages the new_email trigger scans. Above the display default so a
+# burst of new mail between two polls is announced in full.
 _POLL_SCAN_LIMIT = 100
 # Unread messages the overview reads headers for to work out who they are from.
 # Enough to make "top senders" meaningful without a slow batch on a big backlog.
@@ -155,15 +148,11 @@ def _build_mime_raw(
     return result
 
 
-def _gmail_job_name(account_name: str) -> str:
-    return f"gmail_polling_{account_name}"
-
-
 @register_service(
     module_name="gmail",
     requires=Requirement(
         files=[CREDENTIALS_FILE],
-        pip_modules=["simplegmail"],
+        pip_modules=["googleapiclient", "google_auth_oauthlib"],
         setup_hint=(
             "Follow simplegmail OAuth setup (pypi.org/project/simplegmail), "
             "place credentials/google_credentials.json in the credentials/ folder, "
@@ -182,43 +171,11 @@ class Gmail:
     # Auth
     # ------------------------------------------------------------------
 
-    def _client(self, account: str) -> typing.Any:
-        # Imported here, not at module scope: a missing simplegmail must leave
-        # the module importable so its Requirement still reaches `doctor`.
-        import simplegmail
-
-        name = GoogleAccounts.resolve(account or None)
-        if name not in self._clients:
-            rec = GoogleAccounts.record(name)
-            self._clients[name] = simplegmail.Gmail(
-                client_secret_file=CREDENTIALS_FILE,
-                creds_file=rec["gmail_token"],
-            )
-        return self._clients[name]
-
     def _svc(self, account: str):
-        """Auto-refreshing raw googleapiclient Gmail resource."""
-        return self._client(account).service
+        """Auto-refreshing googleapiclient Gmail resource (helpers/google_auth.py)."""
+        from helpers import google_auth
 
-    def sign_in(self, account: str) -> str:
-        """Sign `account` in and report the address it belongs to.
-
-        Building the client is what triggers OAuth consent. The accounts job
-        and setup.py both come here, so there is one sign-in path.
-        """
-        self._client(account)
-        try:
-            profile = self._svc(account).users().getProfile(userId="me").execute()
-            return (profile or {}).get("emailAddress", "")
-        except Exception as e:
-            logger.log_error(str(e), f"gmail.sign_in.{account}")
-            return ""
-
-    def forget_account(self, name: str) -> None:
-        """Drop cached state for an account whose token changed or went away —
-        both caches are keyed by name, so a re-auth would reuse the old client."""
-        self._clients.pop(name, None)
-        self._label_maps.pop(name, None)
+        return google_auth.service("gmail", "v1", account)
 
     # ------------------------------------------------------------------
     # Config
@@ -230,20 +187,11 @@ class Gmail:
     def _max_body_chars(self) -> int:
         return _MAX_BODY_CHARS
 
-    def _use_ai(self) -> bool:
-        return bool(Config.module_settings("gmail").get("use_ai", False))
-
-    def _ai_summary_max_emails(self) -> int:
-        return _AI_SUMMARY_MAX_EMAILS
-
     def _write_allowed(self) -> bool:
         return bool(Config.module_settings("gmail").get("allow_write", False))
 
     def _write_disabled_note(self, what: str) -> str:
-        return (
-            f"{what} is disabled. To allow it, set modules.gmail.allow_write: true "
-            "in config.yaml (or switch it on in the web UI under Settings)."
-        )
+        return f"{what} is switched off. Turn on 'Change my mailbox' in Settings to allow it."
 
     # ------------------------------------------------------------------
     # Raw API helpers
@@ -500,30 +448,10 @@ class Gmail:
         for msg in messages:
             lines.append("")
             lines.append(self._format_message(msg, verbose=verbose))
-        raw = "\n".join(lines)
-
-        if not self._use_ai() or not messages:
-            return raw
-
-        from helpers.ai_assist import summarize
-
-        cap = self._ai_summary_max_emails()
-        body_limit = self._max_body_chars()
-        payload_parts = [header, count_msg]
-        for msg in messages[:cap]:
-            payload_parts.append("")
-            payload_parts.append(self._format_message(msg, verbose=True, max_body=body_limit))
-        payload = "\n".join(payload_parts)
-
-        instruction = (
-            f"Summarize the following emails for the user. "
-            f"Highlight key senders, main topics, and anything that looks like it needs a reply or action. "
-            f"Context: {header}"
-        )
-        result = summarize(payload, instruction)
-        if result is None:
-            return raw
-        return f"{header}\n{count_msg}\n\n{result}"
+        if not messages:
+            return "\n".join(lines)
+        # Senders, subjects and bodies are all written by other people.
+        return "\n".join(lines[:2]) + "\n" + wrap("\n".join(lines[2:]), "email")
 
     # ------------------------------------------------------------------
     # Internal fetch helpers
@@ -559,18 +487,11 @@ class Gmail:
             out.extend(msgs)
         return self._sort_desc(out)
 
-    def _get_new_messages(self, account: str) -> typing.List[Msg]:
-        """Unread messages not yet announced by background polling. ID-based
-        dedup mirrors the calendar poller — robust against Gmail's day-granular
-        date filters re-announcing the same mail every interval."""
-        name = GoogleAccounts.resolve(account or None)
-        cache_key = f"announced_email_ids_{name}"
-        messages = self._fetch(self._scope("is:unread"), _POLL_SCAN_LIMIT, name)
-        announced: typing.List[str] = Cache.get_value(cache_key) or []
-        new = [m for m in messages if m.id not in announced]
-        if new:
-            Cache.set_value(cache_key, (announced + [m.id for m in new])[-500:])
-        return new
+    def new_messages(self, seen: typing.Set[str]) -> typing.List[Msg]:
+        """Unread inbox mail from the last day whose ids are not in `seen`, across
+        every account — for the new_email trigger."""
+        scoped = self._scope("is:unread newer_than:1d")
+        return [m for m in self._fetch(scoped, _POLL_SCAN_LIMIT, "") if m.id not in seen]
 
     def search_messages(
         self, query: str, max_results: int = 0, account: str = "", folder: str = ""
@@ -758,7 +679,7 @@ class Gmail:
         if not messages:
             return "No matching email found."
 
-        return self._format_message(messages[0], verbose=True)
+        return wrap(self._format_message(messages[0], verbose=True), "email")
 
     def _inbox_overview(self, locator: str = "", account: str = "") -> str:
         """How much unread mail there is and who it is from (view="overview").
@@ -879,69 +800,11 @@ class Gmail:
         ]
         thread_msgs.sort(key=Gmail._parse_date)
 
-        seed_subject = thread_msgs[0].subject if thread_msgs else (subject or "")
-        lines = [f"Thread: '{seed_subject}' — {len(thread_msgs)} message(s)"]
+        lines = []
         for i, message in enumerate(thread_msgs, 1):
             lines.append(f"\n--- Message {i} ---")
             lines.append(self._format_message(message, verbose=True))
-        return "\n".join(lines)
-
-    # ------------------------------------------------------------------
-    # Jobs — background polling
-    # ------------------------------------------------------------------
-
-    @capture_response
-    @method_job
-    def watch_inbox(self, action: str = "start", interval_minutes: int = 0, account: str = "") -> str:
-        """
-        [EMAIL MANAGEMENT JOB] Starts or stops background inbox monitoring. While it
-        runs, new mail is announced as it arrives.
-
-        Args:
-            action (str): "start" (the default) or "stop".
-            interval_minutes (int): How often to check when starting (defaults to 15).
-            account (str): Google account to watch. Stopping with no account stops all.
-
-        Returns:
-            str: Confirmation of what is now running.
-        """
-        wanted = (action or "start").strip().lower()
-
-        if wanted in ("stop", "off", "cancel"):
-            if account:
-                name = GoogleAccounts.resolve(account)
-                stopped = BackgroundJobs.stop(_gmail_job_name(name))
-                return (f"Stopped watching '{name}'." if stopped
-                        else f"'{name}' was not being watched.")
-            watched = [j for j in BackgroundJobs.list_jobs() if j.startswith("gmail_polling_")]
-            stopped_any = any(BackgroundJobs.stop(job) for job in watched)
-            return "Stopped watching the inbox." if stopped_any else "The inbox was not being watched."
-
-        if wanted not in ("start", "on", "watch"):
-            return f"Unknown action '{action}'. Use start or stop."
-
-        name = GoogleAccounts.resolve(account or None)
-        job_name = _gmail_job_name(name)
-        if BackgroundJobs.is_running(job_name):
-            return f"Already watching '{name}'."
-
-        if not interval_minutes or interval_minutes <= 0:
-            interval_minutes = _DEFAULT_POLL_INTERVAL_MINUTES
-
-        def _poll() -> None:
-            messages = self._get_new_messages(name)
-            if not messages:
-                return
-            headline = f"You have {len(messages)} new email(s) in {name}."
-            logger.log_system_event("gmail_poll", headline)
-            notify(
-                [headline] + [self._format_message(m, verbose=False) for m in messages],
-                kind="alert",
-                source="gmail",
-            )
-
-        BackgroundJobs.start(job_name, _poll, interval=interval_minutes * 60)
-        return f"Watching '{name}' — checking every {interval_minutes} minutes."
+        return f"Thread with {len(thread_msgs)} message(s):\n" + wrap("\n".join(lines), "email")
 
     # ------------------------------------------------------------------
     # Jobs — write

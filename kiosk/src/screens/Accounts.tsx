@@ -115,7 +115,7 @@ export function Accounts() {
 
       {adding && <AddSheet onClose={close} />}
       {editing && (
-        <AccountSheet account={editing} services={snapshot.services} onClose={close} />
+        <AccountSheet account={editing} onClose={close} />
       )}
     </div>
   )
@@ -162,15 +162,15 @@ function AccountRow({
             <Star size={14} className="text-accent shrink-0" fill="currentColor" />
           )}
         </div>
-        <div className="t-small text-muted truncate">
-          {account.email || 'Not signed in yet'}
+        <div className={`t-small truncate ${account.needs_sign_in ? 'text-warn' : 'text-muted'}`}>
+          {account.needs_sign_in ? 'Needs signing in — tap to sign in again' : account.email || 'Signed in'}
         </div>
       </div>
 
       <div className="flex items-center gap-1.5 shrink-0">
-        {services.gmail && <TokenChip icon={<Mail size={14} />} ok={account.tokens.gmail} />}
+        {services.gmail && <TokenChip icon={<Mail size={14} />} ok={!account.needs_sign_in && account.modules.gmail} />}
         {services.calendar && (
-          <TokenChip icon={<Calendar size={14} />} ok={account.tokens.calendar} />
+          <TokenChip icon={<Calendar size={14} />} ok={!account.needs_sign_in && account.modules.calendar} />
         )}
       </div>
     </button>
@@ -339,11 +339,9 @@ function AddSheet({ onClose }: { onClose: (changed: boolean) => void }) {
 
 function AccountSheet({
   account,
-  services,
   onClose,
 }: {
   account: GoogleAccount
-  services: Services
   onClose: (changed: boolean) => void
 }) {
   const [newName, setNewName] = useState(account.name)
@@ -383,9 +381,7 @@ function AccountSheet({
     run('rename', 'manage_google_accounts', { action: 'rename', name: account.name, new_name: next }, true)
   }
 
-  const missing =
-    (services.gmail && !account.tokens.gmail) ||
-    (services.calendar && !account.tokens.calendar)
+  const missing = account.needs_sign_in
 
   return (
     <Sheet
@@ -434,7 +430,8 @@ function AccountSheet({
         />
         {missing && (
           <p className="t-small text-warn">
-            Something here isn't signed in. Wony will skip this account until it is.
+            Google signs Wony out every week (it's a personal app). Mail and calendar
+            for this account pause until you sign in again.
           </p>
         )}
 
