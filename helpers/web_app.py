@@ -549,11 +549,14 @@ def build_app() -> FastAPI:
 
     @app.post("/api/data/wipe")
     def wipe_data() -> typing.Dict[str, str]:
+        from helpers.cache import Cache
         from helpers.logger import logger
         from helpers.memory_db import wipe_all
 
         try:
             wipe_all()
+            Cache.wipe()
+            logger.wipe_logs()
             return {"status": "wiped"}
         except Exception as e:
             logger.log_error(str(e), "web_wipe_data")

@@ -245,6 +245,30 @@ class TestNotifications(unittest.TestCase):
         source = inspect.getsource(memory_db.wipe_all)
         self.assertIn("notifications", source)
 
+    def test_wipe_keeps_the_remembered_web_port(self) -> None:
+        """web.port is how Wony is reachable, not user data Wipe is meant to
+        erase — losing it on every wipe would change the URL a bookmark
+        points at for no reason connected to what Wipe is for."""
+        import sqlite3
+        from unittest import mock
+
+        from helpers import memory_db
+
+        test_conn = sqlite3.connect(":memory:", check_same_thread=False)
+        test_conn.row_factory = sqlite3.Row
+        memory_db._init_schema(test_conn)
+
+        with mock.patch.object(memory_db, "_conn", test_conn):
+            memory_db.set_kv("web.port", "54321")
+            memory_db.set_kv("some.other.flag", "on")
+            memory_db.save_routine("test routine", "do a thing")
+
+            memory_db.wipe_all()
+
+            self.assertEqual(memory_db.get_kv("web.port", ""), "54321")
+            self.assertEqual(memory_db.get_kv("some.other.flag", ""), "")
+            self.assertEqual(memory_db.all_routines(), [])
+
     def test_notify_survives_a_dead_database(self) -> None:
         """A poller must not die because the DB is locked — the message still
         has to reach a connected client."""

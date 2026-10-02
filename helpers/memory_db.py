@@ -756,14 +756,24 @@ def delete_embedding_by_ref(
 
 def wipe_all() -> None:
     """Delete every row the user owns: turns, facts, notes, routines, reminders,
-    notifications, mcp servers, embeddings.
+    notifications, mcp servers, embeddings, and everything in kv except the
+    remembered web port (not user data, and losing it would change the URL
+    a bookmark points at for no reason connected to what Wipe is for).
 
-    Resets a fresh session id and clears the in-memory conversation window.
+    Resets a fresh session id, clears the in-memory conversation window, and
+    reclaims the freed space with VACUUM — otherwise wony.db stays exactly
+    as large after a wipe as it was the moment before.
     """
+    from helpers.server_address import _PORT_KV_KEY
+
     global SESSION_ID
     conn = _get_conn()
     with _lock:
-        for table in ("turns", "facts", "kv", "notes", "routines", "reminders",
+        try:
+            conn.execute("DELETE FROM kv WHERE key != ?", (_PORT_KV_KEY,))
+        except sqlite3.OperationalError:
+            pass
+        for table in ("turns", "facts", "notes", "routines", "reminders",
                       "notifications", "mcp_servers", "embeddings"):
             try:
                 conn.execute(f"DELETE FROM {table}")
@@ -778,6 +788,7 @@ def wipe_all() -> None:
                 except sqlite3.OperationalError:
                     pass
         conn.commit()
+        conn.execute("VACUUM")
         SESSION_ID = str(uuid.uuid4())[:12]
 
     try:
