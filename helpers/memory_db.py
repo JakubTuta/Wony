@@ -276,6 +276,23 @@ def recent_turns(limit: int = 10) -> typing.List[typing.Dict]:
         return result
 
 
+_CLEARED_KV = "chat.cleared_after"
+
+
+def mark_chat_cleared() -> None:
+    """Hide every turn so far from the chat window and a restart's seeded
+    context — without deleting them: `recall` still finds them. Clearing only
+    in memory meant a reload put the whole conversation straight back."""
+    latest = recent_turns(1)
+    set_kv(_CLEARED_KV, str(latest[0]["id"]) if latest else "0")
+
+
+def visible_turns(limit: int = 10) -> typing.List[typing.Dict]:
+    """recent_turns() minus whatever the user cleared from the chat."""
+    cleared = int(get_kv(_CLEARED_KV, "0") or 0)
+    return [t for t in recent_turns(limit) if t["id"] > cleared]
+
+
 # ------------------------------------------------------------------ facts (profile store)
 
 def get_fact(key: str) -> typing.Optional[str]:

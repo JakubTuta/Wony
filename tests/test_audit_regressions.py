@@ -752,6 +752,47 @@ class TestValidateArgs(unittest.TestCase):
         self.assertIsNotNone(validate_args(AI.remember, {"action": "store"}))
 
 
+class TestClearChatPersists(unittest.TestCase):
+    def test_cleared_turns_stay_hidden_but_recall_still_finds_them(self) -> None:
+        """Clear only emptied an in-memory list, so a reload put the whole
+        conversation back."""
+        import sqlite3
+        from unittest import mock
+
+        from helpers import memory_db
+
+        conn = sqlite3.connect(":memory:", check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        memory_db._init_schema(conn)
+        with mock.patch.object(memory_db, "_conn", conn):
+            memory_db.insert_turn("old question", "old answer")
+            memory_db.mark_chat_cleared()
+            memory_db.insert_turn("new question", "new answer")
+
+            shown = [t["user_text"] for t in memory_db.visible_turns(10)]
+            everything = [t["user_text"] for t in memory_db.recent_turns(10)]
+
+        self.assertEqual(shown, ["new question"])
+        self.assertEqual(everything, ["old question", "new question"])
+
+
+class TestDoctorChecksOnlyWhatIsOn(unittest.TestCase):
+    def test_a_feature_the_user_never_switched_on_is_not_reported_broken(self) -> None:
+        """Doctor listed every module with a requirement, so a fresh install
+        showed a wall of red crosses for features nobody had asked for."""
+        from unittest import mock
+
+        from helpers.requirements import Requirement
+        from modules.doctor import _module_checks
+
+        reqs = {"spotify": Requirement(pip_modules=["x"]), "weather": Requirement(pip_modules=["y"])}
+        with mock.patch("helpers.registry.ServiceRegistry.get_module_requirements", return_value=reqs), \
+                mock.patch("helpers.config.Config.is_module_enabled", side_effect=lambda n: n == "weather"):
+            labels = [label for label, _ in _module_checks()]
+        self.assertIn("weather", labels)
+        self.assertNotIn("spotify", labels)
+
+
 class TestFrontendJobNames(unittest.TestCase):
     def test_every_job_the_web_ui_calls_still_exists(self) -> None:
         """The Tier 2 merges renamed jobs and swept the Python, the docs and the

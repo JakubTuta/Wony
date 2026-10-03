@@ -539,8 +539,10 @@ def build_app() -> FastAPI:
     @app.post("/api/chat/clear")
     def clear_chat() -> typing.Dict[str, str]:
         from helpers.conversation import Conversation
+        from helpers.memory_db import mark_chat_cleared
 
         Conversation.clear()
+        mark_chat_cleared()
         return {"status": "cleared"}
 
     @app.post("/api/data/wipe")
@@ -560,9 +562,9 @@ def build_app() -> FastAPI:
 
     @app.get("/api/chat/history")
     def chat_history(limit: int = 50) -> typing.Dict[str, typing.Any]:
-        from helpers.memory_db import recent_turns
+        from helpers.memory_db import visible_turns
 
-        turns = recent_turns(min(limit, 200))
+        turns = visible_turns(min(limit, 200))
         return {
             "turns": [
                 {

@@ -145,10 +145,10 @@ def bootstrap(
     if seed_conversation:
         try:
             from helpers.conversation import Conversation
-            from helpers.memory_db import recent_turns
+            from helpers.memory_db import visible_turns
 
             max_turns = int(Config.get("ai.history.max_turns", 5))
-            for turn in recent_turns(max_turns):
+            for turn in visible_turns(max_turns):
                 Conversation._turns.append(
                     {
                         "user": turn["user_text"],

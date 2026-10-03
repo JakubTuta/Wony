@@ -26,11 +26,15 @@ def _module_checks() -> list:
     """(label, Requirement) for every module that declared one, plus the
     non-module features. Modules are read from the registry so this never
     drifts from what the modules themselves require."""
+    from helpers.config import Config
     from helpers.registry import ServiceRegistry
 
+    # Only what the user switched on: a failing check for a feature nobody
+    # asked for reads as something broken, not as something optional.
     checks = [
         (name, req)
         for name, req in sorted(ServiceRegistry.get_module_requirements().items())
+        if Config.is_module_enabled(name)
     ]
     checks += list(_NON_MODULE_CHECKS)
     return checks

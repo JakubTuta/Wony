@@ -175,7 +175,10 @@ class AI:
         Returns:
             str: Confirmation that history was cleared.
         """
+        from helpers.memory_db import mark_chat_cleared
+
         Conversation.clear()
+        mark_chat_cleared()
         return "Conversation history cleared."
 
     @register_job(module_name="ai", confirms=_remember_needs_confirm)
