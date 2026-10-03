@@ -773,9 +773,9 @@ def step_ai(env, pending):
     provider = choose(
         "Which service should answer?",
         [
-            ("Anthropic (Claude) — paid, best answers", "anthropic"),
-            ("Google Gemini — has a free tier", "gemini"),
-            ("Ollama — a server you run yourself, no key", "ollama"),
+            ("Anthropic (Claude) — paid, best answers, not used to train their models", "anthropic"),
+            ("Google Gemini — free tier reviewed and used to train Google's models; a paid key isn't", "gemini"),
+            ("Ollama — a server you run yourself, no key, nothing goes to a cloud", "ollama"),
             ("Decide later", ""),
         ],
         default=_ai_default(env),

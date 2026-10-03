@@ -60,8 +60,11 @@ _FIELDS: typing.List[typing.Tuple[str, typing.List[Field]]] = [
     ]),
     ("AI", [
         Field("ai.provider", "AI provider", "choice",
-              "Which service answers. Leave on auto to use whichever key is in .env. "
-              "Claude and Gemini always use their fastest model.",
+              "Which service answers. Leave on auto to use whichever key is in .env — "
+              "Anthropic first, then Gemini. Claude and Gemini always use their fastest "
+              "model. Claude isn't used to train Anthropic's models; Gemini's free tier "
+              "is reviewed and used to train Google's, a paid key isn't; Ollama is a "
+              "server you run yourself, so nothing goes to a cloud.",
               choices=("auto", "anthropic", "gemini", "ollama"), restart=True),
         Field("ai.ollama_model", "Ollama model", "text",
               "The model name you pulled, e.g. llama3.1. Only used with Ollama.",

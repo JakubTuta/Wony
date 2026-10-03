@@ -740,9 +740,11 @@ def delete_embedding_by_ref(
 
 def wipe_all() -> None:
     """Delete every row the user owns: turns, facts, notes, routines, reminders,
-    notifications, mcp servers, embeddings.
+    notifications, mcp servers, embeddings, kv.
 
-    Resets a fresh session id and clears the in-memory conversation window.
+    Resets a fresh session id, clears the in-memory conversation window, and
+    reclaims the freed space with VACUUM — otherwise wony.db stays exactly
+    as large after a wipe as it was the moment before.
     """
     global SESSION_ID
     conn = _get_conn()
@@ -762,6 +764,7 @@ def wipe_all() -> None:
                 except sqlite3.OperationalError:
                     pass
         conn.commit()
+        conn.execute("VACUUM")
         SESSION_ID = str(uuid.uuid4())[:12]
 
     try:

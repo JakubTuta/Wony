@@ -288,11 +288,14 @@ def get_model() -> typing.Optional[
     if configured_provider == "anthropic" and anthropic_key:
         return ["anthropic", anthropic_key]
 
-    # Auto-detect from available keys
-    if gemini_key:
-        return ["gemini", gemini_key]
+    # Auto-detect from available keys. Anthropic first: Claude isn't used to
+    # train Anthropic's models, while Gemini's free tier is reviewed and used
+    # to train Google's — a user who set up both without picking one should
+    # get the provider that does more with their data by default, not less.
     if anthropic_key:
         return ["anthropic", anthropic_key]
+    if gemini_key:
+        return ["gemini", gemini_key]
 
 
 def send_message(

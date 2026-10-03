@@ -1,11 +1,42 @@
 import csv
 import io
 import logging
+import os
+import re
 import typing
 from datetime import datetime
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# "https://api.openweathermap.org/...?appid=abcd1234&..." — a query parameter
+# that is routinely a bare API key, in an error message built from the
+# request URL rather than from a secret value this module already knows about.
+_SECRET_QUERY_PARAM = re.compile(r'(?i)\b(appid|key|token)=[^&\s"\']+')
+
+
+# The Pi's Settings page has no secret fields to ask, so a value is a secret by
+# its variable's name: ANTHROPIC_API_KEY, SPOTIFY_CLIENT_SECRET, HA_TOKEN, ...
+_SECRET_ENV_NAME = re.compile(r"(KEY|TOKEN|SECRET|PASSWORD)$")
+
+
+def _secret_env_values() -> typing.List[str]:
+    return [
+        value for name, value in os.environ.items()
+        if _SECRET_ENV_NAME.search(name.upper()) and len(value) >= 8
+    ]
+
+
+def _redact(text: str) -> str:
+    """Strip anything that looks like a secret out of text before it is
+    written to a log file — a configured API key's live value, or a query
+    parameter that commonly carries one even when it isn't in that list."""
+    if not text:
+        return text
+    redacted = _SECRET_QUERY_PARAM.sub(r"\1=[REDACTED]", text)
+    for value in _secret_env_values():
+        redacted = redacted.replace(value, "[REDACTED]")
+    return redacted
 
 
 class CSVFormatter(logging.Formatter):
@@ -150,7 +181,7 @@ class Logger:
         """
         log_name = "function_called"
         args_str = f" with args: {args}" if args else ""
-        message = f"Function called: {function_name}{args_str}"
+        message = _redact(f"Function called: {function_name}{args_str}")
 
         self.logger.info(message)
         self._log_csv(log_name, user_input, function_name, "")
@@ -181,6 +212,7 @@ class Logger:
             context: Additional context about where the error occurred
         """
         log_name = "error"
+        error_message = _redact(error_message)
         full_message = (
             f"ERROR in {context}: {error_message}"
             if context
@@ -265,6 +297,27 @@ class Logger:
     def get_logs_directory(self) -> Path:
         """Get the logs directory path (anchored to the repo root)"""
         return _REPO_ROOT / "logs"
+
+    def wipe_logs(self) -> int:
+        """Delete every log file. Windows refuses to unlink one this process
+        still has open (the current session's .log/.csv) — those are
+        truncated in place instead, so content from before the wipe doesn't
+        survive it. Returns how many files were cleared."""
+        cleared = 0
+        for log_file in self.get_logs_directory().glob("*"):
+            if not log_file.is_file():
+                continue
+            try:
+                log_file.unlink()
+                cleared += 1
+            except OSError:
+                try:
+                    with open(log_file, "w", encoding="utf-8"):
+                        pass
+                    cleared += 1
+                except OSError:
+                    pass
+        return cleared
 
     def cleanup_old_logs(self, days_to_keep: int = 30):
         """

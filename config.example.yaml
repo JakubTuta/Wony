@@ -24,7 +24,10 @@ assistant:
 
 ai:
   # Which service answers: anthropic, gemini, ollama, or null to use whichever
-  # key is in .env. Claude and Gemini always use their fastest model.
+  # key is in .env (Anthropic first). Claude and Gemini always use their fastest
+  # model. Claude isn't used to train Anthropic's models; Gemini's free tier is
+  # reviewed and used to train Google's (a paid key isn't); Ollama is a server
+  # you run yourself, so nothing goes to a cloud.
   provider: null
   ollama_model: "llama3.1"  # only used with ollama
   history:

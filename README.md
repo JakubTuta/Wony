@@ -15,6 +15,15 @@ You only get the parts you set up. Anything you skip is quietly left out.
 - An API key from Anthropic or Gemini — or your own Ollama server
 - A touch screen, if you want to use it by hand
 
+| AI service         | What happens to your requests                                                |
+| ------------------ | ---------------------------------------------------------------------------- |
+| Anthropic (Claude) | Not used to train Anthropic's models. Paid.                                  |
+| Google Gemini      | Free tier: reviewed and used to train Google's models. A paid key isn't.     |
+| Ollama             | Stays on your own server.                                                    |
+
+With both a Claude and a Gemini key set and no provider chosen, Wony answers
+with Claude.
+
 ## Install
 
 Run the setup script first. It creates everything, asks which features you want,
@@ -308,6 +317,25 @@ another machine on your network.
 Lets Wony search everything she has been told by meaning rather than by keyword.
 No key needed — tick it during setup. Uses about 120 MB of memory, so leave it
 out if the device is short on it.
+
+## Privacy
+
+Conversations, remembered facts, lists and reminders live in `wony.db` in this
+folder. **Wipe data** deletes that file's contents, the Spotify sign-in cache and
+every log file. It does not remove your API keys or Google sign-ins; delete those
+by hand (`.env`, `credentials/`).
+
+What leaves the device, and only when a feature you set up needs it:
+
+| Goes to                       | What                                                        |
+| ----------------------------- | ----------------------------------------------------------- |
+| Your AI service               | Your requests, recent turns, remembered facts and whatever it reads to answer (mail, calendar entries) |
+| OpenWeatherMap, OpenStreetMap | A city name or coordinates for the weather                  |
+| ipinfo.io                     | Only to guess your city when `assistant.home_address` is empty |
+| Google (Gmail, Calendar)      | What the feature needs, once signed in                      |
+| Spotify, Home Assistant       | Playback and device commands                                |
+
+No telemetry. Keys and `appid=`/`key=`/`token=` values are removed from the logs.
 
 ## If something goes wrong
 

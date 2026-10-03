@@ -239,6 +239,27 @@ class TestNotifications(unittest.TestCase):
         source = inspect.getsource(memory_db.wipe_all)
         self.assertIn("notifications", source)
 
+    def test_wipe_empties_the_database_and_vacuums_it(self) -> None:
+        import sqlite3
+        from unittest import mock
+
+        from helpers import memory_db
+
+        test_conn = sqlite3.connect(":memory:", check_same_thread=False)
+        test_conn.row_factory = sqlite3.Row
+        memory_db._init_schema(test_conn)
+
+        with mock.patch.object(memory_db, "_conn", test_conn):
+            memory_db.set_kv("some.flag", "on")
+            memory_db.save_routine("test routine", "do a thing")
+            memory_db.insert_turn("hello", "hi")
+
+            memory_db.wipe_all()
+
+            self.assertEqual(memory_db.get_kv("some.flag", ""), "")
+            self.assertEqual(memory_db.all_routines(), [])
+            self.assertEqual(memory_db.recent_turns(10), [])
+
     def test_notify_survives_a_dead_database(self) -> None:
         """A poller must not die because the DB is locked — the message still
         has to reach a connected screen."""
