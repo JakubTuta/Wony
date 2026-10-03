@@ -12,23 +12,38 @@ _local = threading.local()
 
 
 @contextlib.contextmanager
-def user_request(text: str = "") -> typing.Iterator[None]:
-    """Mark everything inside as started by the user, saying `text`."""
+def user_request(text: str = "", at_machine: bool = True) -> typing.Iterator[None]:
+    """Mark everything inside as started by the user, saying `text`.
+
+    at_machine=False for a request that arrived from a phone: the user is
+    there to answer questions, but nobody is sitting at the PC.
+    """
     previous = (
         getattr(_local, "present", False),
+        getattr(_local, "at_machine", False),
         getattr(_local, "text", ""),
         getattr(_local, "untrusted", False),
         getattr(_local, "search_hrefs", None),
     )
-    _local.present, _local.text, _local.untrusted, _local.search_hrefs = True, text, False, set()
+    _local.present, _local.at_machine = True, at_machine
+    _local.text, _local.untrusted, _local.search_hrefs = text, False, set()
     try:
         yield
     finally:
-        _local.present, _local.text, _local.untrusted, _local.search_hrefs = previous
+        (
+            _local.present, _local.at_machine, _local.text,
+            _local.untrusted, _local.search_hrefs,
+        ) = previous
 
 
 def user_present() -> bool:
     return getattr(_local, "present", False)
+
+
+def at_machine() -> bool:
+    """Whether the user is in front of this computer — false for a remote
+    chat. A sign-in window or a click would land on an empty desk."""
+    return user_present() and getattr(_local, "at_machine", False)
 
 
 def user_text() -> str:

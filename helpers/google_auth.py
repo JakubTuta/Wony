@@ -105,7 +105,7 @@ def credentials(account: str = "") -> typing.Any:
     Raises SignInNeeded when Google needs the user and nobody is there to ask —
     a trigger, a scheduled action or a background poll never opens a browser.
     """
-    from helpers.turn_context import user_present
+    from helpers.turn_context import at_machine, user_present
 
     name = GoogleAccounts.resolve(account or None)
     with _lock_for(name):
@@ -115,17 +115,20 @@ def credentials(account: str = "") -> typing.Any:
             granted = set(creds.scopes or [])
             missing = need - granted
             surplus_write = (granted - need) & _WRITE_SCOPES
-            if not missing and not (surplus_write and user_present()):
+            if not missing and not (surplus_write and at_machine()):
                 return _fresh(name, creds)
-            if surplus_write and user_present():
+            if surplus_write and at_machine():
                 # A write switch was turned off: give the permission back.
                 _revoke(creds)
-        if not user_present():
+        if not at_machine():
+            # A chat from a phone is the user, but the consent page would open
+            # on an empty desk — so it is told to come to the PC instead.
+            hint = _sign_in_line(name)
+            if user_present():
+                hint = f"Do this at your PC: {hint}"
             if creds is None:
-                raise SignInNeeded(f"Google account '{name}' isn't signed in. {_sign_in_line(name)}")
-            raise SignInNeeded(
-                f"Google needs your OK for something new on '{name}'. {_sign_in_line(name)}"
-            )
+                raise SignInNeeded(f"Google account '{name}' isn't signed in. {hint}")
+            raise SignInNeeded(f"Google needs your OK for something new on '{name}'. {hint}")
         return _consent(name, need)
 
 

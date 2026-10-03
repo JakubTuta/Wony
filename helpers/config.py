@@ -1,7 +1,7 @@
 import os
 import typing
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 from pydantic_settings.sources import YamlConfigSettingsSource
 
@@ -146,6 +146,18 @@ class McpSettings(BaseModel):
     allow_install: bool = False
 
 
+class TelegramSettings(BaseModel):
+    # The one Telegram chat Wony answers, filled in when pairing succeeds. A
+    # hand-typed YAML number would otherwise be rejected as not-a-string.
+    owner: str = ""
+    forward_notifications: bool = True
+
+    @field_validator("owner", mode="before")
+    @classmethod
+    def _owner_as_text(cls, value: typing.Any) -> typing.Any:
+        return "" if value is None else str(value)
+
+
 class ModulesSettings(BaseModel):
     home_assistant: HomeAssistantSettings = Field(default_factory=HomeAssistantSettings)
     gmail: GmailSettings = Field(default_factory=GmailSettings)
@@ -154,6 +166,7 @@ class ModulesSettings(BaseModel):
     desktop: DesktopSettings = Field(default_factory=DesktopSettings)
     maps: MapsSettings = Field(default_factory=MapsSettings)
     mcp: McpSettings = Field(default_factory=McpSettings)
+    telegram: TelegramSettings = Field(default_factory=TelegramSettings)
 
 
 class AppSettings(BaseSettings):

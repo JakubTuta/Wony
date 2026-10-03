@@ -212,10 +212,13 @@ class Drive:
         """
         wanted = (action or "").strip().lower()
         if not self._write_allowed():
+            from helpers.settings import where
+
             preview = text or rows or path or ""
             return (
-                "Changing Drive files is switched off. Turn on 'Change my Drive files' in "
-                "Settings to allow it." + (f"\nWhat I would have written:\n{preview}" if preview else "")
+                "Changing Drive files is switched off. Turn on "
+                f"{where('modules.drive.allow_write')} to allow it."
+                + (f"\nWhat I would have written:\n{preview}" if preview else "")
             )
         if wanted == "create_doc":
             return self._create_doc(title, text, account)

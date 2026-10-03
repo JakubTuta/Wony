@@ -97,8 +97,47 @@ class TestConfigWriter(unittest.TestCase):
         config_writer.update(self.path, {"enabled_modules": ["ai", "weather"]})
         text = self._text()
         self.assertIn("# where the web page listens", text)
-        self.assertIn("# - weather", text)  # the options a user can switch on
         self.assertEqual(self._load()["enabled_modules"], ["ai", "weather"])
+
+    def test_switching_an_option_on_does_not_leave_its_comment_behind(self) -> None:
+        """The commented-out option and the new active line used to sit side by
+        side, so every module a user switched on was listed twice."""
+        config_writer.update(self.path, {"enabled_modules": ["ai", "basics", "weather"]})
+        text = self._text()
+        self.assertIn("  - weather        # switch on for forecasts\n", text)
+        self.assertNotIn("# - weather", text)
+        self.assertEqual(text.count("switch on for forecasts"), 1)
+
+    def test_switching_an_option_off_keeps_it_as_a_comment_with_its_note(self) -> None:
+        config_writer.update(self.path, {"enabled_modules": ["ai", "weather"]})
+        config_writer.update(self.path, {"enabled_modules": ["ai"]})
+        text = self._text()
+        self.assertIn("  # - weather        # switch on for forecasts\n", text)
+        self.assertEqual(self._load()["enabled_modules"], ["ai"])
+
+    def test_a_list_written_twice_is_unchanged(self) -> None:
+        wanted = {"enabled_modules": ["ai", "weather"]}
+        config_writer.update(self.path, wanted)
+        once = self._text()
+        config_writer.update(self.path, wanted)
+        self.assertEqual(self._text(), once)
+
+    def test_an_already_doubled_list_is_merged(self) -> None:
+        """What the old writer left in config.yaml: the module as a bare line and
+        again as a commented line carrying the description."""
+        with io.open(self.path, "w", encoding="utf-8") as handle:
+            handle.write(
+                "enabled_modules:\n  - basics\n  - system\n"
+                "  # - system         # battery, disk space, memory, network\n"
+                "  # - spotify        # play, pause, skip\n\nvoice:\n  speed: 1.0\n"
+            )
+        config_writer.update(self.path, {"enabled_modules": ["basics", "system"]})
+        self.assertEqual(
+            self._text(),
+            "enabled_modules:\n  - basics\n"
+            "  - system         # battery, disk space, memory, network\n"
+            "  # - spotify        # play, pause, skip\n\nvoice:\n  speed: 1.0\n",
+        )
 
     def test_list_is_replaced_wholesale(self) -> None:
         config_writer.update(self.path, {"enabled_modules": ["ai", "status", "weather"]})
@@ -220,6 +259,41 @@ class TestSettingsSurface(unittest.TestCase):
                         Config.get(field.key, missing), missing,
                         f"{field.key} is not in the config schema",
                     )
+
+    def test_every_option_in_the_example_config_is_on_the_page(self) -> None:
+        """config.example.yaml promises "everything here can also be changed on
+        the Settings page". An option added to the file but not to _FIELDS
+        leaves the page silently short."""
+        import yaml
+
+        with io.open(os.path.join(_REPO_ROOT, "config.example.yaml"), encoding="utf-8") as handle:
+            example = yaml.safe_load(handle)
+
+        def leaves(node: dict, prefix: str = "") -> list:
+            found = []
+            for name, value in node.items():
+                if isinstance(value, dict):
+                    found += leaves(value, f"{prefix}{name}.")
+                else:
+                    found.append(f"{prefix}{name}")
+            return found
+
+        # enabled_modules is the Features list, not a field.
+        offered = {field.key for _, fields in self.settings._FIELDS for field in fields}
+        for key in leaves({k: v for k, v in example.items() if k != "enabled_modules"}):
+            with self.subTest(key=key):
+                self.assertIn(key, offered, f"{key} is in config.example.yaml but not on the Settings page")
+
+    def test_describe_field_matches_what_the_page_gets(self) -> None:
+        """setup.py asks through describe_field; it must be the page's own field."""
+        page = {
+            field["key"]: field
+            for section in self.settings.describe()["sections"]
+            for field in section["fields"]
+        }
+        self.assertEqual(self.settings.describe_field("voice.speed"), page["voice.speed"])
+        with self.assertRaises(self.settings.SettingsError):
+            self.settings.describe_field("not.a.setting")
 
     def test_every_described_field_is_writable(self) -> None:
         """describe() and apply() share one field lookup; a field the UI shows

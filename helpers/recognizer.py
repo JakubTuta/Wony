@@ -154,6 +154,70 @@ def transcribe(audio: typing.Any) -> str:
     return text
 
 
+def transcribe_audio_bytes(data: bytes, suffix: str = ".webm") -> typing.Tuple[str, str]:
+    """Decode an uploaded recording (browser webm, Telegram ogg/opus, anything
+    PyAV reads) and transcribe it. Returns (text, warning); warning is set when
+    the audio itself was unusable, so the caller can say why nothing came back.
+
+    Raises ImportError when the voice packages are not installed.
+    """
+    import os
+    import tempfile
+
+    import av
+    import numpy as np
+
+    from helpers import mic
+
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(data)
+        tmp_path = tmp.name
+
+    frames_by_rate: typing.Dict[int, typing.List[typing.Any]] = {}
+    try:
+        with av.open(tmp_path) as container:
+            for frame in container.decode(audio=0):
+                raw = frame.to_ndarray()
+                channels = len(frame.layout.channels) if frame.layout else 1
+                if np.issubdtype(raw.dtype, np.integer):
+                    raw = raw.astype(np.float32) / float(np.iinfo(raw.dtype).max)
+                else:
+                    raw = raw.astype(np.float32)
+                if raw.ndim > 1 and raw.shape[0] == channels and channels > 1:
+                    mono = raw.mean(axis=0)  # planar: (channels, samples)
+                elif raw.ndim > 1:
+                    flat = raw.reshape(-1)
+                    mono = flat.reshape(-1, channels).mean(axis=1) if channels > 1 else flat
+                else:
+                    mono = raw
+                frames_by_rate.setdefault(int(frame.sample_rate), []).append(mono)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+    if not frames_by_rate:
+        return "", ""
+
+    # Resample each same-rate run to 16k, then concatenate. Using the frame's
+    # actual sample_rate (not an assumed 48000) avoids feeding Whisper audio
+    # labelled with the wrong rate.
+    chunks = [
+        mic.to_16k_mono_f32(np.concatenate(parts), rate)
+        for rate, parts in frames_by_rate.items()
+    ]
+    audio = chunks[0] if len(chunks) == 1 else np.concatenate(chunks)
+
+    if not np.all(np.isfinite(audio)):
+        return "", "The recording contained invalid audio."
+    rms = float(np.sqrt(np.mean(np.square(audio)))) if len(audio) else 0.0
+    if rms < 1e-4:
+        return "", "The recording was silent."
+
+    return transcribe(audio), ""
+
+
 class Recognizer:
     # True after a call that failed (STT exception), False after a call that
     # simply captured no speech. Lets callers distinguish "didn't hear you"

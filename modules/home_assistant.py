@@ -568,9 +568,11 @@ def _apply(
         skipped = [e for e in actionable if _is_guarded(e)]
         actionable = [e for e in actionable if not _is_guarded(e)]
         if not actionable:
+            from helpers.settings import where
+
             return False, (
-                f"Not allowed to control {', '.join(e.label() for e in skipped)}. Set "
-                "modules.home_assistant.allow_locks: true in config.yaml to let Wony "
+                f"Not allowed to control {', '.join(e.label() for e in skipped)}. Turn on "
+                f"{where('modules.home_assistant.allow_locks')} to let Wony "
                 "unlock doors, open the garage and disarm alarms."
             )
 
@@ -602,7 +604,7 @@ def _apply(
     if failures:
         summary += f" Failed: {', '.join(e.label() for e in failures)}."
     if skipped:
-        summary += f" Left {', '.join(e.label() for e in skipped)} alone — locks are off in config."
+        summary += f" Left {', '.join(e.label() for e in skipped)} alone — locks are switched off."
     return True, summary
 
 

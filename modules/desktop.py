@@ -22,10 +22,17 @@ def _actions_allowed() -> bool:
 
 
 def _require_actions(action: str) -> typing.Optional[str]:
+    from helpers.turn_context import at_machine, user_present
+
+    # A request from a phone has nobody at the keyboard to see a click land.
+    if user_present() and not at_machine():
+        return f"Action '{action}' only works when you ask at this computer, not from a chat."
     if not _actions_allowed():
+        from helpers.settings import where
+
         return (
             f"Action '{action}' is disabled. "
-            "Set modules.desktop.allow_actions: true in config.yaml to let Wony "
+            f"Turn on {where('modules.desktop.allow_actions')} to let Wony "
             "act on this computer — typing, clicking, changing windows, writing "
             "the clipboard, and opening or writing files."
         )
@@ -315,7 +322,7 @@ class Desktop:
         """
         [DESKTOP JOB] Works with the open application windows: lists them, or brings
         one to the front, minimises, maximises or closes it by (partial) title.
-        Everything but listing requires modules.desktop.allow_actions in config.
+        Everything but listing needs desktop actions switched on.
 
         Args:
             action (str): "list" (the default), "focus", "minimize", "maximize"
@@ -387,7 +394,7 @@ class Desktop:
     def clipboard(self, action: typing.Literal["read", "write"] = "read", text: str = "") -> str:
         """
         [DESKTOP JOB] Reads what is on the clipboard, or puts text on it.
-        Writing requires modules.desktop.allow_actions to be enabled in config.
+        Writing needs desktop actions switched on.
 
         Args:
             action (str): "read" (the default) or "write".
@@ -469,8 +476,8 @@ class Desktop:
     ) -> str:
         """
         [DESKTOP JOB] Reads a file's text (PDF and Office documents too), writes or appends text to one, or
-        lists what is in a folder. Writing and appending require
-        modules.desktop.allow_actions to be enabled in config.
+        lists what is in a folder. Writing and appending need
+        desktop actions switched on.
 
         Args:
             action (str): "read" (the default), "write", "append" or "list".
@@ -598,7 +605,7 @@ class Desktop:
         [DESKTOP JOB] Opens something on this computer — an application by name
         ('notepad', 'chrome', 'spotify'), or a file or folder, which opens in whatever
         program normally handles it.
-        Requires modules.desktop.allow_actions to be enabled in config.
+        Needs desktop actions switched on.
 
         Args:
             target (str): An application name, or a full path, or just a filename
@@ -655,7 +662,7 @@ class Desktop:
     def type_text(self, text: str) -> str:
         """
         [DESKTOP JOB] Types text into the currently focused application as keyboard input.
-        Requires modules.desktop.allow_actions to be enabled in config.
+        Needs desktop actions switched on.
         Note: works best with ASCII text; unicode characters are handled via clipboard paste.
 
         Args:
@@ -703,7 +710,7 @@ class Desktop:
         """
         [DESKTOP JOB] Clicks on the screen: on words shown there (a button or link by
         its label — prefer this), or at exact pixel coordinates.
-        Requires modules.desktop.allow_actions to be enabled in config.
+        Needs desktop actions switched on.
 
         Args:
             text (str): The words to click, as they appear on screen.

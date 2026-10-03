@@ -1186,8 +1186,10 @@ class TestClickText(unittest.TestCase):
                 mock.patch("pyautogui.click") as click:
             result = Desktop.click(Desktop.__new__(Desktop), "delete")
 
+        from helpers.settings import where
+
         click.assert_not_called()
-        self.assertIn("allow_actions", result)
+        self.assertIn(where("modules.desktop.allow_actions"), result)
 
 
 class TestNotes(unittest.TestCase):
@@ -1248,7 +1250,9 @@ class TestFileJob(unittest.TestCase):
             path = os.path.join(folder, "new.txt")
             with mock.patch("modules.desktop._actions_allowed", return_value=False):
                 result = Desktop.file(Desktop.__new__(Desktop), "write", path, "hello")
-            self.assertIn("allow_actions", result)
+            from helpers.settings import where
+
+            self.assertIn(where("modules.desktop.allow_actions"), result)
             self.assertFalse(os.path.exists(path))
 
     def test_reading_wonys_own_env_file_is_refused(self) -> None:

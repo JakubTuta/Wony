@@ -19,13 +19,20 @@ timers, maps and the web — using whatever you switch on, and nothing you don't
 1. **Get the code.** Download this folder, or `git clone` it.
 2. **Double-click `install.bat`.** It checks for Python and Node.js (and offers to
    install them), then asks which features you want (arrow keys to move, space to
-   tick, Enter to confirm) and for the keys and sign-ins those features need.
-   Press Enter to skip anything you do not have yet; it lists what is left.
+   tick, Enter to confirm), then for the keys and sign-ins those features need
+   and how you want Wony to behave (its personality, whether it may speak up on
+   its own or learn about you, its voice). Press Enter to skip anything you do
+   not have yet; it lists what is left. Every answer can be changed later on the
+   Settings page.
 3. **Double-click `Wony.bat`.** A tray icon appears near the clock and the chat
    page opens the first time. Later, right-click the icon → **Open in web**.
 
 `Wony.bat` is how you start it every time — keep a shortcut to it somewhere
 handy. Setup also offers to start Wony when you log in.
+
+Want a feature you skipped? Double-click `install.bat` again: it keeps your keys
+and settings and only installs what is new. To redo just the keys and sign-ins,
+open a terminal in this folder and run `python setup.py configure`.
 
 You need one AI service:
 
@@ -53,7 +60,7 @@ and what you could switch on. Click one, or type your own.
 
 | Way in    | How                                                                 |
 | --------- | ------------------------------------------------------------------- |
-| Wake word | Say the wake phrase, then your request. Off until you switch it on. |
+| Wake word | Say the wake phrase, then your request. Off until you pick it in setup or Settings. |
 | Hotkey    | `Ctrl + Alt + W` anywhere in Windows.                               |
 | Tray icon | Right-click → **Listen now**.                                       |
 | Browser   | The microphone button in the chat page.                             |
@@ -67,6 +74,13 @@ the kitchen light"_, _"remember I prefer Fahrenheit"_, _"what did we talk about 
 Monday"_. Ask _"what can you do"_ any time.
 
 Say _"thanks"_, _"stop"_ or _"that's all"_ to end a spoken conversation.
+
+### Asking Wony about itself
+
+Try _"what's my speaking speed"_, _"how do I set up Gmail"_ or _"why is the
+weather switched off"_. Wony looks the answer up in its own settings and in this
+guide instead of guessing, and tells you where to change something. It cannot
+change a setting for you, and it never shows your keys.
 
 ### Routines
 
@@ -180,6 +194,7 @@ incomplete simply stays off — nothing crashes, and Features says what is missi
 | Screen reading                               | none; downloads OCR models once                                                |
 | Song recognition                             | none                                                                           |
 | League of Legends                            | none                                                                           |
+| Telegram — message Wony from your phone      | a free bot token from @BotFather in Telegram                                   |
 | MCP tool servers                             | none; add servers by asking Wony                                               |
 
 ### Spotify
@@ -280,6 +295,31 @@ open"_, _"start the vacuum"_, _"turn all the lights off"_. A room or a device ty
 has to be named before Wony will change a whole set of things at once. Locks,
 alarms and the garage stay refused until you allow them.
 
+### Telegram — Wony on your phone
+
+1. In Telegram, message **@BotFather**, send `/newbot`, and follow the questions.
+   It gives you a token.
+2. Paste the token when setup asks (or under Settings → Integration keys), and
+   restart Wony.
+3. Wony shows a code in its notifications. Send `/start` and that code to your new
+   bot. That chat is now the only one Wony answers; anyone else is ignored.
+
+Then type or send a voice note, and Wony answers like it does on the chat page.
+Timers and reminders arrive there too. A message that asks for something risky
+("delete that email") gets the same question it would at the PC — reply _yes_.
+
+What it can't do:
+
+- **Wony must be running on your PC.** If the PC is off or asleep, nothing
+  answers. Messages sent meanwhile wait up to a day; ones older than 10 minutes
+  when Wony wakes are not acted on, and Wony tells you so — send them again.
+- Google sign-in, typing and clicking on the PC only work when you ask at the PC.
+- Telegram can read the conversation: bot chats are not end-to-end encrypted.
+  Think twice before asking it to read out an email you would not want Telegram
+  to see.
+- If you lose the code, restart Wony for a new one. To pair another chat, clear
+  **Paired chat** in Settings.
+
 ### Ollama — no API key, runs locally
 
 Install [Ollama](https://ollama.com), pull a model, and pick **Ollama** when setup
@@ -296,7 +336,7 @@ interrupt.
 
 ### Wake word
 
-Off by default. Switch it on in Settings and pick a built-in phrase: `hey
+On if you ticked it during setup, otherwise off. Switch it on in Settings and pick a built-in phrase: `hey
 jarvis`, `alexa`, `hey mycroft`, `hey rhasspy`. A custom phrase needs training a
 small model; see [docs/developers.md](docs/developers.md).
 
@@ -353,6 +393,7 @@ What leaves this computer, and only when a feature you switched on needs it:
 | Spotify                                 | Playback commands                                  | A music request                             |
 | Home Assistant                          | Device commands, to the address you configured, not the internet | A smart-home request      |
 | Shazam                                  | An audio fingerprint, not the recording itself     | Song recognition                            |
+| Telegram                                | Your messages and voice notes, Wony's replies, and reminders sent to your chat | Once you pair a chat |
 
 No telemetry: nothing is sent back to whoever made Wony.
 

@@ -1,3 +1,4 @@
+import json
 import typing
 
 from helpers.untrusted import truncate
@@ -7,6 +8,30 @@ from helpers.untrusted import truncate
 _TOOL_RESULT_TURNS = 2
 # Per-result cap inside that block.
 _TOOL_RESULT_MAX_CHARS = 800
+
+
+def sanitize_calls(
+    calls: typing.List[typing.Dict[str, typing.Any]],
+) -> typing.List[typing.Dict[str, typing.Any]]:
+    """Ensure every call is JSON-serializable (coerce non-serializable args to str).
+
+    record_turn stores calls as JSON; one unserializable argument would
+    otherwise drop the whole turn from the database without a word.
+    """
+    safe = []
+    for c in calls:
+        safe_args: typing.Dict[str, typing.Any] = {}
+        for k, v in (c.get("args") or {}).items():
+            try:
+                json.dumps(v)
+                safe_args[k] = v
+            except (TypeError, ValueError):
+                safe_args[k] = str(v)
+        entry = {"name": c.get("name", ""), "args": safe_args, "result": str(c.get("result", ""))}
+        if c.get("needs_confirm"):
+            entry["needs_confirm"] = True
+        safe.append(entry)
+    return safe
 
 
 def _try_persist(
