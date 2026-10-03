@@ -31,6 +31,7 @@ _TOKEN_ENV = "TELEGRAM_BOT_TOKEN"
 _JOB = "telegram"
 _API = "https://api.telegram.org"
 _OFFSET_KEY = "telegram.offset"
+_CODE_KEY = "telegram.pairing_code"
 
 # Telegram holds a getUpdates request open this long waiting for a message, so
 # the read timeout has to outlast it.
@@ -277,12 +278,33 @@ class Telegram:
     def _offer_pairing(self) -> None:
         if _owner() or self._code is not None or self._wrong_codes >= _MAX_PAIR_ATTEMPTS:
             return
-        self._code = f"{secrets.randbelow(10**6):06d}"
+        # Kept until someone pairs: the announcement is one spoken sentence and
+        # one bell entry, and a restart must not turn the one you saw into a lie.
+        self._code = get_kv(_CODE_KEY, "")
+        if not self._code:
+            self._code = f"{secrets.randbelow(10**6):06d}"
+            set_kv(_CODE_KEY, self._code)
         notify(
             f"To connect Telegram, send /start {self._code} to @{self._username}.",
             kind="info",
             source="telegram",
         )
+
+    def _retire_code(self) -> None:
+        self._code = None
+        set_kv(_CODE_KEY, "")
+
+    def setting_note(self, key: str) -> str:
+        """Live text for the Settings page under 'Paired chat': the code to send.
+        Shown on the page only. It lets whoever has it control Wony, so the
+        assistant is never told it (see settings._live_note)."""
+        if key != "modules.telegram.owner" or _owner():
+            return ""
+        if self._code is not None:
+            return f"Waiting for you: send /start {self._code} to @{self._username} in Telegram."
+        if self._wrong_codes >= _MAX_PAIR_ATTEMPTS:
+            return "Pairing is off after too many wrong codes. Restart Wony for a new one."
+        return ""
 
     def _try_pair(self, chat_id: str, text: str) -> None:
         # Strangers get no reply at all, right or wrong.
@@ -292,7 +314,9 @@ class Telegram:
         if not secrets.compare_digest(parts[1].encode(), self._code.encode()):
             self._wrong_codes += 1
             if self._wrong_codes >= _MAX_PAIR_ATTEMPTS:
-                self._code = None
+                # Retired, not just paused: five guesses must not be five
+                # steps through a code that stays the same after a restart.
+                self._retire_code()
                 notify(
                     "Someone sent the wrong Telegram pairing code several times. "
                     "Pairing is off until Wony restarts.",
@@ -309,8 +333,8 @@ class Telegram:
             logger.log_error(str(exc), "telegram.pair")
             self._send(chat_id, "I couldn't save that. Check Wony's Settings page and try again.")
             return
-        self._code = None
-        name = str(Config.get("assistant.name", "Wony") or "Wony")
+        self._retire_code()
+        name =str(Config.get("assistant.name", "Wony") or "Wony")
         self._send(chat_id, f"Connected. This is {name}: ask me anything you'd ask at the computer.")
 
     # ----------------------------------------------------------- messages

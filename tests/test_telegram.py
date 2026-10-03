@@ -317,6 +317,74 @@ class TestPairing(BotCase):
         self.bot._handle(_update("/start çode", chat_id=777))
         self.assertEqual(self.owner, "")
 
+    def _restarted(self):
+        """A new process: fresh in-memory state, the same database."""
+        bot = self.telegram.Telegram()
+        bot._username = "wonybot"
+        return bot
+
+    def test_the_code_survives_a_restart(self):
+        """The announcement is one spoken sentence and one bell entry; a restart
+        that changed the code made whichever one you caught a lie."""
+        self.bot._offer_pairing()
+        again = self._restarted()
+        again._offer_pairing()
+        self.assertEqual(again._code, self.bot._code)
+        self.assertIn(self.bot._code, self.notify.call_args.args[0])
+
+    def test_a_used_code_is_gone_for_good(self):
+        self.bot._offer_pairing()
+        self.bot._handle(_update(f"/start {self.bot._code}", chat_id=777))
+        self.assertEqual(self.kv[self.telegram._CODE_KEY], "")
+        self.owner = ""
+        with mock.patch.object(self.telegram.secrets, "randbelow", return_value=222222):
+            again = self._restarted()
+            again._offer_pairing()
+        self.assertEqual(again._code, "222222")
+
+    def test_guessing_retires_the_code_so_a_restart_gets_a_new_one(self):
+        self.bot._offer_pairing()
+        first = self.bot._code
+        for i in range(self.telegram._MAX_PAIR_ATTEMPTS):
+            self.bot._handle(_update("/start nope", chat_id=777, update_id=i))
+        self.assertEqual(self.kv[self.telegram._CODE_KEY], "")
+        with mock.patch.object(self.telegram.secrets, "randbelow", return_value=999999):
+            again = self._restarted()
+            again._offer_pairing()
+        self.assertNotEqual(again._code, first)
+
+    def test_the_settings_page_can_show_the_code_while_unpaired(self):
+        self.bot._offer_pairing()
+        note = self.bot.setting_note("modules.telegram.owner")
+        self.assertIn(self.bot._code, note)
+        self.assertIn("@wonybot", note)
+        self.assertEqual(self.bot.setting_note("modules.telegram.forward_notifications"), "")
+
+    def test_there_is_no_note_once_paired_or_before_a_code_exists(self):
+        self.assertEqual(self.bot.setting_note("modules.telegram.owner"), "")
+        self.bot._offer_pairing()
+        self.owner = "777"
+        self.assertEqual(self.bot.setting_note("modules.telegram.owner"), "")
+
+    def test_a_locked_out_page_says_how_to_recover(self):
+        self.bot._offer_pairing()
+        for i in range(self.telegram._MAX_PAIR_ATTEMPTS):
+            self.bot._handle(_update("/start nope", chat_id=777, update_id=i))
+        self.assertIn("Restart Wony", self.bot.setting_note("modules.telegram.owner"))
+
+    def test_the_page_gets_the_code_but_the_assistant_never_does(self):
+        """Whoever holds the code controls Wony. The Settings page is the user's;
+        what the assistant reads goes to the AI provider."""
+        from helpers import settings
+
+        self.bot._offer_pairing()
+        with mock.patch.object(self.telegram.ServiceRegistry, "get_service_instance", return_value=self.bot):
+            page = settings.describe_field("modules.telegram.owner")["help"]
+            told = settings.explain(["telegram", "paired", "chat"])
+        self.assertIn(self.bot._code, page)
+        self.assertIn("Paired chat", told)
+        self.assertNotIn(self.bot._code, told)
+
     def test_clearing_the_owner_offers_a_new_code(self):
         self.bot._offer_pairing()
         self.bot._handle(_update(f"/start {self.bot._code}", chat_id=777))

@@ -137,8 +137,8 @@ modules:
     # computer. While off it tells you the command instead.
     allow_install: false
   telegram:
-    # The chat Wony answers. Leave empty: Wony shows a code at startup, and the
-    # first chat to send it to your bot is paired. Clear it to pair again.
+    # The chat Wony answers. Leave empty: Settings shows a code, and the first
+    # chat to send it to your bot is paired. Clear it to pair again.
     owner: ""
     # Also send timers, reminders and alerts to that chat.
     forward_notifications: true
