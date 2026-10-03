@@ -244,8 +244,9 @@ _FIELDS: typing.List[typing.Tuple[str, typing.List[Field]]] = [
     ]),
     ("Telegram", [
         Field("modules.telegram.owner", "Paired chat", "text",
-              "Filled in when you pair: Wony shows a code at startup, send it to your bot. "
-              "Only this chat can talk to Wony. Clear it to disconnect or pair another.",
+              "Filled in when you pair. Until then the code to send your bot is shown "
+              "here, and in the bell menu. Only the paired chat can talk to Wony. "
+              "Clear it to disconnect or pair another.",
               module="telegram", private=True),
         Field("modules.telegram.forward_notifications", "Send reminders to Telegram", "toggle",
               "Timers, reminders and alerts also arrive in your Telegram chat.",
@@ -392,13 +393,24 @@ def _choices_for(field: Field, value: typing.Any) -> typing.List[str]:
     return choices
 
 
+def _live_note(field: Field) -> str:
+    """What a running module can add to a setting's help that no fixed text can,
+    like a pairing code. The page gets it; the assistant never does (explain)."""
+    if not field.module:
+        return ""
+    from helpers.registry import ServiceRegistry
+
+    note = getattr(ServiceRegistry.get_service_instance(field.module), "setting_note", None)
+    return note(field.key) if note else ""
+
+
 def _describe_field(field: Field) -> typing.Dict[str, typing.Any]:
     value = _current(field)
     return {
         "key": field.key,
         "label": field.label,
         "kind": field.kind,
-        "help": field.help,
+        "help": " ".join(part for part in (field.help, _live_note(field)) if part),
         "choices": _choices_for(field, value) if field.kind == "choice" else [],
         "choice_labels": field.choice_labels,
         "min": field.minimum,

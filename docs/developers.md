@@ -182,8 +182,10 @@ anything that merely imports `modules` (the tests, `doctor`) would otherwise
 start taking the real bot's messages.
 
 - **Who may talk:** one paired owner, stored in `modules.telegram.owner`. Pairing
-  is a one-time code announced through `notify`; five wrong codes switch pairing
-  off until restart; strangers get no reply.
+  is a code kept in kv until used, announced through `notify` and shown on the
+  Settings page by the service's `setting_note` (`settings._live_note`). It is a
+  credential: never put it in anything the assistant reads (`settings.explain`,
+  the README). Five wrong codes retire it; strangers get no reply.
 - **`at_machine` vs `user_present`:** a chat user is present (can confirm) but not
   at the PC. `turn_context.at_machine()` gates anything that opens a window on the
   desktop — Google consent in `google_auth.credentials`, typing and clicking in

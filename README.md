@@ -301,8 +301,10 @@ alarms and the garage stay refused until you allow them.
    It gives you a token.
 2. Paste the token when setup asks (or under Settings → Integration keys), and
    restart Wony.
-3. Wony shows a code in its notifications. Send `/start` and that code to your new
-   bot. That chat is now the only one Wony answers; anyone else is ignored.
+3. Open **Settings → Telegram**: under **Paired chat** Wony shows what to send,
+   like `/start 123456`. Send that to your new bot. The same line is in the bell
+   menu (top right), and Wony says it when it starts. That chat is now the only one
+   Wony answers; anyone else is ignored.
 
 Then type or send a voice note, and Wony answers like it does on the chat page.
 Timers and reminders arrive there too. A message that asks for something risky
@@ -317,8 +319,9 @@ What it can't do:
 - Telegram can read the conversation: bot chats are not end-to-end encrypted.
   Think twice before asking it to read out an email you would not want Telegram
   to see.
-- If you lose the code, restart Wony for a new one. To pair another chat, clear
-  **Paired chat** in Settings.
+- The code stays the same, restarts included, until a chat uses it, so you can't
+  miss it. Too many wrong guesses retire it: restart Wony for a new one. To pair
+  another chat, clear **Paired chat** in Settings.
 
 ### Ollama — no API key, runs locally
 

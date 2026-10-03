@@ -304,8 +304,8 @@ FEATURES = [
         "module": "telegram",
         "default": False,
         "desc": "Chat with Wony from Telegram, and get timers and reminders there too.",
-        "needs": "A bot token from @BotFather in Telegram. Wony shows a pairing code "
-        "at startup; send it to your bot to connect. Works only while Wony is running "
+        "needs": "A bot token from @BotFather in Telegram. Settings → Telegram then "
+        "shows a pairing code to send your bot. Works only while Wony is running "
         "on this computer, and Telegram can see the conversation.",
     },
     {
@@ -1410,7 +1410,7 @@ def step_telegram(env, pending):
     )
     if token:
         env_set({"TELEGRAM_BOT_TOKEN": token})
-        note("When Wony starts it shows a code. Send it to your bot to connect.")
+        note("Once Wony is running, Settings → Telegram shows a code. Send it to your bot to connect.")
         ask_setting("modules.telegram.forward_notifications")
     else:
         pending.append("Telegram: no bot token yet.")
