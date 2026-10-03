@@ -14,7 +14,7 @@ interface Seed {
 
 // Offered the first time a user opens the dashboard (server has no saved pins
 // yet). Deliberately more than the bare minimum: an empty-looking dashboard on
-// day one is also the day someone never discovers Modules & jobs has 50 more
+// day one is also the day someone never discovers Features has 50 more
 // of these. Each only appears if this install actually registered the job —
 // a module can be switched on in config but still missing its Python deps.
 // A job also covered by a static dashboard widget (Now playing, Agenda,

@@ -26,7 +26,7 @@ export function QuickControls({ editing }: { editing: boolean }) {
     <section className="flex flex-col gap-3">
       <div className="flex items-baseline justify-between">
         <SectionLabel>Quick controls</SectionLabel>
-        {editing && <span className="text-[13px] text-red">Remove controls or add any job from the catalog</span>}
+        {editing && <span className="text-[13px] text-red">Remove controls or add any command from the catalog</span>}
       </div>
       <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))' }}>
         {pins.map((pin) => (
@@ -76,7 +76,7 @@ function PinCard({
   onNote: (text: string) => void;
   onRemove: () => void;
 }) {
-  const { jobsByName, health, settings, runJob } = useWony();
+  const { jobsByName, health, settings, runJob, sendText } = useWony();
   const job = jobsByName.get(pin.job);
   const [shopDraft, setShopDraft] = useState('');
   const [volume, setVolume] = useState<number>(typeof pin.args.level === 'number' ? pin.args.level : 50);
@@ -107,6 +107,18 @@ function PinCard({
   const broken = moduleHealthState(pin.module, health) !== 'ok';
 
   const run = () => {
+    // A routine only hands back its steps for the model to carry out, and the
+    // status report is a wall of text — both read properly as a chat answer.
+    if (pin.job === 'routine' && pin.args.name) {
+      sendText(`Run my ${String(pin.args.name)} routine`);
+      onNote('Asked in the chat');
+      return;
+    }
+    if (pin.job === 'system_status') {
+      sendText('What can you do?');
+      onNote('Asked in the chat');
+      return;
+    }
     runJob(pin.job, pin.args, { from: 'Dashboard' }).then((res) => {
       onNote(res.error ? `Failed: ${res.error}` : `Ran at ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`);
     });
@@ -120,7 +132,9 @@ function PinCard({
       >
       <div className="flex justify-between items-start gap-2">
         <div className="flex flex-col gap-0.5 min-w-0">
-          <span className="font-mono text-[11px] text-muted">{pin.module}</span>
+          <span className="text-[11px] text-muted">
+            {settings?.modules.find((m) => m.key === pin.module)?.label ?? humanize(pin.module)}
+          </span>
           <span className="text-base font-semibold">{pin.title}</span>
         </div>
         {pin.kind === 'toggle' && !broken && (

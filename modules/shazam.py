@@ -20,7 +20,7 @@ _cached_loopback_device: typing.Optional[str] = None
     module_name="shazam",
     requires=Requirement(
         pip_modules=["pyaudiowpatch", "shazamio", "soundfile", "numpy"],
-        setup_hint="pip install -r requirements/shazam.txt",
+        setup_hint="Run install.bat again and tick Song recognition.",
     ),
     summary="Identify the song currently playing",
 )

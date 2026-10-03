@@ -6,7 +6,7 @@ export type Draft = Record<string, string | number | boolean | null>;
 export const inputClass = 'w-full rounded-[9px] border px-2.5 py-2 text-sm bg-surface';
 
 /** One editable row for a SettingField — shared by the global Settings page
- * and a module's own config panel on Modules & jobs, so the two never grow
+ * and a module's own config panel on Features, so the two never grow
  * two different renderings of the same field kinds. */
 export function SettingRow({
   field,
@@ -63,7 +63,7 @@ export function SettingRow({
         <select value={String(value ?? '')} onChange={(e) => onChange(field.key, e.target.value)} className={inputClass}>
           {field.choices.map((choice) => (
             <option key={choice} value={choice}>
-              {choice}
+              {field.choice_labels[choice] ?? choice}
             </option>
           ))}
         </select>

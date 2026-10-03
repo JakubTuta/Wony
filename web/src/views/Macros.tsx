@@ -12,7 +12,7 @@ function scheduleFor(name: string, reminders: Reminder[]): string | null {
 }
 
 export function Macros() {
-  const { runJob, reloadRoutinesCount, panels } = useWony();
+  const { runJob, sendText, reloadRoutinesCount, panels } = useWony();
   const [routines, setRoutines] = useState<RoutinesPanel | null>(null);
   const [reminders, setReminders] = useState<Reminder[]>([]);
   const [editingName, setEditingName] = useState<string | null>(null);
@@ -36,7 +36,9 @@ export function Macros() {
   const items = routines?.routines ?? [];
 
   const run = (name: string) => {
-    runJob('routine', { name: name.toLowerCase() }, { from: 'Macros' }).then(refresh);
+    // Through the chat: running a routine only returns its steps for the model
+    // to carry out, so invoking the job directly shows the instructions instead.
+    sendText(`Run my ${name.toLowerCase()} routine`);
   };
 
   const save = (name: string, steps: string) => {
@@ -44,12 +46,12 @@ export function Macros() {
     runJob(
       'routine',
       { action: 'add', name: name.toLowerCase(), steps },
-      { from: 'Macros', title: `Save changes to ${name}?` },
+      { from: 'Routines', title: `Save changes to ${name}?` },
     ).then(refresh);
   };
 
   const remove = (name: string) => {
-    runJob('routine', { action: 'remove', name: name.toLowerCase() }, { from: 'Macros', title: `Delete ${name}?` }).then(refresh);
+    runJob('routine', { action: 'remove', name: name.toLowerCase() }, { from: 'Routines', title: `Delete ${name}?` }).then(refresh);
   };
 
   const saveNew = () => {
@@ -60,7 +62,7 @@ export function Macros() {
     runJob(
       'routine',
       { action: 'add', name: name.toLowerCase(), steps },
-      { from: 'Macros', title: `Create macro "${name}"?` },
+      { from: 'Routines', title: `Create routine "${name}"?` },
     ).then((res) => {
       if (!res.ok && res.error) return;
       if (schedule) {
@@ -122,7 +124,7 @@ export function Macros() {
       })}
 
       <div className={`${CARD} p-4.5 flex flex-col gap-2.5`} style={{ border: '1.5px dashed var(--color-dashed-border)' }}>
-        <span className="text-lg font-bold">New macro</span>
+        <span className="text-lg font-bold">New routine</span>
         <input
           value={newName}
           onChange={(e) => setNewName(e.target.value)}
@@ -152,7 +154,7 @@ export function Macros() {
           disabled={!newName.trim() || !newSteps.trim()}
           className="self-start border-0 bg-accent text-on-accent rounded-[9px] px-4 py-2 text-sm font-semibold disabled:opacity-40"
         >
-          Save macro
+          Save routine
         </button>
       </div>
     </div>

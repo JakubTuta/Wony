@@ -25,7 +25,7 @@ _WEEKDAYS: typing.Dict[str, str] = {
 def _scheduler_requirement() -> Requirement:
     return Requirement(
         pip_modules=["apscheduler", "dateparser"],
-        setup_hint="pip install -r requirements/core.txt",
+        setup_hint="Run install.bat again and tick Timers, alarms & reminders.",
     )
 
 

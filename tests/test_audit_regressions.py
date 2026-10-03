@@ -837,6 +837,45 @@ class TestOneTurnPath(unittest.TestCase):
         self.assertEqual(result.calls, [])
 
 
+class TestNoAiKeyStartup(unittest.TestCase):
+    """Wony used to refuse to start at all with no AI key, which meant the
+    Settings page where that key would go was unreachable. The AI service's
+    own __init__ already fails gracefully through register_service — the fix
+    is to stop bootstrap() raising on top of that, and to answer a turn with
+    something a person can act on instead of a bare exception string."""
+
+    def test_get_ai_client_retries_before_giving_up(self) -> None:
+        from unittest import mock
+
+        from helpers.bootstrap import get_ai_client
+
+        with mock.patch("helpers.registry.ServiceRegistry.get_service_instance", return_value=None), \
+                mock.patch("helpers.registry.ServiceRegistry.reinitialize_module") as retry:
+            with self.assertRaises(Exception) as ctx:
+                get_ai_client()
+            retry.assert_called_once_with("ai")
+        self.assertIn("Settings", str(ctx.exception))
+
+    def test_get_ai_client_picks_up_a_key_added_after_the_first_failed_attempt(self) -> None:
+        from unittest import mock
+
+        from helpers.bootstrap import get_ai_client
+
+        fake_client = object()
+        attempts = iter([None, mock.Mock(client=fake_client)])
+        with mock.patch("helpers.registry.ServiceRegistry.get_service_instance", side_effect=lambda name: next(attempts)), \
+                mock.patch("helpers.registry.ServiceRegistry.reinitialize_module"):
+            self.assertIs(get_ai_client(), fake_client)
+
+    def test_a_missing_ai_service_reads_as_a_setup_nudge_not_an_error(self) -> None:
+        from helpers.bootstrap import BootstrapError
+        from helpers.turn import describe_failure
+
+        message = describe_failure(BootstrapError("No AI service is set up yet."))
+        self.assertNotIn("Something went wrong", message)
+        self.assertIn("No AI service is set up yet.", message)
+
+
 class TestModuleNameDrift(unittest.TestCase):
     def test_every_module_name_is_a_module_a_user_can_see(self) -> None:
         """helpers/settings.MODULES had 14 entries against 18 files in modules/.
@@ -849,7 +888,7 @@ class TestModuleNameDrift(unittest.TestCase):
 
         import modules  # noqa: F401  (import triggers discover_services)
 
-        known = {key for key, _, _ in MODULES} | set(ALWAYS_ON)
+        known = {key for key, _, _, _ in MODULES} | set(ALWAYS_ON)
 
         used = {
             module for module in ServiceRegistry.get_job_modules().values()
@@ -865,7 +904,7 @@ class TestModuleNameDrift(unittest.TestCase):
         from helpers.config import ALWAYS_ON
         from helpers.settings import MODULES
 
-        for name in {key for key, _, _ in MODULES} | set(ALWAYS_ON):
+        for name in {key for key, _, _, _ in MODULES} | set(ALWAYS_ON):
             with self.subTest(module=name):
                 self.assertTrue(
                     os.path.exists(os.path.join(_REPO_ROOT, "modules", f"{name}.py")),
@@ -1012,6 +1051,28 @@ class TestValidateArgs(unittest.TestCase):
                 available_jobs={"routine": routine}, system_instructions="", max_steps=1,
             )
         self.assertIn("must be one of", result.calls[0]["result"])
+
+
+class TestSystemPromptCapabilityClaims(unittest.TestCase):
+    def test_the_gmail_calendar_claim_only_appears_when_both_are_working(self) -> None:
+        """The prompt used to assert 'you DO have access to Gmail and
+        Calendar' unconditionally — true or not — which could make the model
+        claim a capability that was actually switched off."""
+        from unittest import mock
+
+        from helpers.settings import Capability
+        from modules.ai import build_agent_system_prompt
+
+        both = {"working": [Capability("gmail", "", "", ""), Capability("calendar", "", "", "")], "available": []}
+        neither = {"working": [], "available": []}
+
+        with mock.patch("helpers.settings.capabilities", return_value=both):
+            stable, _ = build_agent_system_prompt()
+        self.assertIn("DO have access", stable)
+
+        with mock.patch("helpers.settings.capabilities", return_value=neither):
+            stable, _ = build_agent_system_prompt()
+        self.assertNotIn("DO have access", stable)
 
 
 class TestFrontendJobNames(unittest.TestCase):
@@ -1701,6 +1762,49 @@ class TestUntrustedTriggerFacts(unittest.TestCase):
         by_name = {t.name: t for t in triggers._TRIGGERS}
         self.assertFalse(by_name["important_email"].trusted)
         self.assertTrue(by_name["disk_low"].trusted)
+
+
+class TestClearChatPersists(unittest.TestCase):
+    def test_cleared_turns_stay_hidden_but_recall_still_finds_them(self) -> None:
+        """Clear only emptied an in-memory list, so a page reload put the whole
+        conversation back."""
+        import sqlite3
+        from unittest import mock
+
+        from helpers import memory_db
+
+        conn = sqlite3.connect(":memory:", check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        memory_db._init_schema(conn)
+        with mock.patch.object(memory_db, "_conn", conn):
+            memory_db.insert_turn("old question", "old answer")
+            memory_db.mark_chat_cleared()
+            memory_db.insert_turn("new question", "new answer")
+
+            shown = [t["user_text"] for t in memory_db.visible_turns(10)]
+            everything = [t["user_text"] for t in memory_db.recent_turns(10)]
+
+        self.assertEqual(shown, ["new question"])
+        self.assertEqual(everything, ["old question", "new question"])
+
+
+class TestDoctorChecksOnlyWhatIsOn(unittest.TestCase):
+    def test_a_feature_the_user_never_switched_on_is_not_reported_broken(self) -> None:
+        """Doctor listed every module with a requirement, so a fresh install
+        showed a wall of red crosses for features nobody had asked for."""
+        from unittest import mock
+
+        from helpers.requirements import Requirement
+        from modules.doctor import _module_checks
+
+        reqs = {"spotify": Requirement(pip_modules=["x"]), "weather": Requirement(pip_modules=["y"])}
+        with mock.patch("helpers.registry.ServiceRegistry.get_module_requirements", return_value=reqs), \
+                mock.patch("helpers.config.Config.is_module_enabled", side_effect=lambda n: n == "weather"), \
+                mock.patch("helpers.config.Config.get", return_value=False):
+            labels = [label for label, _ in _module_checks(voice_mode=True)]
+        self.assertIn("weather", labels)
+        self.assertNotIn("spotify", labels)
+        self.assertNotIn("Wake word", labels)
 
 
 if __name__ == "__main__":

@@ -29,7 +29,7 @@ _GIB = 1024 ** 3
     module_name="system",
     requires=Requirement(
         pip_modules=["psutil"],
-        setup_hint="pip install -r requirements/system.txt",
+        setup_hint="Run install.bat again and tick Computer health.",
     ),
     summary="Battery, disk, memory and network",
 )

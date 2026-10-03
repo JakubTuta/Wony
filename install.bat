@@ -1,5 +1,5 @@
 @echo off
-setlocal
+setlocal enabledelayedexpansion
 REM One-click installer for Wony. Double-click this file.
 REM Everything it does is also available as: python setup.py
 
@@ -11,15 +11,25 @@ echo   Wony installer
 echo   --------------------------------------------------
 echo.
 
+REM A fresh Windows install can have "python.exe"/"py.exe" on PATH as a
+REM Microsoft Store alias stub that only opens the Store when run — `where`
+REM finds it, but it never prints a version, so that is the real check.
 set "PY="
 for %%C in (py.exe python.exe) do (
     if not defined PY (
-        where %%C >nul 2>nul && set "PY=%%~nC"
+        where %%C >nul 2>nul
+        if not errorlevel 1 (
+            set "PYVER="
+            for /f "delims=" %%V in ('%%C --version 2^>^&1') do if not defined PYVER set "PYVER=%%V"
+            echo !PYVER! | findstr /b "Python" >nul
+            if not errorlevel 1 set "PY=%%~nC"
+        )
     )
 )
 
 if not defined PY (
-    echo   Python is not installed on this computer.
+    echo   Python is not installed on this computer ^(or is only the Microsoft
+    echo   Store's placeholder, which does not actually run it^).
     echo   Wony needs Python 3.10 or newer.
     echo.
     where winget >nul 2>nul
@@ -46,6 +56,35 @@ if not defined PY (
 )
 
 echo   Using %PY%
+
+REM Node builds the web chat page (setup.py does the actual build). Optional —
+REM voice and text-mode work without it — so a "no" here does not stop setup.
+where npm >nul 2>nul
+if errorlevel 1 (
+    echo.
+    echo   Node.js is not installed. It builds the web chat page Wony uses —
+    echo   without it, setup finishes but the chat page has nothing to show.
+    echo.
+    where winget >nul 2>nul
+    if errorlevel 1 (
+        echo   Install it from https://nodejs.org ^(LTS version^), then run this file again.
+        echo.
+    ) else (
+        choice /c YN /m "  Install Node.js now"
+        if not errorlevel 2 (
+            winget install -e --id OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements
+            echo.
+            echo   Node.js installed. Close this window, open a new one, and run install.bat
+            echo   again so Windows picks up the new program.
+            echo.
+            pause
+            exit /b 0
+        )
+        echo   Continuing without it. Build the chat page later with:
+        echo     cd web ^&^& npm install ^&^& npm run build
+    )
+    echo.
+)
 echo   Starting setup. It asks which features you want, then for the keys
 echo   and sign-ins those features need.
 echo.

@@ -8,7 +8,7 @@ _NON_MODULE_CHECKS = [
         "Semantic memory",
         Requirement(
             pip_modules=["fastembed"],
-            setup_hint="pip install -r requirements/semantic.txt",
+            setup_hint="Run install.bat again and tick Semantic memory.",
         ),
         False,
     ),
@@ -24,7 +24,7 @@ _NON_MODULE_CHECKS = [
                 "faster_whisper",
                 "pynput",
             ],
-            setup_hint="pip install -r requirements/voice.txt",
+            setup_hint="Run install.bat again and tick Voice I/O.",
         ),
         True,
     ),
@@ -32,9 +32,7 @@ _NON_MODULE_CHECKS = [
         "Wake word",
         Requirement(
             pip_modules=["openwakeword", "onnxruntime", "sounddevice", "soxr", "numpy"],
-            setup_hint="pip install -r requirements/wakeword.txt  "
-            "Enable with voice.wake_word.enabled: true in config.yaml  "
-            'Built-in phrases: "hey jarvis", "alexa", "hey mycroft", "hey rhasspy"',
+            setup_hint="Run install.bat again and tick Wake word, then switch it on in Settings.",
         ),
         True,
     ),
@@ -47,14 +45,20 @@ def _module_checks(voice_mode: bool) -> list:
     drifts from what the modules themselves require."""
     from helpers.registry import ServiceRegistry
 
+    from helpers.config import Config
+
+    # Only what the user switched on: a failing check for a feature nobody
+    # asked for reads as something broken, not as something optional.
     checks = [
         (name, req)
         for name, req in sorted(ServiceRegistry.get_module_requirements().items())
+        if Config.is_module_enabled(name)
     ]
+    wake_word_on = bool(Config.get("voice.wake_word.enabled", False))
     checks += [
         (label, req)
         for label, req, needs_voice in _NON_MODULE_CHECKS
-        if voice_mode or not needs_voice
+        if (voice_mode or not needs_voice) and (label != "Wake word" or wake_word_on)
     ]
     return checks
 
@@ -68,16 +72,12 @@ def run_doctor(voice_mode: bool = False) -> str:
     if os.path.exists(repo_path(".env")):
         lines.append("  ✓ .env file found.")
     else:
-        lines.append("  ✗ .env file missing — create it in the project root.")
-        lines.append("    Add at least one of: ANTHROPIC_API_KEY, GEMINI_API_KEY")
+        lines.append("  ! No keys saved yet — add an AI key in Settings → AI.")
 
     if os.path.exists(repo_path("config.yaml")):
         lines.append("  ✓ config.yaml found.")
     else:
-        lines.append(
-            "  ! config.yaml missing — using config.example.yaml defaults.\n"
-            "    Copy it: Copy-Item config.example.yaml config.yaml"
-        )
+        lines.append("  ! No settings saved yet — using the defaults.")
 
     ai_ok, ai_msg = describe_readiness()
     prefix = "✓" if ai_ok else "✗"
@@ -132,7 +132,7 @@ def _location_check() -> list:
         else:
             lines.append(
                 "    . Maps uses OpenStreetMap (no ratings, live traffic or public transport). "
-                "Add GOOGLE_MAPS_API_KEY for those."
+                "Add a Google Maps key in Settings for those."
             )
     return lines
 
@@ -146,7 +146,7 @@ def _browsing_check() -> list:
 
     if not browser.available():
         return ["\n  Web browsing: off — reading pages works; clicking through them needs "
-                "'Web browsing' ticked in python setup.py."]
+                "'Web browsing' ticked in install.bat."]
     lines = ["\n  Web browsing: installed."]
     if (Config.get("ai.provider") or "") == "ollama":
         lines.append("    ! Local Ollama models often can't drive a browser; tasks may end with "

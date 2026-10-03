@@ -13,7 +13,7 @@ from helpers.requirements import Requirement
 
 _MCP_REQUIREMENT = Requirement(
     pip_modules=["mcp"],
-    setup_hint="pip install -r requirements/mcp.txt",
+    setup_hint="Run install.bat again and tick MCP client.",
 )
 
 

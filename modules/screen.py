@@ -16,7 +16,7 @@ SCREENSHOTS_DIR = os.path.join(
 
 _SCREEN_REQ = Requirement(
     pip_modules=["mss"],
-    setup_hint="pip install -r requirements/screen.txt",
+    setup_hint="Run install.bat again and tick Screen capture + OCR.",
 )
 
 

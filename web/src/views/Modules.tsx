@@ -5,6 +5,7 @@ import { useWony } from '../lib/wonyContext';
 import { confirmLabel, humanize, isWidgetCovered } from '../lib/jobs';
 import { CARD, Pill, SectionLabel, Switch } from '../components/ui';
 import { SettingRow, type Draft } from '../components/SettingField';
+import { RestartButton } from '../components/RestartButton';
 import type { Job, SettingField } from '../api';
 
 const STATUS_LABEL: Record<string, string> = {
@@ -59,7 +60,7 @@ export function Modules({
 
   const retry = () => {
     if (!active) return;
-    runJob('system_status', { scope: 'retry' }, { from: 'Modules & jobs' }).then(reloadHealth);
+    runJob('system_status', { scope: 'retry' }, { from: 'Features' }).then(reloadHealth);
   };
 
   return (
@@ -71,7 +72,7 @@ export function Modules({
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search modules or jobs"
+          placeholder="Search features or commands"
           className="border rounded-[9px] px-2.5 py-2 text-sm mb-2"
           style={{ borderColor: 'var(--color-border)' }}
         />
@@ -99,7 +100,6 @@ export function Modules({
               <div className="flex flex-col gap-1">
                 <div className="flex items-center gap-2.5">
                   <span className="text-xl font-bold">{active.label}</span>
-                  <span className="font-mono text-xs text-muted">{active.key}</span>
                 </div>
                 <span className="text-sm text-muted max-w-[560px]">{active.help}</span>
               </div>
@@ -113,7 +113,10 @@ export function Modules({
               </div>
             </div>
             {restartNoticeFor === active.key && (
-              <Pill tone="pink">Restart to apply</Pill>
+              <div className="flex items-center gap-2.5">
+                <Pill tone="pink">Restart to apply</Pill>
+                <RestartButton />
+              </div>
             )}
             {!active.always_on && (status === 'misconfigured' || status === 'error' || status === 'unavailable') && (
               <div className="flex justify-between items-center gap-3 flex-wrap px-3.5 py-3 rounded-[10px] bg-pink-soft">
@@ -134,7 +137,7 @@ export function Modules({
 
           {jobsForModule.length === 0 ? (
             <p className="text-sm text-muted px-1">
-              {active.always_on || active.enabled ? 'No jobs available.' : 'Turn this module on to use its jobs.'}
+              {active.always_on || active.enabled ? 'No commands available.' : 'Turn this feature on to use its commands.'}
             </p>
           ) : (
             jobsForModule.map((job) => <JobRow key={job.name} job={job} />)
@@ -203,9 +206,12 @@ function ModuleConfigFields({ fields }: { fields: SettingField[] }) {
           </span>
         )}
         {saved === 'restart' && (
-          <span className="flex items-center gap-1.5 text-xs text-red">
-            <RotateCw size={13} /> Saved — restart Wony for all of it to take effect.
-          </span>
+          <>
+            <span className="flex items-center gap-1.5 text-xs text-red">
+              <RotateCw size={13} /> Saved — restart Wony for all of it to take effect.
+            </span>
+            <RestartButton />
+          </>
         )}
       </div>
     </div>
@@ -268,7 +274,7 @@ function JobRow({ job }: { job: Job }) {
           )}
           <div className="flex gap-2">
             <button
-              onClick={() => runJob(job.name, cleaned(), { from: 'Modules & jobs' })}
+              onClick={() => runJob(job.name, cleaned(), { from: 'Features' })}
               className="border-0 bg-accent text-on-accent rounded-[9px] px-4 py-2.5 text-sm font-semibold"
             >
               Run

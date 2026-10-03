@@ -13,7 +13,7 @@ from helpers.screenReader import ScreenReader
 
 _LEAGUE_REQ = Requirement(
     pip_modules=["pynput", "mss"],
-    setup_hint="pip install -r requirements/automation.txt",
+    setup_hint="Run install.bat again and tick League of Legends.",
 )
 
 _ACCEPT_JOB = "league_accept"

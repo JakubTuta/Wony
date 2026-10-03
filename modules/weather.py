@@ -15,7 +15,7 @@ _FORECAST_DAYS = 5
     requires=Requirement(
         env_vars=["WEATHER_API_KEY"],
         pip_modules=["requests"],
-        setup_hint="Add WEATHER_API_KEY to .env (free key at openweathermap.org/api).",
+        setup_hint="Paste your free OpenWeatherMap key (openweathermap.org/api) here.",
     ),
 )
 @capture_response
