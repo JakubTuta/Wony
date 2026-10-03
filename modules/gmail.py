@@ -226,7 +226,9 @@ class Gmail:
         return bool(Config.module_settings("gmail").get("allow_write", False))
 
     def _write_disabled_note(self, what: str) -> str:
-        return f"{what} is switched off. Turn on 'Change my mailbox' in Settings to allow it."
+        from helpers.settings import where
+
+        return f"{what} is switched off. Turn on {where('modules.gmail.allow_write')} to allow it."
 
     # ------------------------------------------------------------------
     # Raw API helpers

@@ -242,6 +242,7 @@ def bootstrap(
     _start_health_watcher(quiet)
     _start_triggers(quiet)
     _start_learning(quiet)
+    _start_telegram(quiet)
     if audio:
         _start_idle_sweeper()
 
@@ -287,6 +288,19 @@ def _start_triggers(quiet: bool) -> None:
 
         if triggers.start() and not quiet:
             print("[triggers] Watching for things worth mentioning.")
+    except Exception:
+        pass
+
+
+def _start_telegram(quiet: bool) -> None:
+    """Start listening for Telegram messages. No-op unless the module is on and
+    has its bot token."""
+    try:
+        from helpers.registry import ServiceRegistry
+
+        bot = ServiceRegistry.get_service_instance("telegram")
+        if bot is not None and bot.start() and not quiet:
+            print("[telegram] Listening for messages.")
     except Exception:
         pass
 

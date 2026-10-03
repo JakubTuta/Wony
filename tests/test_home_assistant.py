@@ -250,7 +250,9 @@ class TestHomeAssistant(unittest.TestCase):
                 self.calls.clear()
                 result = self.ha.control_home_device(target=target, action="open")
                 self.assertEqual(self.calls, [])
-                self.assertIn("allow_locks", result)
+                from helpers.settings import where
+
+                self.assertIn(where("modules.home_assistant.allow_locks"), result)
 
     def test_incidental_lock_is_skipped_not_fatal(self) -> None:
         """A lock in the room must not veto the rest of the command."""

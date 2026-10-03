@@ -97,6 +97,7 @@ enabled_modules:
   # - maps           # places near you and travel times
   # - web            # search the web and read pages
   # - desktop        # open apps and windows, clipboard, files
+  # - telegram       # message Wony from your phone
   # - mcp            # connect extra tool servers
 
 modules:
@@ -135,6 +136,12 @@ modules:
     # Let Wony start tool servers itself. These are programs that run on this
     # computer. While off it tells you the command instead.
     allow_install: false
+  telegram:
+    # The chat Wony answers. Leave empty: Wony shows a code at startup, and the
+    # first chat to send it to your bot is paired. Clear it to pair again.
+    owner: ""
+    # Also send timers, reminders and alerts to that chat.
+    forward_notifications: true
 
 tray:
   notify_on_ready: true          # show a notification when Wony has started

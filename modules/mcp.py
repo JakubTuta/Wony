@@ -55,9 +55,11 @@ def _install_refusal(action: str, what: str) -> str:
     that changes something outside Wony. Echoing the command back means the
     answer is still useful: the user can read it and run it themselves.
     """
+    from helpers.settings import where
+
     return (
         f"MCP server '{action}' is switched off — it would have started: {what}\n"
-        "Turn on 'Install MCP tool servers' in Settings to allow it."
+        f"Turn on {where('modules.mcp.allow_install')} to allow it."
     )
 
 

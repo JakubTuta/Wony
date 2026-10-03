@@ -105,6 +105,20 @@ class TestNoSurpriseBrowser(AccountsTestCase):
         flow.assert_not_called()
         self.assertIn("authorize work", str(raised.exception))
 
+    def test_a_chat_from_a_phone_never_opens_it_on_an_empty_desk(self) -> None:
+        from helpers import google_auth
+        from helpers.accounts import GoogleAccounts
+        from helpers.turn_context import user_request
+
+        GoogleAccounts.add_account("work")
+        on, get = _config({"gmail"})
+        with on, get, user_request("check my mail", at_machine=False), \
+                mock.patch("google_auth_oauthlib.flow.InstalledAppFlow.from_client_secrets_file") as flow:
+            with self.assertRaises(google_auth.SignInNeeded) as raised:
+                google_auth.credentials("work")
+        flow.assert_not_called()
+        self.assertIn("at your PC", str(raised.exception))
+
     def test_a_user_request_may_open_it(self) -> None:
         from helpers import google_auth
         from helpers.accounts import GoogleAccounts

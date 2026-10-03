@@ -4,19 +4,27 @@ from helpers.decorators import capture_response
 from helpers.registry import ServiceRegistry, register_job
 
 
-@register_job(module_name="status", summary="What Wony can do, and what is broken")
+@register_job(module_name="status", summary="What Wony can do, how it is set up, and how to change it")
 @capture_response
-def system_status(scope: typing.Literal["modules", "setup", "commands", "retry"] = "modules") -> str:
+def system_status(
+    scope: typing.Literal["modules", "setup", "commands", "retry", "about"] = "modules",
+    query: str = "",
+) -> str:
     """
-    [SYSTEM INFORMATION JOB] Reports what Wony can do and what is wrong with it: which
-    modules are working, what a broken one needs installing or configuring, the full
-    list of available commands, or a retry of whatever failed to start.
+    [SYSTEM INFORMATION JOB] Answers questions about Wony itself: a setting's current
+    value, what it can be and where to change it; how to install, set up or switch on
+    a feature; which modules are working and what a broken one needs; everything Wony
+    can be asked to do; or a retry of whatever failed to start.
 
     Args:
         scope (str): "modules" (the default) for each module's state and how to fix it,
+            "about" for a question about a setting, a feature, installing or setting
+            up Wony (give query),
             "setup" for a full checklist of .env, config and every integration,
             "commands" for everything Wony can be asked to do, or
             "retry" to try starting the broken modules again.
+        query (str): A few keywords naming what the question is about, for "about",
+            e.g. "speaking speed", "gmail", "install". Empty lists what can be asked.
 
     Returns:
         str: The requested report.
@@ -25,17 +33,21 @@ def system_status(scope: typing.Literal["modules", "setup", "commands", "retry"]
 
     if wanted in ("modules", "module", "status"):
         return _module_status()
+    if wanted == "about":
+        from helpers import guide
+
+        return guide.answer(query)
     if wanted in ("setup", "doctor", "diagnostics", "check"):
         from helpers.cache import Cache
         from modules.doctor import run_doctor
 
         return run_doctor(voice_mode=bool(Cache.get_audio()))
-    if wanted in ("commands", "help", "jobs"):
+    if wanted in ("commands", "jobs"):
         return _commands()
     if wanted == "retry":
         return _retry_broken()
 
-    return f"Unknown scope '{scope}'. Use modules, setup, commands or retry."
+    return f"Unknown scope '{scope}'. Use modules, about, setup, commands or retry."
 
 
 def _manage_triggers_needs_confirm(args: typing.Dict[str, typing.Any]) -> bool:

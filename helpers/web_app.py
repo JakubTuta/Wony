@@ -63,26 +63,6 @@ def _coerce_args(
     return coerced
 
 
-def _sanitize_calls(
-    calls: typing.List[typing.Dict[str, typing.Any]],
-) -> typing.List[typing.Dict[str, typing.Any]]:
-    """Ensure every call is JSON-serializable (coerce non-serializable args to str)."""
-    safe = []
-    for c in calls:
-        safe_args: typing.Dict[str, typing.Any] = {}
-        for k, v in (c.get("args") or {}).items():
-            try:
-                json.dumps(v)
-                safe_args[k] = v
-            except (TypeError, ValueError):
-                safe_args[k] = str(v)
-        entry = {"name": c.get("name", ""), "args": safe_args, "result": str(c.get("result", ""))}
-        if c.get("needs_confirm"):
-            entry["needs_confirm"] = True
-        safe.append(entry)
-    return safe
-
-
 class InvokeRequest(BaseModel):
     name: str
     args: typing.Dict[str, typing.Any] = {}
@@ -546,7 +526,7 @@ def build_app() -> FastAPI:
 
     @app.post("/api/chat")
     def chat(req: ChatRequest) -> typing.Dict[str, typing.Any]:
-        from helpers.conversation import Conversation
+        from helpers.conversation import Conversation, sanitize_calls
         from helpers.logger import logger
 
         if not req.message or not req.message.strip():
@@ -558,7 +538,7 @@ def build_app() -> FastAPI:
         if result.error:
             logger.log_error(result.error, "web_chat")
             raise HTTPException(status_code=503, detail=result.error)
-        safe_calls = _sanitize_calls(result.calls)
+        safe_calls = sanitize_calls(result.calls)
         turn_id = Conversation.record_turn(
             req.message, result.text, calls=safe_calls
         )
@@ -606,71 +586,15 @@ def build_app() -> FastAPI:
         if not data:
             raise HTTPException(status_code=400, detail="No audio data received.")
         try:
-            import tempfile
+            from helpers.recognizer import transcribe_audio_bytes
 
-            import numpy as np
-
-            # Decode via av (already bundled with faster-whisper)
-            import av
-
-            with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as tmp:
-                tmp.write(data)
-                tmp_path = tmp.name
-
-            try:
-                frames_by_rate: typing.Dict[int, typing.List[np.ndarray]] = {}
-                with av.open(tmp_path) as container:
-                    for frame in container.decode(audio=0):
-                        raw = frame.to_ndarray()
-                        channels = len(frame.layout.channels) if frame.layout else 1
-                        if np.issubdtype(raw.dtype, np.integer):
-                            raw = raw.astype(np.float32) / float(np.iinfo(raw.dtype).max)
-                        else:
-                            raw = raw.astype(np.float32)
-                        if raw.ndim > 1 and raw.shape[0] == channels and channels > 1:
-                            mono = raw.mean(axis=0)  # planar: (channels, samples)
-                        elif raw.ndim > 1:
-                            flat = raw.reshape(-1)
-                            mono = flat.reshape(-1, channels).mean(axis=1) if channels > 1 else flat
-                        else:
-                            mono = raw
-                        frames_by_rate.setdefault(int(frame.sample_rate), []).append(mono)
-                os.unlink(tmp_path)
-            except Exception:
-                try:
-                    os.unlink(tmp_path)
-                except Exception:
-                    pass
-                raise
-
-            if not frames_by_rate:
-                return {"text": ""}
-
-            # Resample each same-rate run to 16k, then concatenate. Using the
-            # frame's actual sample_rate (instead of assuming 48000) also
-            # fixes the silent failure mode where a browser encoding at a
-            # different rate got mislabeled and fed straight to Whisper.
-            from helpers import mic
-            chunks = [
-                mic.to_16k_mono_f32(np.concatenate(parts), rate)
-                for rate, parts in frames_by_rate.items()
-            ]
-            audio = chunks[0] if len(chunks) == 1 else np.concatenate(chunks)
-
-            if not np.all(np.isfinite(audio)):
+            text, warning = transcribe_audio_bytes(data)
+            if warning:
                 return {
                     "text": "",
-                    "warning": "Your browser microphone captured invalid audio — check the browser's mic permission and Windows input device.",
+                    "warning": f"{warning} Check the browser's mic permission and Windows input device.",
                 }
-            rms = float(np.sqrt(np.mean(np.square(audio)))) if len(audio) else 0.0
-            if rms < 1e-4:
-                return {
-                    "text": "",
-                    "warning": "Your browser microphone captured silence — check the browser's mic permission and Windows input device.",
-                }
-
-            from helpers.recognizer import transcribe
-            return {"text": transcribe(audio)}
+            return {"text": text}
         except ImportError:
             raise HTTPException(
                 status_code=500,
@@ -722,7 +646,7 @@ def build_app() -> FastAPI:
         loop = asyncio.get_running_loop()
 
         def _run() -> None:
-            from helpers.conversation import Conversation
+            from helpers.conversation import Conversation, sanitize_calls
             from helpers.logger import logger
             from helpers.turn import run_turn
 
@@ -733,7 +657,7 @@ def build_app() -> FastAPI:
                     q.put(("error", result.error))
                     return
 
-                safe_calls = _sanitize_calls(result.calls)
+                safe_calls = sanitize_calls(result.calls)
                 # emit=False: we broadcast ourselves below with session_id included
                 turn_id = Conversation.record_turn(message, result.text, calls=safe_calls, emit=False)
                 q.put(("done", {

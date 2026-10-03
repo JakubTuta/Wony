@@ -44,11 +44,18 @@ def run_turn(
     user_input: str,
     on_text: typing.Optional[typing.Callable[[str], None]] = None,
     from_user: bool = True,
+    at_machine: bool = True,
+    quoted: str = "",
 ) -> TurnResult:
     """Run one agent turn. Never raises — failures come back in TurnResult.error.
 
     from_user=False for turns nobody asked for (triggers): nothing in them may
     open a sign-in window or follow a link the user never mentioned.
+    at_machine=False for a request from a phone: the user can confirm, but
+    nothing may open a window or click on the PC.
+    quoted is text someone else wrote that the user passed along (a forwarded
+    message). It reaches the model fenced as data, and is not counted as
+    something the user said.
     """
     from helpers import confirm
     from helpers.agent import _fallback_from_calls, run_agent
@@ -62,6 +69,7 @@ def run_turn(
     from helpers.events import clear_cancel, session_cancel
     from helpers.registry import ServiceRegistry
     from helpers.turn_context import user_request
+    from helpers.untrusted import wrap
     from modules.ai import build_agent_system_prompt
 
     timed_out = threading.Event()
@@ -89,12 +97,19 @@ def run_turn(
         # this is what stops the model from confirming itself.
         confirm.begin_turn()
         timer.start()
-        presence = user_request(user_input) if from_user else contextlib.nullcontext()
+        presence = (
+            user_request(user_input, at_machine=at_machine)
+            if from_user
+            else contextlib.nullcontext()
+        )
         try:
             with presence:
+                # Fenced inside the request: wrap() marks the turn as having
+                # read untrusted text, which only sticks within user_request.
+                prompt = f"{user_input}\n{wrap(quoted, 'forwarded message')}" if quoted else user_input
                 agent_result = run_agent(
                     client=get_ai_client(),
-                    user_input=user_input,
+                    user_input=prompt,
                     available_jobs=ServiceRegistry.get_all_jobs(),
                     system_instructions=build_agent_system_prompt(),
                     history=Conversation.get_messages(),

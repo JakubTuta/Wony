@@ -7,9 +7,10 @@ Wony setup — the required, single-file installer.
 Sets the whole app up and leaves it working: picks/creates the Python
 environment, installs only the dependencies for the features you choose,
 writes .env / config.yaml and the required folders, builds the web chat UI with
-npm, then asks for every API key, credentials file and permission those
-features need — checking each key against the service and running the Spotify
-and Google sign-ins right here.
+npm, then asks for every API key, credentials file, permission and preference
+those features need — checking each key against the service and running the
+Spotify and Google sign-ins right here. The preferences are the same ones the
+web app's Settings page offers, asked in the page's own words.
 
 Re-run any time to add/remove modules: it reuses an existing venv, keeps your
 .env and config.yaml, pre-marks what you already have, and SKIPS reinstalling
@@ -17,8 +18,8 @@ modules that are already set up — only the newly checked ones get installed.
 
     python setup.py configure
 
-Just the keys-and-sign-ins part, for finishing a service you skipped or
-signing in again later. Nothing is installed.
+Just the keys, sign-ins and preferences, for finishing a service you skipped
+or signing in again later. Nothing is installed.
 
 The installer itself is stdlib only; the configure step runs after the install
 and may use what it put there (the app's own config reader, the Spotify and
@@ -39,6 +40,7 @@ import os
 import re
 import subprocess
 import sys
+import textwrap
 
 if sys.version_info < (3, 10):
     print(
@@ -294,6 +296,17 @@ FEATURES = [
         "needs": "A long-lived access token from your Home Assistant profile → Security — "
         "setup asks for it and for the address. Locks and the garage stay off "
         "until you allow them.",
+    },
+    {
+        "key": "telegram",
+        "label": "Telegram (message Wony from your phone)",
+        "reqs": [],
+        "module": "telegram",
+        "default": False,
+        "desc": "Chat with Wony from Telegram, and get timers and reminders there too.",
+        "needs": "A bot token from @BotFather in Telegram. Wony shows a pairing code "
+        "at startup; send it to your bot to connect. Works only while Wony is running "
+        "on this computer, and Telegram can see the conversation.",
     },
     {
         "key": "mcp",
@@ -808,10 +821,61 @@ def ask_key(variable, where, current, check, rejected_note=""):
             return ""
 
 
-def gate(question, key):
-    """Ask about one safety gate. It ships off; the answer is written either
-    way, so answering "no" on a re-run turns a gate back off."""
-    write_config({key: confirm(question, default=bool(config_value(key, False)))})
+def gate(question, key, default=None):
+    """Ask a yes/no setting. Safety gates ship off; the answer is written either
+    way, so answering "no" on a re-run turns one back off. Returns the answer."""
+    if default is None:
+        default = bool(config_value(key, False))
+    answer = confirm(question, default=default)
+    write_config({key: answer})
+    return answer
+
+
+def _show_help(field):
+    print()
+    print(c(textwrap.fill(field["help"], 76, initial_indent="  . ", subsequent_indent="    "), "90"))
+
+
+def _ask_value(field):
+    label, value = field["label"], field["value"]
+    if field["kind"] == "choice":
+        names = field["choices"]
+        options = [(field["choice_labels"].get(name, name), name) for name in names]
+        current = names.index(str(value)) + 1 if str(value) in names else 1
+        return choose(label, options, default=current)
+    if field["kind"] == "number":
+        low, high = field["min"], field["max"]
+        if low is not None and high is not None:
+            label += f" ({low:g} to {high:g})"
+        return ask(label, f"{value:g}")
+    return ask(label, "" if value is None else str(value))
+
+
+def ask_setting(key, default=None):
+    """Ask about one setting the Settings page also has, in that page's own
+    words, and save the answer through the same validation. Enter keeps the
+    current value; `default` replaces it for a yes/no. Returns the answer.
+
+    The label, help and limits come from helpers/settings.py, so the two
+    cannot describe one setting differently.
+    """
+    repo_on_path()
+    from helpers import settings
+    from helpers.config import Config
+
+    Config.load()  # an earlier step may have written the file behind its back
+    field = settings.describe_field(key)
+    if field["help"]:
+        _show_help(field)
+    if field["kind"] == "toggle":
+        return gate(f"{field['label']}?", key, default)
+    while True:
+        answer = _ask_value(field)
+        try:
+            settings.apply({key: answer})
+            return answer
+        except settings.SettingsError as e:
+            warn(str(e))
 
 
 def configure(chosen):
@@ -825,8 +889,9 @@ def configure(chosen):
         note("This terminal cannot ask questions — no keys or sign-ins were set up.")
         return ["Keys and sign-ins: run 'python setup.py configure' in a terminal."]
 
-    note("Press Enter to skip any question.")
+    note("Press Enter to skip a question or keep the answer in [brackets].")
     note("Run 'python setup.py configure' to come back to this at any time.")
+    note("Everything asked here is also on the Settings page.")
 
     env = env_values()
     step_assistant()
@@ -835,22 +900,28 @@ def configure(chosen):
         step_weather(env, pending)
     if "maps" in keys:
         step_maps(env)
+    if keys & {"weather", "maps"}:
+        step_location()
     if "web" in keys:
         step_web(env)
     if "spotify" in keys:
         step_spotify(env, pending)
+    if "calendar" in keys:
+        step_working_day()
     if keys & GOOGLE_FEATURES:
         step_google(keys, pending)
     if "home_assistant" in keys:
         step_home_assistant(env, pending)
     if "desktop" in keys:
         step_desktop()
+    if "telegram" in keys:
+        step_telegram(env, pending)
     if "mcp" in keys:
         step_mcp()
     if "voice" in keys:
-        step_voice()
+        step_voice(keys)
     if "tray" in keys:
-        step_autostart()
+        step_startup()
     return pending
 
 
@@ -867,6 +938,9 @@ def step_assistant():
             ),
         }
     )
+    ask_setting("assistant.personality")
+    ask_setting("assistant.proactive.enabled")
+    ask_setting("assistant.memory.learn_from_my_data")
 
 
 # ── AI provider ───────────────────────────────────────────────────────────────
@@ -896,6 +970,11 @@ _AI_PROVIDERS = {
 
 def step_ai(env, pending):
     section("AI provider — Wony cannot answer anything without one")
+    _choose_provider(env, pending)
+    ask_setting("ai.history.max_turns")
+
+
+def _choose_provider(env, pending):
     provider = choose(
         "Which service should answer?",
         [
@@ -1018,12 +1097,6 @@ _MAPS_KEY_STEPS = (
     "4. Optional: Quotas -> set a daily cap, so nothing can ever cost money.",
 )
 
-_TRAVEL_MODES = (
-    ("Car", "car"), ("Public transport", "public transport"),
-    ("Walking", "walking"), ("Cycling", "cycling"),
-)
-
-
 def step_maps(env):
     section("Maps & places")
     note("Works now, free, through OpenStreetMap: places near you, addresses, travel")
@@ -1041,20 +1114,14 @@ def step_maps(env):
     )
     if key:
         env_set({"GOOGLE_MAPS_API_KEY": key})
+    ask_setting("modules.maps.travel_mode")
 
-    current = config_value("modules.maps.travel_mode", "car")
-    values = [value for _, value in _TRAVEL_MODES]
-    write_config({"modules.maps.travel_mode": choose(
-        "How do you usually get around?", list(_TRAVEL_MODES),
-        default=values.index(current) + 1 if current in values else 1,
-    )})
 
+def step_location():
+    """Weather and "near me" both start from where this computer is."""
+    section("Where you are")
     _check_windows_location()
-    address = ask(
-        "Home address, for 'near me' when Windows location is off (Enter to skip)",
-        config_value("assistant.home_address", ""),
-    )
-    write_config({"assistant.home_address": address})
+    ask_setting("assistant.home_address")
 
 
 def _check_windows_location():
@@ -1329,12 +1396,39 @@ def step_home_assistant(env, pending):
     )
 
 
+def check_telegram(token):
+    return http_request(f"https://api.telegram.org/bot{token}/getMe")[0]
+
+
+def step_telegram(env, pending):
+    section("Telegram")
+    token = ask_key(
+        "TELEGRAM_BOT_TOKEN",
+        "the Telegram chat with @BotFather: send /newbot",
+        env.get("TELEGRAM_BOT_TOKEN", ""),
+        check_telegram,
+    )
+    if token:
+        env_set({"TELEGRAM_BOT_TOKEN": token})
+        note("When Wony starts it shows a code. Send it to your bot to connect.")
+        ask_setting("modules.telegram.forward_notifications")
+    else:
+        pending.append("Telegram: no bot token yet.")
+
+
+def step_working_day():
+    section("Your working day")
+    ask_setting("modules.calendar.work_start_hour")
+    ask_setting("modules.calendar.work_end_hour")
+
+
 def step_desktop():
     section("Desktop control")
     gate(
         "May Wony type, click and write to the clipboard? (off: it can only look)",
         "modules.desktop.allow_actions",
     )
+    ask_setting("modules.desktop.share_window_title")
 
 
 def step_mcp():
@@ -1346,22 +1440,57 @@ def step_mcp():
     )
 
 
-def step_voice():
-    """Pausing other apps' media uses System Media Transport Controls, which
-    only Windows has — elsewhere the setting is a no-op, so don't ask."""
-    if os.name != "nt":
-        return
+def step_voice(keys):
     section("Voice")
-    gate(
-        "Pause your music and videos while Wony talks or listens?",
-        "voice.media_pause.enabled",
-    )
+    ask_setting("voice.tts_voice")
+    ask_setting("voice.speed")
+    ask_setting("voice.volume")
+    # Ticking the wake word in the checklist is asking for it, so Enter means yes.
+    wake = "wakeword" in keys and ask_setting("voice.wake_word.enabled", default=True)
+    if wake:
+        ask_setting("voice.wake_word.phrase")
+    # Pausing other apps' media uses System Media Transport Controls, which
+    # only Windows has — elsewhere the setting is a no-op, so don't ask.
+    if os.name == "nt":
+        gate(
+            "Pause your music and videos while Wony talks or listens?",
+            "voice.media_pause.enabled",
+        )
+    if confirm("Fine-tune the microphone, hotkey and timing?", default=False):
+        _fine_tune_voice(wake)
 
 
-def step_autostart():
+def _fine_tune_voice(wake):
+    ask_setting("voice.input_device")
+    ask_setting("voice.output_device")
+    _ask_push_to_talk()
+    ask_setting("voice.stt.silence_ms")
+    if ask_setting("voice.conversation.enabled"):
+        ask_setting("voice.conversation.follow_up_timeout")
+    ask_setting("voice.barge_in.enabled")
+    if wake:
+        ask_setting("voice.wake_word.threshold")
+    ask_setting("models.preload")
+
+
+def _ask_push_to_talk():
+    """Enter keeps the saved key, so switching it off takes a word."""
+    repo_on_path()
+    from helpers import settings
+
+    key = "voice.hotkeys.push_to_talk"
+    field = settings.describe_field(key)
+    _show_help(field)
+    answer = ask(f"{field['label']} (type off to switch it off)", field["value"] or "")
+    settings.apply({key: "" if answer.lower() == "off" else answer})
+
+
+def step_startup():
+    section("When Wony starts")
+    ask_setting("tray.notify_on_ready")
+    ask_setting("tray.open_browser_on_start")
     if os.name != "nt":
         return
-    section("Starting with Windows")
     if not confirm("Start Wony automatically when you log in?", default=False):
         return
     command = [sys.executable, os.path.join(ROOT, "wony.py"), "autostart", "install"]

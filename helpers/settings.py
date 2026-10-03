@@ -10,7 +10,7 @@ philosophy in CLAUDE.md) — tuning knobs live as constants next to their code.
 import os
 import typing
 
-from helpers import config_writer, env_writer
+from helpers import config_writer, env_writer, lookup
 from helpers.config import Config
 from helpers.paths import repo_path
 
@@ -53,6 +53,7 @@ MODULES: typing.List[typing.Tuple[str, str, str, str]] = [
     ("screen", "Screen reading", "Screenshot the screen and read text on it.", "What does this error say?"),
     ("shazam", "Song recognition", "Name the song that is playing.", "What song is this?"),
     ("league", "League of Legends", "Launch the game and auto-accept queue.", "Launch League of Legends"),
+    ("telegram", "Telegram", "Message Wony from your phone, and get reminders there too.", "Remind me to call Anna at 5"),
     ("mcp", "MCP tool servers", "Connect external Model Context Protocol servers.", "What tool servers are connected?"),
 ]
 
@@ -116,6 +117,9 @@ class Field(typing.NamedTuple):
     step: typing.Optional[float] = None
     restart: bool = False
     module: str = ""  # only shown when this module is switched on
+    # Something the user typed about themselves: the assistant is told whether
+    # it is set, never what it says (see explain). The page still shows it.
+    private: bool = False
 
 
 _FIELDS: typing.List[typing.Tuple[str, typing.List[Field]]] = [
@@ -123,10 +127,11 @@ _FIELDS: typing.List[typing.Tuple[str, typing.List[Field]]] = [
         Field("assistant.name", "Name", "text", "What you call it."),
         Field("assistant.owner_name", "Your name", "text", "How it addresses you."),
         Field("assistant.personality", "Personality", "longtext",
-              "Free text describing how it should talk to you."),
+              "How it should talk to you, in your own words. "
+              "For example: dry humour, short answers."),
         Field("assistant.home_address", "Home address", "text",
               "Used for 'near me' and local weather when Windows location is off. "
-              "Optional."),
+              "Optional.", private=True),
     ]),
     ("Voice", [
         Field("voice.tts_voice", "Voice", "choice",
@@ -236,6 +241,15 @@ _FIELDS: typing.List[typing.Tuple[str, typing.List[Field]]] = [
               "message, so 'what does this mean' has something to point at. Window "
               "titles name documents, browser tabs and who you are chatting to.",
               module="desktop"),
+    ]),
+    ("Telegram", [
+        Field("modules.telegram.owner", "Paired chat", "text",
+              "Filled in when you pair: Wony shows a code at startup, send it to your bot. "
+              "Only this chat can talk to Wony. Clear it to disconnect or pair another.",
+              module="telegram", private=True),
+        Field("modules.telegram.forward_notifications", "Send reminders to Telegram", "toggle",
+              "Timers, reminders and alerts also arrive in your Telegram chat.",
+              module="telegram"),
     ]),
     ("This computer", [
         Field("modules.home_assistant.base_url", "Home Assistant address", "text",
@@ -378,26 +392,166 @@ def _choices_for(field: Field, value: typing.Any) -> typing.List[str]:
     return choices
 
 
+def _describe_field(field: Field) -> typing.Dict[str, typing.Any]:
+    value = _current(field)
+    return {
+        "key": field.key,
+        "label": field.label,
+        "kind": field.kind,
+        "help": field.help,
+        "choices": _choices_for(field, value) if field.kind == "choice" else [],
+        "choice_labels": field.choice_labels,
+        "min": field.minimum,
+        "max": field.maximum,
+        "step": field.step,
+        "restart": field.restart,
+        "module": field.module,
+        "value": value,
+    }
+
+
+def describe_field(key: str) -> typing.Dict[str, typing.Any]:
+    """One field as the page gets it, so setup.py can ask about a setting in the
+    page's own words instead of keeping a second copy of them."""
+    field = _field_by_key(key)
+    if field is None:
+        raise SettingsError(f"'{key}' is not a setting that can be changed here.")
+    return _describe_field(field)
+
+
+def where(key: str) -> str:
+    """Where a setting sits on the Settings page, in the page's own words, for a
+    message that sends the user there — a renamed label cannot leave it stale."""
+    for title, fields in _all_sections():
+        for field in fields:
+            if field.key == key:
+                return f"'{field.label}' under Settings → {title}"
+    raise SettingsError(f"'{key}' is not a setting that can be changed here.")
+
+
+# A broad keyword ("voice") must not put the whole page into the prompt.
+_MAX_EXPLAINED = 8
+_MAX_VALUE_CHARS = 200
+
+
+def _say(field: Field, value: typing.Any) -> str:
+    if field.kind == "secret" or field.private:
+        return "set" if value else "not set"
+    if field.kind == "toggle":
+        return "on" if value else "off"
+    if value is None or value == "":
+        return "empty"
+    return str(field.choice_labels.get(str(value), value))[:_MAX_VALUE_CHARS]
+
+
+def _allowed(field: Field, value: typing.Any) -> str:
+    if field.kind == "choice":
+        return ", ".join(field.choice_labels.get(name, name) for name in _choices_for(field, value))
+    if field.kind == "number" and field.minimum is not None and field.maximum is not None:
+        return f"{field.minimum:g} to {field.maximum:g}"
+    return ""
+
+
+def _feature_state(key: str, enabled: typing.Set[str]) -> str:
+    """Whether a feature works and, if not, what it is waiting for."""
+    from helpers.registry import ModuleStatus, ServiceRegistry
+    from helpers.requirements import evaluate
+
+    state, reason = ServiceRegistry.get_module_status().get(key, ("", ""))
+    if key in enabled:
+        if state == ModuleStatus.ENABLED:
+            return "on and working."
+        if state in ("", ModuleStatus.DISABLED):
+            return "switched on, but not running yet: it starts after Wony restarts."
+        hint = ServiceRegistry.get_module_hints().get(key, "")
+        return f"on but not working: {reason or state}. {hint}".strip()
+    requirement = ServiceRegistry.get_module_requirements().get(key)
+    if requirement is None:
+        return "off."
+    ready, missing = evaluate(requirement)
+    if ready:
+        return "off. Everything it needs is already here."
+    return f"off. It still needs: {missing}. {requirement.setup_hint}".strip()
+
+
+def _setting_line(title: str, field: Field, enabled: typing.Set[str]) -> str:
+    value = _current(field)
+    parts = [f"- {field.label}: now {_say(field, value)}."]
+    allowed = _allowed(field, value)
+    if allowed:
+        parts.append(f"It can be: {allowed}.")
+    if field.help:
+        parts.append(field.help if field.help.endswith((".", "!", "?")) else field.help + ".")
+    parts.append(f"Under Settings → {title}.")
+    parts.append("Needs a restart of Wony to apply." if field.restart else "Applies right away.")
+    if field.module and field.module not in enabled:
+        label = next((label for key, label, _, _ in MODULES if key == field.module), field.module)
+        parts.append(f"Only shown once {label} is switched on.")
+    return " ".join(parts)
+
+
+def explain(words: typing.List[str]) -> str:
+    """The features and settings that match the keywords, as the assistant should
+    relay them: what each is now, what it can be, where to change it.
+
+    Secrets and private values are only ever reported as set or not set. Empty
+    when nothing matches.
+    """
+    enabled = Config.enabled_modules()
+    pairs = [(title, field) for title, section in _all_sections() for field in section]
+    features = [
+        MODULES[index] for index in lookup.rank(
+            words, [(f"{key} {text}".lower(), label.lower()) for key, label, text, _ in MODULES]
+        )
+    ]
+    fields = [
+        pairs[index] for index in lookup.rank(
+            words, [(f"{title} {field.key} {field.help}".lower(), field.label.lower()) for title, field in pairs]
+        )
+    ]
+
+    lines: typing.List[str] = []
+    if features:
+        lines.append("Features:")
+        lines += [
+            f'- {label}: {text} It is {_feature_state(key, enabled)} Try: "{example}"'
+            for key, label, text, example in features[:_MAX_EXPLAINED]
+        ]
+    if fields:
+        lines.append("Settings:")
+        lines += [_setting_line(title, field, enabled) for title, field in fields[:_MAX_EXPLAINED]]
+        if len(fields) > _MAX_EXPLAINED:
+            lines.append(f"({len(fields) - _MAX_EXPLAINED} more match: ask about one by name.)")
+    if lines:
+        lines.append(
+            "Features are switched on and off on the Features page and settings on the "
+            "Settings page. I cannot change either myself."
+        )
+    return "\n".join(lines)
+
+
+def overview() -> str:
+    """Every setting and feature by name, for a question that names none."""
+    enabled = Config.enabled_modules()
+    lines = ["Settings, by section of the Settings page:"]
+    for title, fields in _all_sections():
+        shown = [field.label for field in fields if not field.module or field.module in enabled]
+        if shown:
+            lines.append(f"- {title}: {', '.join(shown)}")
+    lines.append(
+        "Features: "
+        + ", ".join(f"{label} ({'on' if key in enabled else 'off'})" for key, label, _, _ in MODULES)
+    )
+    return "\n".join(lines)
+
+
 def describe() -> typing.Dict[str, typing.Any]:
     """Everything the settings UI needs: the fields, their values, the modules."""
     enabled = Config.enabled_modules()
     sections = []
     for title, fields in _all_sections():
         shown = [
-            {
-                "key": field.key,
-                "label": field.label,
-                "kind": field.kind,
-                "help": field.help,
-                "choices": _choices_for(field, _current(field)) if field.kind == "choice" else [],
-                "choice_labels": field.choice_labels,
-                "min": field.minimum,
-                "max": field.maximum,
-                "step": field.step,
-                "restart": field.restart,
-                "module": field.module,
-                "value": _current(field),
-            }
+            _describe_field(field)
             for field in fields
             if not field.module or field.module in enabled
         ]

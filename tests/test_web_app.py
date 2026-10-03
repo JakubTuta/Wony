@@ -169,20 +169,20 @@ class TestJobsEndpoint(unittest.TestCase):
 
 class TestSanitizeCalls(unittest.TestCase):
     def test_needs_confirm_survives_sanitization(self) -> None:
-        from helpers.web_app import _sanitize_calls
+        from helpers.conversation import sanitize_calls
 
         calls = [
             {"name": "note", "args": {"action": "clear"}, "result": "ask", "needs_confirm": True},
             {"name": "note", "args": {"action": "add"}, "result": "done"},
         ]
-        safe = _sanitize_calls(calls)
+        safe = sanitize_calls(calls)
         self.assertTrue(safe[0]["needs_confirm"])
         self.assertNotIn("needs_confirm", safe[1])
 
     def test_needs_confirm_round_trips_through_json(self) -> None:
-        from helpers.web_app import _sanitize_calls
+        from helpers.conversation import sanitize_calls
 
-        safe = _sanitize_calls(
+        safe = sanitize_calls(
             [{"name": "note", "args": {}, "result": "ask", "needs_confirm": True}]
         )
         reloaded = json.loads(json.dumps(safe))
