@@ -3,26 +3,11 @@ import { fetchConfig, transcribeAudio } from '../api';
 import type { AppConfig, ChatCall } from '../api';
 import { useWony } from '../lib/wonyContext';
 import type { ChatMessage } from '../lib/wonyContext';
-import { signature } from '../lib/jobs';
+import { humanize, readableArgs, signature } from '../lib/jobs';
 import { Markdown } from './Markdown';
+import { WelcomeCard } from './WelcomeCard';
 
-const SUGGESTION_BY_MODULE: Record<string, string> = {
-  weather: "What's the weather?",
-  calendar: "What's on today?",
-  gmail: 'Any important email?',
-  spotify: "What's playing?",
-  shazam: 'What song is this?',
-  maps: 'Pharmacy near me',
-  drive: 'What changed in my Drive lately?',
-  contacts: "What's Anna's email?",
-  home_assistant: 'Turn off the lights',
-  notes: "What's on my shopping list?",
-  scheduler: 'Set a 10 minute timer',
-  routines: 'Run my morning briefing',
-  system: 'How is my computer doing?',
-};
-
-const FALLBACK_SUGGESTIONS = ['What can you do?', 'What time is it?', 'How are you doing?'];
+const WHAT_CAN_YOU_DO = 'What can you do?';
 
 export function ChatPanel() {
   const {
@@ -33,7 +18,7 @@ export function ChatPanel() {
     stopGeneration,
     clearChat,
     resolveInlineConfirm,
-    settings,
+    capabilities,
   } = useWony();
 
   const [input, setInput] = useState('');
@@ -56,16 +41,12 @@ export function ChatPanel() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, loading]);
 
-  const suggestions = (() => {
-    const enabled = settings?.modules.filter((m) => m.enabled).map((m) => m.key) ?? [];
-    const picked = enabled.map((key) => SUGGESTION_BY_MODULE[key]).filter(Boolean) as string[];
-    const out = [...new Set(picked)].slice(0, 3);
-    for (const filler of FALLBACK_SUGGESTIONS) {
-      if (out.length >= 3) break;
-      if (!out.includes(filler)) out.push(filler);
-    }
-    return out;
-  })();
+  // "What can you do?" always leads — a working feature's own example chip
+  // is the kind of thing a new user wouldn't think to ask for otherwise.
+  const suggestions = [
+    WHAT_CAN_YOU_DO,
+    ...(capabilities?.working.map((cap) => cap.example) ?? []),
+  ].slice(0, 4);
 
   function send() {
     const text = input.trim();
@@ -113,8 +94,8 @@ export function ChatPanel() {
           const { text, warning } = await transcribeAudio(blob);
           if (warning) showMicWarning(warning);
           if (text) sendText(text);
-        } catch {
-          showMicWarning('Transcription failed — check your connection and try again.');
+        } catch (e) {
+          showMicWarning(e instanceof Error ? e.message : 'Voice input failed — try again.');
         }
       };
       mediaRecorderRef.current = mr;
@@ -188,6 +169,8 @@ export function ChatPanel() {
 
       <div className="flex-1 overflow-auto px-5 py-4.5 flex flex-col gap-3.5">
         {historyLoading && <span className="text-sm text-muted">Loading…</span>}
+
+        {!historyLoading && messages.length === 0 && <WelcomeCard onExample={sendText} />}
 
         {messages.map((msg, idx) => (
           <MessageRow key={idx} msg={msg} index={idx} onResolve={resolveInlineConfirm} />
@@ -337,9 +320,11 @@ function ConfirmCard({
   inert: boolean;
   onResolve: (ok: boolean) => void;
 }) {
+  const args = readableArgs(call.args);
   return (
     <div className="border-[1.5px] rounded-xl p-3 flex flex-col gap-2.5" style={{ borderColor: 'var(--color-accent)' }}>
-      <span className="text-sm font-semibold">{call.result}</span>
+      <span className="text-sm font-semibold">Allow Wony to {humanize(call.name)}?</span>
+      {args && <span className="text-[13px] text-muted">{args}</span>}
       <span className="font-mono text-[11px] text-muted">{signature(call.name, call.args)}</span>
       {inert ? (
         <span className="text-[13px] text-muted">Needed confirmation</span>

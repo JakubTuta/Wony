@@ -1850,8 +1850,10 @@ def next_steps(chosen, use_venv, pending):
         print(c("\n  Build the web UI: ", "1") + BUILD_BY_HAND)
 
     py = os.path.relpath(sys.executable, ROOT) if use_venv else "python"
-    run = f"{py} wony.py" if tray else f"{py} wony.py text"
-    print(c("\n  Start Wony:  ", "1") + run)
+    # Matches install.bat's own closing line — one way to start Wony, not two
+    # different-looking instructions depending which door the user came in.
+    start = "Double-click Wony.bat" if tray else f"{py} wony.py text"
+    print(c("\n  Start Wony:  ", "1") + start)
     print(c("  Check setup: ", "1") + f"{py} wony.py doctor")
     print()
 
@@ -1859,9 +1861,36 @@ def next_steps(chosen, use_venv, pending):
 # ── Main ─────────────────────────────────────────────────────────────────────────
 
 
+def _relaunch_under_setup_python():
+    """Switch to the interpreter .wony_setup recorded, if a different one is
+    running this. The packages 'configure' needs (Google/Spotify auth, dotenv)
+    live wherever the original install put them — typically ./venv — so
+    running this under the system Python instead fails on import, not with
+    a message that says why."""
+    if not os.path.exists(MARKER):
+        return
+    import json
+
+    try:
+        with open(MARKER, "r", encoding="utf-8-sig") as fh:
+            data = json.load(fh)
+    except Exception:
+        return
+    want_py = data.get("python", "")
+    if not want_py or not os.path.exists(want_py):
+        return
+    if os.path.normcase(os.path.abspath(want_py)) == os.path.normcase(
+        os.path.abspath(sys.executable)
+    ):
+        return
+    print(c(f"  → switching to {want_py}\n", "36"))
+    os.execv(want_py, [want_py, os.path.abspath(__file__)] + sys.argv[1:])
+
+
 def cmd_configure():
     """Re-run only the keys and sign-ins, for a service added or skipped later.
     Nothing is installed, so it works on whatever is already set up here."""
+    _relaunch_under_setup_python()
     if not os.path.exists(CONFIG):
         warn("Nothing is installed yet — run 'python setup.py' first.")
         return

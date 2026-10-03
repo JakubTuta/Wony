@@ -57,8 +57,8 @@ class AuthHandler(http.server.SimpleHTTPRequestHandler):
     requires=Requirement(
         env_vars=["SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET"],
         setup_hint=(
-            "Create an app at developer.spotify.com/dashboard, add SPOTIFY_CLIENT_ID "
-            "and SPOTIFY_CLIENT_SECRET to .env, set Redirect URI to http://127.0.0.1:8888/callback"
+            "Create a free app at developer.spotify.com/dashboard, set its Redirect URI "
+            "to http://127.0.0.1:8888/callback, then paste its client ID and secret here."
         ),
     ),
 )

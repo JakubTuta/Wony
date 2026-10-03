@@ -393,6 +393,10 @@ def run_tray() -> None:
     def _on_restart(icon, item) -> None:
         threading.Thread(target=_do_restart, daemon=True, name="restart").start()
 
+    from helpers import restart as _web_restart
+
+    _web_restart.set_handler(_do_restart)
+
     menu = pystray.Menu(
         pystray.MenuItem("Open in web", _on_open_web, default=True),
         pystray.Menu.SEPARATOR,
@@ -453,13 +457,32 @@ def run_tray() -> None:
     controller.start()
     _start_hotkey()
 
+    # The very first launch has nothing but a small tray icon to show for
+    # itself, which a new user reads as "nothing happened". Open the page once;
+    # after that the user's own open_browser_on_start choice decides.
+    first_run = False
+    try:
+        from helpers.memory_db import get_kv, recent_turns, set_kv
+
+        if not get_kv("first_run_browser_opened", ""):
+            set_kv("first_run_browser_opened", "1")
+            # An install that already has conversations is not a first run —
+            # this flag is new, so it would otherwise fire once on every update.
+            first_run = not recent_turns(1)
+    except Exception:
+        pass
+
     if notify_on_ready:
         try:
-            icon.notify(f"{assistant_name} is running.", title=assistant_name)
+            icon.notify(
+                f"{assistant_name} is running. Right-click this icon, near the clock, "
+                "and choose Open in web.",
+                title=assistant_name,
+            )
         except Exception:
             pass
 
-    if open_browser_on_start:
+    if open_browser_on_start or first_run:
         try:
             import webbrowser
 

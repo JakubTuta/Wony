@@ -71,13 +71,18 @@ def _require_setup() -> None:
         have_dir
     ):
         want_py = data.get("python", os.path.join(want_dir, "python.exe"))
+        if os.path.exists(want_py):
+            # Every documented `python wony.py ...` command only works from the
+            # system Python if this re-launches itself under the one setup.py
+            # actually installed everything for — refusing just moves the same
+            # cryptic ImportError one step later. execv never returns.
+            os.execv(want_py, [want_py, os.path.abspath(__file__)] + sys.argv[1:])
+            return
         print(
             "\nWrong Python interpreter for Wony.\n"
             f"Setup installed everything for:\n    {want_py}\n"
             f"but you launched with:\n    {sys.executable}\n\n"
-            f"Run instead:\n    {want_py} {os.path.basename(__file__)} "
-            f"{' '.join(sys.argv[1:])}\n"
-            "(or re-run setup.py to target this interpreter.)\n"
+            f"That interpreter no longer exists. Re-run setup.py to target this one.\n"
         )
         sys.exit(1)
 

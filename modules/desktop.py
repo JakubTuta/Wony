@@ -12,7 +12,7 @@ from helpers.untrusted import wrap
 def _desktop_requirement() -> Requirement:
     return Requirement(
         pip_modules=["pyautogui", "pygetwindow", "pyperclip"],
-        setup_hint="pip install -r requirements/desktop.txt",
+        setup_hint="Run install.bat again and tick Desktop control.",
     )
 
 

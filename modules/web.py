@@ -22,8 +22,8 @@ def _web_requirement() -> Requirement:
         # duckduckgo-search, which is no longer maintained under the old name.
         pip_modules=["ddgs"],
         setup_hint=(
-            "pip install -r requirements/web.txt\n"
-            "Optional: add TAVILY_API_KEY to .env for higher-quality search results."
+            "Run install.bat again and tick Web search + URL fetch. "
+            "Optional: paste a Tavily key here for better search results."
         ),
     )
 
@@ -120,7 +120,7 @@ def _needs_ok(args: typing.Dict[str, typing.Any]) -> bool:
     module_name="web",
     requires=Requirement(
         pip_modules=["httpx"],
-        setup_hint="pip install -r requirements/web.txt",
+        setup_hint="Run install.bat again and tick Web search + URL fetch.",
     ),
     summary="Read a web page, or click through it to find something",
     confirms=_needs_ok,

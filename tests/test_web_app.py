@@ -102,6 +102,46 @@ class TestAllowedOrigin(unittest.TestCase):
         self.assertFalse(allowed_origin("null", "127.0.0.1:9000"))
 
 
+class TestRestartEndpoint(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.client = _load_app()
+
+    def test_a_server_without_a_tray_says_it_cannot_restart(self) -> None:
+        from unittest import mock
+
+        with mock.patch("helpers.restart._handler", None):
+            self.assertFalse(self.client.get("/api/config").json()["can_restart"])
+            self.assertEqual(self.client.post("/api/restart").status_code, 409)
+
+    def test_a_registered_handler_is_offered_and_run(self) -> None:
+        import threading
+        from unittest import mock
+
+        ran = threading.Event()
+        with mock.patch("helpers.restart._handler", ran.set), \
+                mock.patch("helpers.restart.time.sleep"):
+            self.assertTrue(self.client.get("/api/config").json()["can_restart"])
+            self.assertEqual(self.client.post("/api/restart").status_code, 200)
+            self.assertTrue(ran.wait(2))
+
+
+class TestCapabilitiesEndpoint(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.client = _load_app()
+
+    def test_every_capability_has_an_example_and_working_available_are_disjoint(self) -> None:
+        caps = self.client.get("/api/capabilities").json()
+        self.assertTrue(caps["working"] or caps["available"])
+        working_keys = {c["key"] for c in caps["working"]}
+        available_keys = {c["key"] for c in caps["available"]}
+        self.assertEqual(working_keys & available_keys, set())
+        for cap in caps["working"] + caps["available"]:
+            with self.subTest(key=cap["key"]):
+                self.assertTrue(cap["example"], f"{cap['key']} has no example")
+
+
 class TestJobsEndpoint(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:

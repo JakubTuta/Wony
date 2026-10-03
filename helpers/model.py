@@ -314,8 +314,8 @@ def send_message(
 ]:
     if client is None:
         raise Exception(
-            "AI client not initialized. Add ANTHROPIC_API_KEY or GEMINI_API_KEY to .env, "
-            "or set ai.provider: ollama in config.yaml and run `ollama serve`."
+            "No AI service is set up yet. Open Settings → AI and paste a key from "
+            "Anthropic or Google Gemini, or pick Ollama to run fully on this PC."
         )
 
     parsed_tools = None
@@ -792,21 +792,19 @@ def describe_readiness() -> typing.Tuple[bool, str]:
         ollama_model = Config.get("ai.ollama_model")
         if not ollama_model:
             return False, (
-                "ai.provider is 'ollama' but ai.ollama_model is not set. To fix:\n"
-                "  1. Open config.yaml\n"
-                "  2. Set ai.ollama_model, e.g.:  ollama_model: \"llama3.2\"\n"
-                "  3. Make sure Ollama is running:  ollama serve\n"
-                "  4. Pull the model if needed:  ollama pull llama3.2"
+                "Ollama is selected but no model is named. Open Settings → AI and "
+                "enter the model you pulled (for example llama3.2), and make sure "
+                "Ollama is running."
             )
-        return True, f"Using local Ollama model ({ollama_model}, ai.provider: ollama)."
+        return True, f"Using local Ollama model ({ollama_model})."
     if configured_provider == "gemini" and gemini_key:
         return True, "Gemini AI configured."
     if configured_provider == "anthropic" and anthropic_key:
         return True, "Anthropic AI configured."
     if configured_provider in ("gemini", "anthropic") and not gemini_key and not anthropic_key:
         return False, (
-            f"ai.provider is '{configured_provider}' but no API key found. "
-            f"Add {'GEMINI_API_KEY' if configured_provider == 'gemini' else 'ANTHROPIC_API_KEY'} to .env."
+            f"{'Google Gemini' if configured_provider == 'gemini' else 'Anthropic'} "
+            "is selected but no key is saved. Paste one in Settings → AI."
         )
     if gemini_key:
         return True, "Gemini AI configured (auto-detected)."
@@ -814,6 +812,6 @@ def describe_readiness() -> typing.Tuple[bool, str]:
         return True, "Anthropic AI configured (auto-detected)."
 
     return False, (
-        "No AI configured. Add ANTHROPIC_API_KEY or GEMINI_API_KEY to .env, "
-        "or set ai.provider: ollama in config.yaml and run `ollama serve`."
+        "No AI service is set up yet. Open Settings → AI and paste a key from "
+        "Anthropic or Google Gemini, or pick Ollama to run fully on this PC."
     )

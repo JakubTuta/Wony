@@ -143,7 +143,14 @@ def describe_failure(exc: Exception) -> str:
     """Turn an exception into a message worth putting on screen, and file a
     diagnostic so /api/health shows it too."""
     import helpers.diagnostics
+    from helpers.bootstrap import BootstrapError
     from helpers.errors import classify_api_error, emit_api_diagnostic
+
+    if isinstance(exc, BootstrapError):
+        # Not finding an AI key is expected the first time Wony runs, not a
+        # failure worth the "something went wrong" framing.
+        helpers.diagnostics.add("warning", "AI", str(exc))
+        return str(exc)
 
     classified = classify_api_error(exc)
     if classified:

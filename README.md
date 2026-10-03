@@ -1,12 +1,14 @@
 # Wony
 
 A personal AI assistant that runs on your own Windows PC. Talk to it or type to
-it, and it can handle your email, calendar, Drive, contacts, music, smart home, timers,
-maps and the web — using whatever you switch on, and nothing you don't.
+it, and it can handle your email, calendar, Drive, contacts, music, smart home,
+timers, maps and the web — using whatever you switch on, and nothing you don't.
 
 - **Say "hey jarvis"**, press a hotkey, or just type in the browser.
 - **Everything is off by default.** It cannot send an email, change your
   calendar or unlock a door until you allow it.
+- **It asks before it acts.** Sending, deleting, cancelling or shutting down is
+  read back to you first, and only happens once you say yes.
 - **Your data stays on your machine** — history, notes and reminders live in a
   file next to the app. Only what you ask goes to your AI provider.
 
@@ -15,31 +17,17 @@ maps and the web — using whatever you switch on, and nothing you don't.
 ## Install
 
 1. **Get the code.** Download this folder, or `git clone` it.
-2. **Double-click `install.bat`.** It checks for Python, installs what is
-   missing, and asks which features you want (arrow keys to move, space to tick,
-   Enter to confirm).
-3. **Double-click `Wony.bat`.** A tray icon appears near the clock. Right-click
-   it → **Open in web** for the chat page. (Wony picks a free address on your
-   computer the first time and keeps it, so a bookmark keeps working.)
+2. **Double-click `install.bat`.** It checks for Python and Node.js (and offers to
+   install them), then asks which features you want (arrow keys to move, space to
+   tick, Enter to confirm) and for the keys and sign-ins those features need.
+   Press Enter to skip anything you do not have yet; it lists what is left.
+3. **Double-click `Wony.bat`.** A tray icon appears near the clock and the chat
+   page opens the first time. Later, right-click the icon → **Open in web**.
 
 `Wony.bat` is how you start it every time — keep a shortcut to it somewhere
-handy, or have it start by itself when you log in:
+handy. Setup also offers to start Wony when you log in.
 
-```powershell
-python wony.py autostart install
-```
-
-After the packages are installed, the installer asks for everything the features
-you ticked need — API keys, the Google credentials file, permissions — checks
-each key against the service, and opens the browser for the Spotify and Google
-sign-ins. Press Enter to skip anything you do not have yet; it lists what is
-left and how to come back to it:
-
-```powershell
-python setup.py configure     # just the keys and sign-ins, any time later
-```
-
-You need one AI key:
+You need one AI service:
 
 | Provider           | Where to get a key                                        | Cost         | Your requests                                  |
 | ------------------ | --------------------------------------------------------- | ------------ | ----------------------------------------------- |
@@ -48,18 +36,20 @@ You need one AI key:
 | Ollama             | nothing to get — it runs on your own PC                   | free, slower | never leave this computer                       |
 
 With both a Claude and a Gemini key set and no provider chosen, Wony answers
-with Claude.
+with Claude. No key yet? Wony still starts — the chat page tells you where to
+paste one (Settings → AI).
 
-Prefer the terminal? `python setup.py`, then `python wony.py`.
-
-**Something not working?** Run `python wony.py doctor` for a checklist with
-fixes, or ask Wony "check setup".
+**Something not working?** Ask Wony _"check setup"_, or open **Features** to see
+which feature is off and why. Still stuck: [When something goes wrong](#when-something-goes-wrong).
 
 ---
 
 ## Using it
 
-**Type** in the chat page, or **talk**:
+The chat page opens with a short hello that lists things you can try right now
+and what you could switch on. Click one, or type your own.
+
+**Talk** instead of typing:
 
 | Way in    | How                                                                 |
 | --------- | ------------------------------------------------------------------- |
@@ -68,85 +58,52 @@ fixes, or ask Wony "check setup".
 | Tray icon | Right-click → **Listen now**.                                       |
 | Browser   | The microphone button in the chat page.                             |
 
-Things to try: _"what's the weather"_, _"what's it doing tomorrow"_, _"set a
-timer for 10 minutes"_, _"add milk to my shopping list"_, _"how much battery
-have I got"_, _"read my last email"_, _"what's in the PDF Marta sent"_,
-_"email Anna the notes"_, _"what's on my calendar tomorrow"_, _"invite Tom to
-Friday's sync with a Meet link"_, _"pharmacy near me"_, _"how long to drive to
-Warsaw"_, _"what does my lease doc say about notice"_, _"find the file about my
-lease"_, _"go to this page and tell me the battery size"_, _"play some jazz"_,
-_"turn off the kitchen light"_, _"remember I prefer Fahrenheit"_, _"what did we
-talk about on Monday"_.
+Things to try: _"what's the weather"_, _"set a timer for 10 minutes"_, _"add milk
+to my shopping list"_, _"how much battery have I got"_, _"read my last email"_,
+_"what's in the PDF Marta sent"_, _"email Anna the notes"_, _"what's on my
+calendar tomorrow"_, _"pharmacy near me"_, _"find the file about my lease"_,
+_"go to this page and tell me the battery size"_, _"play some jazz"_, _"turn off
+the kitchen light"_, _"remember I prefer Fahrenheit"_, _"what did we talk about on
+Monday"_. Ask _"what can you do"_ any time.
+
+Say _"thanks"_, _"stop"_ or _"that's all"_ to end a spoken conversation.
 
 ### Routines
 
 Say _"good morning"_ and Wony runs your **briefing** — a routine that comes with
-it, and that you own: _"add my shopping list to the briefing"_ rewrites it, and
-_"what's in my briefing"_ reads it back.
+it, and that you own: _"add my shopping list to the briefing"_ rewrites it.
 
-Make your own the same way: _"save a routine called good night that turns off
-the lights and sets an alarm for seven"_. Then _"run my good night routine"_.
-A routine is just your own words, so it can use anything Wony can do. Saving or
-deleting one is read back to you first.
-
-A timer can run a routine when it fires: _"every weekday at 8am run my
-briefing"_. Others: _"in 10 minutes pause the music"_, _"every day at 7am turn
-on the bedroom light"_.
-
-Say _"thanks"_, _"stop"_ or _"that's all"_ to end a spoken conversation.
+Make your own: _"save a routine called good night that turns off the lights and
+sets an alarm for seven"_. Then _"run my good night routine"_. A routine is just
+your own words, so it can use anything Wony can do. Saving or deleting one is
+read back to you first. A timer can run one: _"every weekday at 8am run my
+briefing"_.
 
 ### The chat page
 
-Two halves: the conversation on the left, and on the right the things worth
-looking at rather than asking about.
+| Tab        | What it is                                                                 |
+| ---------- | -------------------------------------------------------------------------- |
+| Dashboard  | Tiles for what is worth looking at: weather, today's events, timers, lists, music, your devices. Tiles appear when you switch the feature on. |
+| Features   | Every feature, an on/off switch for each, what it needs, and every command it has. |
+| Routines   | Your routines in plain words — run one, edit it, schedule it.              |
+| Settings   | Name, voice, microphone, AI provider, Google accounts, and the safety switches. |
 
-| Panel    | Appears when you enable | Shows                                                 |
-| -------- | ----------------------- | ----------------------------------------------------- |
-| Weather  | Weather                 | Temperature, wind, humidity, sunrise and sunset       |
-| Today    | Google Calendar         | Today's and tomorrow's events                         |
-| Timers   | Timers & reminders      | Everything counting down, with a cancel button        |
-| Lists    | Lists                   | Your shopping and todo lists                          |
-| Routines | Routines                | Every routine you have, and what each one does        |
-| Devices  | Home Assistant          | Every device by room, one card each, with its switches and settings |
-| Music    | Spotify                 | Cover art, transport and volume                       |
-| Accounts | Google accounts         | Add, sign in to and switch Google accounts            |
-| Settings | always                  | Everything below, without touching a config file      |
-
-The **bell** in the header holds anything Wony said while you were away — a
-timer that fired, new email it spotted. **All commands** at the bottom opens
-every command it knows, with a form for each.
+The chat is on the right. The **bell** holds anything Wony said while you were
+away — a timer that fired, new email it spotted.
 
 ### The tray icon
 
-Right-click it for: **Open in web**, **Listen now**, **Stop speaking**,
-**Mute**, **Wake word on/off**, **Sign in to Google again** (only when Google
-has signed Wony out), **Settings**, **Check for updates**, **Pause assistant**,
+Right-click it for: **Open in web**, **Listen now**, **Stop speaking**, **Mute**,
+**Wake word on/off**, **Sign in to Google again** (only when Google has signed
+Wony out), **Settings**, **Check for updates**, **Pause assistant**, **Restart**,
 **Exit**.
-
-Setup offers to start Wony when you log in. To change your mind later:
-
-```powershell
-python wony.py autostart install     # undo with: autostart uninstall
-```
 
 ---
 
-## Settings
+## What Wony may do on its own
 
-Open the chat page → **Settings**. Everything there is also in `config.yaml`,
-which you can still edit by hand; the page just means you don't have to.
-
-You can change the assistant's name and personality, the voice and how fast it
-speaks, the microphone and speakers, the wake word and hotkey, which AI provider
-answers, and which features are switched on.
-
-Claude and Gemini always use their fastest model (the newest Haiku or Flash) —
-there is nothing to pick. Temperatures and distances follow your Windows region;
-say _"remember I prefer Fahrenheit"_ (or miles, or metric) to change that.
-
-### What Wony may do on its own
-
-These nine start **off**. Nothing else can turn them on.
+These nine start **off**. Nothing else can turn them on. Change them in
+**Settings → What Wony may do on its own**.
 
 | Switch                           | Off (the default)                       | On                                          |
 | -------------------------------- | --------------------------------------- | ------------------------------------------- |
@@ -160,50 +117,44 @@ These nine start **off**. Nothing else can turn them on.
 | Learn about me on its own        | Remembers only what you ask it to       | Keeps facts it works out from your own data |
 | Tell it what I'm looking at      | Sees nothing unless you ask             | Sends the front window's title every message |
 
-They are `modules.gmail.allow_write`, `modules.calendar.allow_write`,
-`modules.drive.allow_write`, `modules.home_assistant.allow_locks`, `modules.desktop.allow_actions`,
-`modules.mcp.allow_install`, `assistant.proactive.enabled`,
-`assistant.memory.learn_from_my_data` and `modules.desktop.share_window_title`
-in `config.yaml`.
-
 **Speak up on its own** lets Wony watch for a low battery, a drive nearly full,
 a meeting about to start and mail Gmail marked important — and say something in
-its own words rather than a canned alert. Ask _"what do you watch for"_ to see
-the list, or _"stop watching for important email"_ to switch one off. A meeting
-about to start comes with who is coming, what you last wrote to them and
-anything on your lists with the meeting's name on it.
-
-Two more watchers stay off until you ask, whatever that switch says: _"watch my
-inbox"_ tells you about new mail as it arrives, and _"watch my calendar"_ about
-events someone adds. What you turn on or off is remembered after a restart.
+its own words. Ask _"what do you watch for"_ to see the list, or _"stop watching
+for important email"_ to switch one off. Two more watchers stay off until you ask:
+_"watch my inbox"_ and _"watch my calendar"_.
 
 **Learn about me on its own** lets Wony keep the things you mention in passing —
-the dog's name, that you cycle to work — instead of only what you say
-"remember that" about. With Gmail on it also reads your sent mail once a week to
-describe how you write, so a drafted reply sounds like you. Ask _"what do you
-know about me"_ to see everything it kept; the ones it worked out for itself say
-so, and _"forget that"_ throws one away.
+the dog's name, that you cycle to work. With Gmail on it also reads your sent
+mail once a week to describe how you write. Ask _"what do you know about me"_ to
+see everything it kept, and _"forget that"_ throws one away.
 
 **Tell it what I'm looking at** puts the title of your front window into each
 message, so _"what does this error mean"_ has something to point at. Titles name
 documents, tabs and who you are chatting to, which is why it ships off.
 
-Separately from those switches, anything that changes something you care about —
-sending or deleting mail, changing your calendar, cancelling a timer, shutting
-the PC down — is read back to you first and only happens once you say yes. In the
-chat page you get a confirm dialog; by voice or by typing, Wony tells you what it
-is about to do and waits for an answer.
+### Safe with what it reads
 
-The chat page has no password, so it only answers this computer, and it refuses
-requests made by other websites you have open.
+Emails, web pages, invites and files can contain text written to trick an
+assistant. Wony treats everything it reads from someone else as data, never as
+instructions. On top of that it asks before it:
+
+- visits a page you did not name or search for;
+- reads a file outside your Desktop, Documents and Downloads that you did not
+  name, or opens a program or script by path;
+- saves a fact, a note, a document or a watcher right after reading something it
+  did not get from you;
+- sets a timer that runs another command.
+
+It never reads or writes its own keys, settings, logs or database. The chat page
+has no password, so it only answers this computer and refuses requests made by
+other websites you have open.
 
 ---
 
 ## Features you can switch on
 
-Tick these during `install.bat`, or on the Settings page. The installer then
-asks for whatever the ticked ones need. Anything left incomplete simply stays
-off — nothing crashes, and `doctor` says what is missing.
+Tick these during `install.bat`, or on the **Features** page. Anything left
+incomplete simply stays off — nothing crashes, and Features says what is missing.
 
 | Feature                                      | What you need to bring                                                         |
 | -------------------------------------------- | ------------------------------------------------------------------------------ |
@@ -214,7 +165,7 @@ off — nothing crashes, and `doctor` says what is missing.
 | Computer health — battery, disk, memory      | none                                                                           |
 | Weather — now and the next five days         | free key from [openweathermap.org/api](https://openweathermap.org/api)         |
 | Maps & places — near me, travel times        | none (optional Google Maps key, below)                                         |
-| Web search and page reading                  | none (optional `TAVILY_API_KEY` for better results)                            |
+| Web search and page reading                  | none (optional Tavily key for better results)                                  |
 | Web browsing — clicks through pages for you  | none; uses Edge or Chrome, or downloads a small browser once                   |
 | Voice — speech in and out                    | none; downloads its speech models once                                         |
 | Wake word                                    | needs Voice                                                                    |
@@ -235,10 +186,10 @@ off — nothing crashes, and `doctor` says what is missing.
 
 1. Create an app at [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard).
 2. Set the Redirect URI to `http://127.0.0.1:8888/callback`.
-3. Paste the client ID and secret when setup asks for them.
+3. Paste the client ID and secret when setup (or the Features page) asks for them.
 
-Setup then opens a browser once to connect your account. Spotify must be open
-somewhere for playback to have a target; if it was closed, open it and ask again.
+A browser opens once to connect your account. Spotify must be open somewhere for
+playback to have a target; if it was closed, open it and ask again.
 
 ### Google — Gmail, Calendar, Drive and Contacts
 
@@ -261,8 +212,6 @@ Google will say it **hasn't verified this app**. It is your own app: click
 Testing, and publishing the app needs a public website, privacy policy and
 terms. Wony tells you once when it happens, warns you the day before, and
 **Sign in again** (Settings → Google accounts, or the tray menu) takes one click.
-Updating from a version with separate Gmail and Calendar sign-ins also asks you
-to sign in once.
 
 Want a second account? Say **"add google account work"** — the same consent —
 then ask for one by name ("what's in my work inbox") or let Wony search all.
@@ -277,7 +226,6 @@ What OpenStreetMap can't do:
 
 - no ratings, reviews or prices
 - opening hours are often missing or out of date, so "open now" isn't possible
-  (the recorded hours are shown when there are any)
 - no live traffic: driving times assume empty roads
 - no public transport routes
 - coverage varies by country and town
@@ -295,14 +243,13 @@ OpenStreetMap before the allowance runs out, so normal use costs nothing.
 2. **APIs & Services → Library**: enable **Places API (New)** and **Routes API**.
 3. **Credentials → Create credentials → API key**. Restrict it to those two APIs.
 4. Optional: **Quotas** → set a daily cap, so nothing can ever cost money.
-5. Paste it into setup or Settings (`GOOGLE_MAPS_API_KEY`).
+5. Paste it under Features → Maps & places.
 
 **Where "near me" is.** Windows' own location is the most accurate: Settings →
 Privacy & security → **Location** → turn on **Location services** and **Let
 desktop apps access your location**. Without it Wony uses the home address from
 Settings, and failing that guesses from your internet connection — good to
-roughly the city. Set how you usually get around (car, public transport,
-walking, cycling) in Settings.
+roughly the city.
 
 ### Web browsing
 
@@ -313,78 +260,45 @@ talking meanwhile, and _"stop background jobs"_ cancels it.
 
 It is always logged out, so it can't see anything behind your sign-ins, and it
 won't buy anything, fill in your details or download files. It only visits public
-websites. If a link came from an email or a page rather than from you, Wony asks
-before following it. Local Ollama models often can't drive a browser.
+websites. Local Ollama models often can't drive a browser.
 
 ### Finding files
 
 _"Find the file about my lease"_ searches names **and contents**, using the same
-index as the Start menu search. Windows indexes your user folders (Desktop,
-Documents, Downloads, Pictures…) by default; to add another folder, open
-**Indexing Options** from the Start menu → **Modify**. Whether PDF contents are
-searchable depends on the PDF filter installed on your PC. If Windows Search is
-switched off, Wony still matches file names, and says so.
+index as the Start menu search. Windows indexes your user folders by default; to
+add another folder, open **Indexing Options** from the Start menu → **Modify**.
+If Windows Search is switched off, Wony still matches file names, and says so.
 
 ### Home Assistant
 
 1. Home Assistant → your profile → **Security** → **Long-lived access tokens** →
    create one.
 2. Paste it when setup asks, along with the address you open Home Assistant at.
-   Setup checks both before saving them.
 
 Then: _"dim the bedroom lamp to 30"_, _"close the blinds"_, _"is the garage
-open"_, _"start the vacuum"_, _"send the vacuum home"_, _"set the suction to
-turbo"_, _"turn all the lights off"_. Anything your Home Assistant can do, Wony
-can ask it to do — including devices added through HACS. Ask _"what can the
-vacuum do"_ if a device does not respond to the word you used.
-
-A room or a device type has to be named before Wony will change a whole set of
-things at once, and anything you have hidden in Home Assistant stays hidden
-here.
-
-Locks, alarms and the garage stay refused until you allow them.
+open"_, _"start the vacuum"_, _"turn all the lights off"_. A room or a device type
+has to be named before Wony will change a whole set of things at once. Locks,
+alarms and the garage stay refused until you allow them.
 
 ### Ollama — no API key, runs locally
 
-```powershell
-ollama serve
-```
-
-Pick **Ollama** when setup asks which service should answer — it lists the
-models you have pulled — or set the provider on the Settings page. Replies are slower
-and less capable than Claude or Gemini, but nothing leaves your machine.
+Install [Ollama](https://ollama.com), pull a model, and pick **Ollama** when setup
+asks which service should answer (or in Settings → AI). Replies are slower and
+less capable than Claude or Gemini, but nothing leaves your machine.
 
 ### Voice
 
-Speech recognition ([faster-whisper](https://github.com/SYSTRAN/faster-whisper))
-and speech ([Kokoro](https://github.com/thewh1teagle/kokoro-onnx)) both run
-locally — no key, no audio leaving the PC. An NVIDIA GPU is used automatically
-if you have one; otherwise it runs on the processor, which works fine and is
-slower. `python wony.py doctor` shows which.
-
-Wony starts speaking as soon as the first sentence is ready rather than waiting
-for the whole reply, and you can talk over it to interrupt.
+Speech recognition and speech both run on this PC — no key, no audio leaving it.
+An NVIDIA GPU is used automatically if you have one; otherwise the processor does
+the work, which is fine and slower. Wony is English-only for now. It starts
+speaking as soon as the first sentence is ready, and you can talk over it to
+interrupt.
 
 ### Wake word
 
-Off by default. Switch it on in Settings and pick one of the built-in phrases:
-`hey jarvis`, `alexa`, `hey mycroft`, `hey rhasspy`. If a configured phrase or
-model is missing, Wony falls back to `hey jarvis` and says so in the
-diagnostics banner rather than going quietly deaf.
-
-Want it to answer to something else? That needs training a small model:
-
-```powershell
-python setup.py wakeword
-```
-
-It asks for your phrase, records you saying it a few times (the single biggest
-accuracy win), wires up the config, and prints the one training command to run —
-either `training/train_hey_wony.sh` (WSL, ~4–6h on your own GPU) or
-`training/train_hey_wony.ipynb` (Colab, ~4–8h free). Both are resumable, and the
-script pauses so you can listen to a few generated clips before committing to
-the long part. Re-running after changing settings needs `--fresh`, or old clips
-stay mixed in.
+Off by default. Switch it on in Settings and pick a built-in phrase: `hey
+jarvis`, `alexa`, `hey mycroft`, `hey rhasspy`. A custom phrase needs training a
+small model; see [docs/developers.md](docs/developers.md).
 
 ---
 
@@ -392,40 +306,22 @@ stay mixed in.
 
 | Problem                              | Fix                                                        |
 | ------------------------------------ | ---------------------------------------------------------- |
-| Tray icon never appears              | Run `python wony.py tray` in a terminal and read the error |
-| "AI provider not ready"              | `python setup.py configure` and give it a key              |
-| It answers but never speaks          | Check **Mute** in the tray menu, and Voice is installed    |
+| Nothing happens when I open Wony.bat | Double-click `install.bat` first                           |
+| Tray icon never appears              | Check the hidden icons arrow next to the clock             |
+| The chat page is blank               | Node.js was missing when you installed — install it, then run `install.bat` again |
+| "No AI service is set up yet"        | Settings → AI, paste a key or pick Ollama                  |
+| It answers but never speaks          | Check **Mute** in the tray menu, and that Voice is installed |
 | It mishears or cuts you off          | Raise **Pause before answering** in Settings               |
-| Wake word fires on its own           | Raise **Wake sensitivity** in Settings                     |
-| Wake word never fires                | Lower it; check the mic in `python wony.py doctor`         |
+| Wake word fires on its own           | Raise **Wake sensitivity** in Settings (higher = pickier)  |
+| Wake word never fires                | Lower it; check the microphone in Settings                 |
+| A feature says "Run install.bat again" | Do that and tick the feature it names                    |
 | Music commands fail                  | Open Spotify on some device, then ask again                |
-| "Google signed me out"               | Press **Sign in again** (Settings → Google accounts, or the tray), or say "authorize <account name>" |
+| "Google signed me out"               | **Sign in again** (Settings → Google accounts, or the tray) |
 | "Near me" is in the wrong place      | Turn on Windows location, or set your home address in Settings |
-| A file search misses a file          | Add its folder to the Windows search index (below)         |
-| Second copy exits silently           | Only one Wony runs at a time — check the tray              |
-| Started at login but nothing happens | Task Scheduler → `WonyAssistant` → Last Run Result         |
+| A file search misses a file          | Add its folder to the Windows search index                 |
+| A second copy exits silently         | Only one Wony runs at a time — check the tray              |
 
-`python wony.py doctor` checks all of it at once and tells you what to fix.
-
----
-
-## Running it other ways
-
-`Wony.bat` is the everyday way in. From a terminal you can also run:
-
-```powershell
-python wony.py            # the same thing Wony.bat does: tray + web page
-python wony.py text       # plain text conversation in the terminal
-python wony.py voice      # voice only, no tray
-python wony.py web        # web page only
-python wony.py doctor     # check the setup and exit
-python setup.py configure # add a key or sign in again, without installing
-```
-
-Re-run `install.bat` (or `python setup.py`) any time to add or remove features.
-It keeps your `.env` and `config.yaml` and only installs what is newly ticked.
-
-Changing Wony itself? See [docs/developers.md](docs/developers.md).
+Ask Wony _"check setup"_ for a full checklist.
 
 ---
 
@@ -459,3 +355,7 @@ What leaves this computer, and only when a feature you switched on needs it:
 | Shazam                                  | An audio fingerprint, not the recording itself     | Song recognition                            |
 
 No telemetry: nothing is sent back to whoever made Wony.
+
+---
+
+Changing Wony itself? See [docs/developers.md](docs/developers.md).

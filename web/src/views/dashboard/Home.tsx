@@ -90,7 +90,7 @@ export function Home() {
     const sig = `control_home_device(target="${deviceName.toLowerCase()}", action="${control.guarded ? (control.on ? 'lock' : 'unlock') : nextAction}")`;
     if (control.guarded) {
       if (!panel!.locks_allowed) {
-        setNote('Locked off in config.yaml — set modules.home_assistant.allow_locks to change it.');
+        setNote('Locks are switched off. Turn on "Unlock doors and open the garage" in Settings to allow them.');
         return;
       }
       requestConfirm({
@@ -139,7 +139,7 @@ export function Home() {
             const blocked = main.guarded && !panel.locks_allowed;
             const disabled = busy === main.entity_id || !main.available || blocked;
             const stateText = blocked
-              ? 'Locked off in config.yaml'
+              ? 'Locks are off in Settings'
               : !main.available
                 ? 'Unavailable'
                 : main.level !== null

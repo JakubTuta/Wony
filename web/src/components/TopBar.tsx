@@ -7,8 +7,8 @@ export type View = 'dashboard' | 'modules' | 'macros' | 'settings';
 
 const NAV: { id: View; label: string }[] = [
   { id: 'dashboard', label: 'Dashboard' },
-  { id: 'modules', label: 'Modules & jobs' },
-  { id: 'macros', label: 'Macros' },
+  { id: 'modules', label: 'Features' },
+  { id: 'macros', label: 'Routines' },
   { id: 'settings', label: 'Settings' },
 ];
 

@@ -33,27 +33,27 @@ def _humanize_env_var(var: str) -> str:
 
 # Modules a user picks from, with what each one gives them. Order is the order
 # they appear in the UI.
-MODULES: typing.List[typing.Tuple[str, str, str]] = [
-    ("basics", "Everyday basics", "Time, date, shut down the PC."),
-    ("routines", "Routines", "Named sets of steps you run by name, like the morning briefing."),
-    ("scheduler", "Timers & reminders", "Timers and alarms that survive a restart."),
-    ("notes", "Lists", "Shopping and todo lists you add to by voice."),
-    ("weather", "Weather", "Now and the next few days, here or any city."),
-    ("maps", "Maps & places", "Places near you and how long it takes to get somewhere."),
-    ("web", "Web search", "Search the web, read pages, and click through them to find things."),
-    ("system", "Computer health", "Battery, disk space, memory and network."),
-    ("spotify", "Spotify", "Play, pause, skip, search, volume."),
-    ("gmail", "Gmail", "Read, search and watch your inbox."),
-    ("calendar", "Google Calendar", "Events, availability and free slots."),
-    ("drive", "Google Drive", "Find and read your Drive files; create and edit Docs and Sheets."),
-    ("contacts", "Google Contacts", "Look people up, and email or invite them by name."),
-    ("google_accounts", "Google accounts", "Use more than one Google account."),
-    ("home_assistant", "Home Assistant", "Lights, blinds, thermostats, vacuums, scenes."),
-    ("desktop", "Desktop control", "Open apps and windows, clipboard, read and write files."),
-    ("screen", "Screen reading", "Screenshot the screen and read text on it."),
-    ("shazam", "Song recognition", "Name the song that is playing."),
-    ("league", "League of Legends", "Launch the game and auto-accept queue."),
-    ("mcp", "MCP tool servers", "Connect external Model Context Protocol servers."),
+MODULES: typing.List[typing.Tuple[str, str, str, str]] = [
+    ("basics", "Everyday basics", "Time, date, shut down the PC.", "What time is it?"),
+    ("routines", "Routines", "Named sets of steps you run by name, like the morning briefing.", "Run my morning briefing"),
+    ("scheduler", "Timers & reminders", "Timers and alarms that survive a restart.", "Set a 10 minute timer"),
+    ("notes", "Lists", "Shopping and todo lists you add to by voice.", "Add milk to my shopping list"),
+    ("weather", "Weather", "Now and the next few days, here or any city.", "What's the weather?"),
+    ("maps", "Maps & places", "Places near you and how long it takes to get somewhere.", "Pharmacy near me"),
+    ("web", "Web search", "Search the web, read pages, and click through them to find things.", "What's new with Claude?"),
+    ("system", "Computer health", "Battery, disk space, memory and network.", "How is my computer doing?"),
+    ("spotify", "Spotify", "Play, pause, skip, search, volume.", "Play some jazz"),
+    ("gmail", "Gmail", "Read, search and watch your inbox.", "Any important email?"),
+    ("calendar", "Google Calendar", "Events, availability and free slots.", "What's on today?"),
+    ("drive", "Google Drive", "Find and read your Drive files; create and edit Docs and Sheets.", "What changed in my Drive lately?"),
+    ("contacts", "Google Contacts", "Look people up, and email or invite them by name.", "What's Anna's email?"),
+    ("google_accounts", "Google accounts", "Use more than one Google account.", "Add a Google account"),
+    ("home_assistant", "Home Assistant", "Lights, blinds, thermostats, vacuums, scenes.", "Turn off the lights"),
+    ("desktop", "Desktop control", "Open apps and windows, clipboard, read and write files.", "Open Notepad"),
+    ("screen", "Screen reading", "Screenshot the screen and read text on it.", "What does this error say?"),
+    ("shazam", "Song recognition", "Name the song that is playing.", "What song is this?"),
+    ("league", "League of Legends", "Launch the game and auto-accept queue.", "Launch League of Legends"),
+    ("mcp", "MCP tool servers", "Connect external Model Context Protocol servers.", "What tool servers are connected?"),
 ]
 
 # Always on, whatever config.yaml says (see ALWAYS_ON) — listed separately so
@@ -64,6 +64,40 @@ _ALWAYS_ON_MODULES: typing.List[typing.Tuple[str, str, str]] = [
     ("employer", "Conversation", "Runs your requests through the AI and the other jobs."),
 ]
 
+class Capability(typing.NamedTuple):
+    key: str
+    label: str
+    description: str
+    example: str
+
+
+def capabilities() -> typing.Dict[str, typing.List[Capability]]:
+    """Switchable features split into what already works right now and what
+    is switched off but available.
+
+    The one source behind the system prompt (modules/ai.py), the chat
+    suggestion chips and the welcome card — so "what can Wony do" can't give
+    three different answers depending which of them you ask. A module that is
+    switched on but broken (a missing package, a bad key) is neither: it has
+    its own fix-it hint in system_status/doctor already.
+    """
+    from helpers.registry import ServiceRegistry
+
+    enabled = Config.enabled_modules()
+    statuses = ServiceRegistry.get_module_status()
+    working: typing.List[Capability] = []
+    available: typing.List[Capability] = []
+    for key, label, description, example in MODULES:
+        cap = Capability(key, label, description, example)
+        if key in enabled:
+            state, _ = statuses.get(key, ("", ""))
+            if state == "enabled":
+                working.append(cap)
+        else:
+            available.append(cap)
+    return {"working": working, "available": available}
+
+
 # A field the UI renders. restart=True means the change only takes effect after
 # Wony is restarted, and the UI says so rather than letting it look broken.
 class Field(typing.NamedTuple):
@@ -72,6 +106,11 @@ class Field(typing.NamedTuple):
     kind: str  # text | longtext | number | toggle | choice
     help: str = ""
     choices: typing.Tuple[str, ...] = ()
+    # Display text for a choice whose raw value means nothing to someone who
+    # has never read the code — a voice name like "af_heart" tells a new user
+    # nothing about who they'd be picking. Choices absent from this dict (most
+    # of them: device names, "car"/"walking", …) just show their own value.
+    choice_labels: typing.Dict[str, str] = {}
     minimum: typing.Optional[float] = None
     maximum: typing.Optional[float] = None
     step: typing.Optional[float] = None
@@ -93,7 +132,14 @@ _FIELDS: typing.List[typing.Tuple[str, typing.List[Field]]] = [
         Field("voice.tts_voice", "Voice", "choice",
               "Which voice speaks the replies.",
               choices=("af_heart", "af_sarah", "af_bella", "am_michael", "am_adam",
-                       "bf_emma", "bf_isabella", "bm_george", "bm_lewis")),
+                       "bf_emma", "bf_isabella", "bm_george", "bm_lewis"),
+              choice_labels={
+                  "af_heart": "Heart — US, female", "af_sarah": "Sarah — US, female",
+                  "af_bella": "Bella — US, female", "am_michael": "Michael — US, male",
+                  "am_adam": "Adam — US, male", "bf_emma": "Emma — UK, female",
+                  "bf_isabella": "Isabella — UK, female", "bm_george": "George — UK, male",
+                  "bm_lewis": "Lewis — UK, male",
+              }),
         Field("voice.speed", "Speaking speed", "number", "1.0 is normal.",
               minimum=0.5, maximum=2.0, step=0.1),
         Field("voice.volume", "Speaking volume", "number", "0 is silent, 1 is loudest.",
@@ -222,7 +268,7 @@ def _dynamic_secret_fields() -> typing.List[Field]:
     """
     from helpers.registry import ServiceRegistry
 
-    known_modules = {key for key, _, _ in MODULES}
+    known_modules = {key for key, _, _, _ in MODULES}
     fields: typing.List[Field] = []
     seen: typing.Set[str] = set()
     for module_name, requires in ServiceRegistry.get_module_requirements().items():
@@ -344,6 +390,7 @@ def describe() -> typing.Dict[str, typing.Any]:
                 "kind": field.kind,
                 "help": field.help,
                 "choices": _choices_for(field, _current(field)) if field.kind == "choice" else [],
+                "choice_labels": field.choice_labels,
                 "min": field.minimum,
                 "max": field.maximum,
                 "step": field.step,
@@ -360,10 +407,10 @@ def describe() -> typing.Dict[str, typing.Any]:
     return {
         "sections": sections,
         "modules": [
-            {"key": key, "label": label, "help": help_text, "enabled": key in enabled, "always_on": False}
-            for key, label, help_text in MODULES
+            {"key": key, "label": label, "help": help_text, "example": example, "enabled": key in enabled, "always_on": False}
+            for key, label, help_text, example in MODULES
         ] + [
-            {"key": key, "label": label, "help": help_text, "enabled": True, "always_on": True}
+            {"key": key, "label": label, "help": help_text, "example": "", "enabled": True, "always_on": True}
             for key, label, help_text in _ALWAYS_ON_MODULES
         ],
         "config_file": CONFIG_FILE,
@@ -463,13 +510,13 @@ def apply(
         restart = restart or field.restart
 
     if modules is not None:
-        known = {key for key, _, _ in MODULES}
+        known = {key for key, _, _, _ in MODULES}
         unknown = [name for name in modules if name not in known]
         if unknown:
             raise SettingsError(f"Unknown module(s): {', '.join(unknown)}.")
         # Always-on modules are not written: the registry treats them as on
         # whatever the file says, and listing them reads like a choice.
-        to_write["enabled_modules"] = [key for key, _, _ in MODULES if key in set(modules)]
+        to_write["enabled_modules"] = [key for key, _, _, _ in MODULES if key in set(modules)]
         restart = True
 
     written: typing.List[str] = []

@@ -29,6 +29,16 @@ export function humanize(name: string): string {
   return name.replace(/_/g, ' ');
 }
 
+/** "action: delete, id: abc123" — a confirm card's args in prose, not code.
+ * Mirrors signature()'s filtering (only args with a value) but drops the
+ * quotes and parens that make sense in a call chip, not in a sentence. */
+export function readableArgs(args: Record<string, unknown> = {}): string {
+  return Object.entries(args)
+    .filter(([, v]) => v !== undefined && v !== null && v !== '')
+    .map(([k, v]) => `${humanize(k)}: ${typeof v === 'object' ? JSON.stringify(v) : String(v)}`)
+    .join(', ');
+}
+
 /** Jobs whose entire job is reading or controlling something a dashboard
  * widget already shows live (Now playing, Agenda, Weather, Home, Inbox) —
  * pinning one as a Quick Control would just be a second copy of the same

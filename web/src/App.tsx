@@ -11,8 +11,8 @@ import { Settings } from './views/Settings';
 
 const TITLES: Record<View, [string, string]> = {
   dashboard: ['Dashboard', 'Pinned controls and live data'],
-  modules: ['Modules & jobs', 'Run any job directly'],
-  macros: ['Macros', 'Routines in plain words, run on tap or on a schedule'],
+  modules: ['Features', 'Run any command directly'],
+  macros: ['Routines', 'Steps in plain words, run on tap or on a schedule'],
   settings: ['Settings', 'Voice, integrations, accounts, and what Wony may do on its own'],
 };
 

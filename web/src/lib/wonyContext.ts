@@ -1,5 +1,6 @@
 import { createContext, useContext } from 'react';
 import type {
+  Capabilities,
   ChatCall,
   Diagnostic,
   HealthResponse,
@@ -49,6 +50,8 @@ export interface WonyContextValue {
 
   panels: PanelInfo[];
   reloadPanels: () => void;
+
+  capabilities: Capabilities | null;
 
   routinesCount: number;
   reloadRoutinesCount: () => void;

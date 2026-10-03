@@ -65,6 +65,9 @@ def build_agent_system_prompt() -> typing.List[str]:
     """
     import datetime
 
+    from helpers.settings import capabilities
+
+    working = {cap.key for cap in capabilities()["working"]}
     now = datetime.datetime.now().astimezone()
     volatile = (
         f"Current local date and time: {now.strftime('%A, %B %d, %Y, %H:%M')} ({now.tzname()})."
@@ -126,15 +129,19 @@ def build_agent_system_prompt() -> typing.List[str]:
         "\n\n8. ANSWER FROM HISTORY — BUT FETCH WHEN ASKED FOR MORE: For a follow-up"
         " whose answer is already fully present in the conversation ('what was it about',"
         " 'when is that'), answer directly from history. But if the user asks for detail"
-        " you do NOT already have — e.g. the briefing listed unread senders and they now"
-        " ask to read those emails, see the bodies, or get details of today's meetings —"
-        " call the matching email/calendar tool to fetch it (find_emails with view='full',"
-        " find_events, etc.). You DO have access to the user's Gmail and Calendar via"
-        " these tools: never reply that you cannot access their email or calendar. A tool"
-        " returning zero results is a valid answer ('no unread emails'), not an error."
-        " This applies to timers/reminders too — 'how much time is left' or 'is my alarm"
-        " still running' means call `manage_reminders` for the real remaining time. Never"
-        " compute or guess a countdown yourself from when it was set."
+        " you do NOT already have, call the matching tool to fetch it rather than guessing."
+        + (
+            " E.g. the briefing listed unread senders and they now ask to read those"
+            " emails, see the bodies, or get details of today's meetings — call"
+            " find_emails with view='full' or find_events. You DO have access to the"
+            " user's Gmail and Calendar via these tools: never reply that you cannot"
+            " access their email or calendar."
+            if {"gmail", "calendar"} <= working else ""
+        )
+        + " A tool returning zero results is a valid answer ('no unread emails'), not an"
+        " error. This applies to timers/reminders too — 'how much time is left' or 'is my"
+        " alarm still running' means call `manage_reminders` for the real remaining time."
+        " Never compute or guess a countdown yourself from when it was set."
         "\n\n9. RECALL FROM PERSISTENT HISTORY: If the user asks about past conversations"
         " across sessions ('what did we discuss last week', 'did I mention X before',"
         " 'what did we talk about on Monday'), call `recall` — pass `query` for a topic,"
@@ -210,9 +217,7 @@ class AI:
     def __init__(self) -> None:
         response = helpers_model.get_model()
         if response is None:
-            raise Exception(
-                "You need to set either the GEMINI_API_KEY or ANTHROPIC_API_KEY environment variable."
-            )
+            raise Exception("No AI key is saved yet. Paste one in Settings → AI.")
 
         model, api_key = response
         if model == "gemini":
@@ -242,7 +247,10 @@ class AI:
         Returns:
             str: Confirmation that history was cleared.
         """
+        from helpers.memory_db import mark_chat_cleared
+
         Conversation.clear()
+        mark_chat_cleared()
         return "Conversation history cleared."
 
     @register_job(module_name="ai", confirms=_remember_needs_confirm)

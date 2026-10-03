@@ -296,7 +296,21 @@ export async function ackNotifications(id?: number): Promise<void> {
 
 export interface AppConfig {
   assistant: { name: string };
+  /** False when the server was started on its own (no tray to relaunch it). */
+  can_restart: boolean;
   voice: { stt: { silence_ms: number; max_seconds: number } };
+}
+
+export interface Capability {
+  key: string;
+  label: string;
+  description: string;
+  example: string;
+}
+
+export interface Capabilities {
+  working: Capability[];
+  available: Capability[];
 }
 
 // ── Settings ───────────────────────────────────────────────────────────────
@@ -309,6 +323,9 @@ export interface SettingField {
   kind: 'text' | 'longtext' | 'number' | 'toggle' | 'choice' | 'secret';
   help: string;
   choices: string[];
+  /** Display text for a choice whose raw value (a voice name like "af_heart")
+   * means nothing on its own. Choices absent here just show their own value. */
+  choice_labels: Record<string, string>;
   min: number | null;
   max: number | null;
   step: number | null;
@@ -326,6 +343,7 @@ export interface SettingsModule {
   key: string;
   label: string;
   help: string;
+  example: string;
   enabled: boolean;
   always_on: boolean;
 }
@@ -399,6 +417,20 @@ export interface RoutinesPanel {
 export async function fetchConfig(): Promise<AppConfig> {
   const res = await fetch(`${BASE}/config`);
   if (!res.ok) throw new Error(`Config fetch failed: ${res.status}`);
+  return res.json();
+}
+
+export async function restartApp(): Promise<void> {
+  const res = await fetch(`${BASE}/restart`, { method: 'POST' });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(typeof data.detail === 'string' ? data.detail : `Restart failed (${res.status}).`);
+  }
+}
+
+export async function fetchCapabilities(): Promise<Capabilities> {
+  const res = await fetch(`${BASE}/capabilities`);
+  if (!res.ok) throw new Error(`Capabilities fetch failed: ${res.status}`);
   return res.json();
 }
 
@@ -521,8 +553,8 @@ export async function transcribeAudio(blob: Blob): Promise<TranscribeResult> {
     body: blob,
     headers: { 'Content-Type': blob.type || 'audio/webm' },
   });
-  if (!res.ok) throw new Error(`STT failed: ${res.status}`);
-  const data = await res.json();
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : `Voice input failed (${res.status}).`);
   return { text: data.text ?? '', warning: data.warning };
 }
 

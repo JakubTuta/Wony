@@ -233,18 +233,43 @@ def build_app() -> FastAPI:
     @app.get("/api/config")
     def get_config() -> typing.Dict[str, typing.Any]:
         """Return frontend-relevant config values."""
+        from helpers import restart
         from helpers.audio import _MAX_CAPTURE_SECONDS
 
         return {
             "assistant": {
                 "name": Config.get("assistant.name", "Wony"),
             },
+            "can_restart": restart.available(),
             "voice": {
                 "stt": {
                     "silence_ms": int(Config.get("voice.stt.silence_ms", 700)),
                     "max_seconds": int(_MAX_CAPTURE_SECONDS),
                 },
             },
+        }
+
+    @app.post("/api/restart")
+    def restart_app() -> typing.Dict[str, str]:
+        from helpers import restart
+
+        if not restart.request():
+            raise HTTPException(
+                status_code=409,
+                detail="Wony wasn't started from the tray icon, so it can't restart itself. Close it and start it again.",
+            )
+        return {"status": "restarting"}
+
+    @app.get("/api/capabilities")
+    def get_capabilities() -> typing.Dict[str, typing.Any]:
+        """What Wony can do right now, and what's switched off but available —
+        the one source behind the chat chips and the welcome card."""
+        from helpers.settings import capabilities
+
+        caps = capabilities()
+        return {
+            "working": [cap._asdict() for cap in caps["working"]],
+            "available": [cap._asdict() for cap in caps["available"]],
         }
 
     @app.get("/api/health")
@@ -543,8 +568,10 @@ def build_app() -> FastAPI:
     @app.post("/api/chat/clear")
     def clear_chat() -> typing.Dict[str, str]:
         from helpers.conversation import Conversation
+        from helpers.memory_db import mark_chat_cleared
 
         Conversation.clear()
+        mark_chat_cleared()
         return {"status": "cleared"}
 
     @app.post("/api/data/wipe")
@@ -644,14 +671,19 @@ def build_app() -> FastAPI:
 
             from helpers.recognizer import transcribe
             return {"text": transcribe(audio)}
+        except ImportError:
+            raise HTTPException(
+                status_code=500,
+                detail="Voice isn't installed. Run install.bat again and tick Voice I/O.",
+            )
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"STT failed: {e}")
+            raise HTTPException(status_code=500, detail=f"Couldn't turn that into text: {e}")
 
     @app.get("/api/chat/history")
     def chat_history(limit: int = 50) -> typing.Dict[str, typing.Any]:
-        from helpers.memory_db import recent_turns
+        from helpers.memory_db import visible_turns
 
-        turns = recent_turns(min(limit, 200))
+        turns = visible_turns(min(limit, 200))
         return {
             "turns": [
                 {

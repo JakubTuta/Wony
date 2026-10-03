@@ -10,6 +10,7 @@ import {
   ackNotifications,
   clearChat as apiClearChat,
   connectSocket,
+  fetchCapabilities,
   fetchHealth,
   fetchHistory,
   fetchJobs,
@@ -23,6 +24,7 @@ import {
   wipeData as apiWipeData,
 } from '../api';
 import type {
+  Capabilities,
   ChatCall,
   Diagnostic,
   HealthResponse,
@@ -79,6 +81,11 @@ export function WonyProvider({ children }: { children: ReactNode }) {
     fetchPanels().then(setPanels).catch(() => {});
   }, []);
 
+  const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
+  const reloadCapabilities = useCallback(() => {
+    fetchCapabilities().then(setCapabilities).catch(() => {});
+  }, []);
+
   const [routinesCount, setRoutinesCount] = useState(0);
   const reloadRoutinesCount = useCallback(() => {
     fetchPanel<RoutinesPanel>('routines').then((r) => setRoutinesCount(r.data?.routines.length ?? 0));
@@ -89,8 +96,9 @@ export function WonyProvider({ children }: { children: ReactNode }) {
     reloadHealth();
     reloadSettings();
     reloadPanels();
+    reloadCapabilities();
     reloadRoutinesCount();
-  }, [reloadHealth, reloadSettings, reloadPanels, reloadRoutinesCount]);
+  }, [reloadHealth, reloadSettings, reloadPanels, reloadCapabilities, reloadRoutinesCount]);
 
   // ---------------------------------------------------------------- pins
   const [pins, setPinsState] = useState<Pin[] | null>(null);
@@ -139,7 +147,11 @@ export function WonyProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const unreadCount = useMemo(
-    () => notifications.filter((n) => !n.acknowledged).length + diagnostics.length,
+    // Info diagnostics ("Engine loaded", "Using GPU") are log lines, not
+    // something that needs a person — counting them put a badge on every start.
+    () =>
+      notifications.filter((n) => !n.acknowledged).length +
+      diagnostics.filter((d) => d.level !== 'info').length,
     [notifications, diagnostics],
   );
 
@@ -418,6 +430,7 @@ export function WonyProvider({ children }: { children: ReactNode }) {
     reloadSettings,
     panels,
     reloadPanels,
+    capabilities,
     routinesCount,
     reloadRoutinesCount,
     jobRanAt,

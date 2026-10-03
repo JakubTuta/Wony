@@ -42,7 +42,7 @@ _MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024
     requires=Requirement(
         files=[CREDENTIALS_FILE],
         pip_modules=["googleapiclient", "google_auth_oauthlib"],
-        setup_hint="Run: python setup.py configure — it sets up Google sign-in.",
+        setup_hint="Open Settings → Google accounts and sign in.",
     ),
 )
 class Drive:

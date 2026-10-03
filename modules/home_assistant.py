@@ -281,9 +281,9 @@ def _requirement() -> Requirement:
         env_vars=[_TOKEN_ENV],
         check=lambda: bool(_base_url()),
         setup_hint=(
-            f"Add {_TOKEN_ENV} to .env (Home Assistant → your profile → Security → "
-            "Long-lived access tokens) and set modules.home_assistant.base_url "
-            "in config.yaml to your Home Assistant URL."
+            "Paste a long-lived access token (Home Assistant → your profile → "
+            "Security → Long-lived access tokens) here, and set the Home Assistant "
+            "address below."
         ),
     )
 

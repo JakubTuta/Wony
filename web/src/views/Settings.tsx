@@ -5,6 +5,7 @@ import type { AccountsPanel, GoogleAccount, SettingField, SettingsResponse } fro
 import { useWony } from '../lib/wonyContext';
 import { CARD, SectionLabel } from '../components/ui';
 import { inputClass, SettingRow, type Draft } from '../components/SettingField';
+import { RestartButton } from '../components/RestartButton';
 
 export function Settings() {
   const { requestConfirm, wipeAllData } = useWony();
@@ -48,7 +49,7 @@ export function Settings() {
     <div className="px-8 pb-10 flex flex-col gap-6 max-w-2xl">
       {data.sections.map((section) => {
         // A field scoped to one module lives on that module's own page in
-        // Modules & jobs instead — configuring it and turning the module on
+        // Features instead — configuring it and turning the module on
         // or off happen in the same place there.
         const fields = section.fields.filter((f) => !f.module);
         if (fields.length === 0) return null;
@@ -81,13 +82,16 @@ export function Settings() {
           </span>
         )}
         {saved === 'restart' && (
-          <span className="flex items-center gap-1.5 text-xs text-red">
-            <RotateCw size={13} /> Saved — restart Wony for all of it to take effect.
-          </span>
+          <>
+            <span className="flex items-center gap-1.5 text-xs text-red">
+              <RotateCw size={13} /> Saved — restart Wony for all of it to take effect.
+            </span>
+            <RestartButton />
+          </>
         )}
       </div>
 
-      <p className="text-[11px] text-muted">These are stored in {data.config_file}, which you can still edit by hand.</p>
+      <p className="text-[11px] text-muted">Settings are saved on this computer only.</p>
 
       <Accounts />
 

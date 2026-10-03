@@ -129,11 +129,25 @@ def shutdown() -> None:
 
 
 def get_ai_client() -> typing.Any:
+    """The AI provider's client, resolved lazily so pasting a key into
+    Settings makes the next turn work without a restart.
+
+    No key at all is a normal, expected state the first time Wony runs —
+    the AI service's own __init__ fails and is caught by register_service,
+    leaving it unregistered rather than crashing the app. Retrying the
+    registration here is what picks up a key added since.
+    """
     from helpers.registry import ServiceRegistry
 
     inst = ServiceRegistry.get_service_instance("ai")
     if inst is None:
-        raise BootstrapError("AI service not registered.")
+        ServiceRegistry.reinitialize_module("ai")
+        inst = ServiceRegistry.get_service_instance("ai")
+    if inst is None:
+        raise BootstrapError(
+            "No AI service is set up yet. Open Settings → AI and paste a key from "
+            "Anthropic or Google Gemini, or pick Ollama to run fully on this PC."
+        )
     return inst.client
 
 
@@ -179,7 +193,16 @@ def bootstrap(
 
     ai_ok, ai_msg = describe_readiness()
     if not ai_ok:
-        raise BootstrapError(f"AI provider not ready.\n{ai_msg}")
+        # Degrade, don't disable: no AI key is how Wony looks the first time
+        # it's ever run. The tray and web page still have to come up so there
+        # is somewhere to paste one — modules.ai's own __init__ fails the same
+        # way and is caught by register_service, so every other module still
+        # loads; run_turn() gives a friendly answer until a key is added.
+        import helpers.diagnostics
+
+        helpers.diagnostics.add("warning", "AI", f"AI provider not ready: {ai_msg}")
+        if not quiet:
+            print(f"[AI] Not ready: {ai_msg}")
 
     # Import Employer AFTER Config.load() so module decorators see correct gates.
     from modules.employer import Employer
@@ -202,10 +225,10 @@ def bootstrap(
     if seed_conversation:
         try:
             from helpers.conversation import Conversation
-            from helpers.memory_db import recent_turns
+            from helpers.memory_db import visible_turns
 
             max_turns = int(Config.get("ai.history.max_turns", 5))
-            for turn in recent_turns(max_turns):
+            for turn in visible_turns(max_turns):
                 Conversation._turns.append(
                     {
                         "user": turn["user_text"],
