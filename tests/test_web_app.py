@@ -1,9 +1,8 @@
-"""The web UI trusts three shapes from this API: `confirms` on every job (so it
-can render "Always confirms" / "Confirms on: …" without a hardcoded list),
+"""The web UI trusts two shapes from this API that only this branch has:
 `needs_confirm` surviving the JSON round-trip on a blocked tool call (so a
 reloaded chat still shows the inline confirm card), and `/api/pins` rejecting
 a pin that names a job that does not exist (the endpoint has no other
-allowlist).
+allowlist). The routes both branches share are in test_api_contract.py.
 
 Run directly: python tests/test_web_app.py
 """
@@ -90,16 +89,22 @@ class TestLocalOnly(unittest.TestCase):
                 self.assertNotIn("redoc", resp.text.lower())
 
 
-class TestAllowedOrigin(unittest.TestCase):
-    def test_rules(self) -> None:
-        from helpers.server_address import allowed_origin
+class TestShellIsNeverStale(unittest.TestCase):
+    """After a rebuild the browser must ask again for index.html: a copy served
+    from disk keeps naming the old hashed bundle, so nothing visible changes."""
 
-        self.assertTrue(allowed_origin(None, "127.0.0.1:9000"))
-        self.assertTrue(allowed_origin("http://127.0.0.1:9000", "127.0.0.1:9000"))
-        self.assertFalse(allowed_origin("http://localhost:5173", "127.0.0.1:9000"))
-        self.assertFalse(allowed_origin("http://127.0.0.1:9001", "127.0.0.1:9000"))
-        self.assertFalse(allowed_origin("http://evil.example:9000", "127.0.0.1:9000"))
-        self.assertFalse(allowed_origin("null", "127.0.0.1:9000"))
+    def test_the_html_shell_revalidates_every_time(self) -> None:
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as dist:
+            with open(os.path.join(dist, "index.html"), "w", encoding="utf-8") as fh:
+                fh.write("<!doctype html><title>Wony</title>")
+            with mock.patch("helpers.web_app._DIST_DIR", dist):
+                client = _load_app()
+            resp = client.get("/some/page")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.headers.get("cache-control"), "no-cache")
 
 
 class TestRestartEndpoint(unittest.TestCase):
@@ -140,31 +145,6 @@ class TestCapabilitiesEndpoint(unittest.TestCase):
         for cap in caps["working"] + caps["available"]:
             with self.subTest(key=cap["key"]):
                 self.assertTrue(cap["example"], f"{cap['key']} has no example")
-
-
-class TestJobsEndpoint(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.client = _load_app()
-
-    def test_confirms_is_bool_or_string_list(self) -> None:
-        jobs = self.client.get("/api/jobs").json()["jobs"]
-        self.assertTrue(jobs)
-        for job in jobs:
-            with self.subTest(job=job["name"]):
-                confirms = job["confirms"]
-                if isinstance(confirms, bool):
-                    continue
-                self.assertIsInstance(confirms, list)
-                self.assertTrue(all(isinstance(g, str) for g in confirms))
-
-    def test_a_gated_job_reports_its_gate_words(self) -> None:
-        # background_jobs lives in `employer`, one of the always-on modules
-        # (helpers.config.ALWAYS_ON) — unlike a switchable module, it is
-        # guaranteed to be registered no matter which config another test in
-        # this same process loaded before `import modules` first ran.
-        jobs = {job["name"]: job for job in self.client.get("/api/jobs").json()["jobs"]}
-        self.assertEqual(jobs["background_jobs"]["confirms"], ["cancel", "stop", "stop all"])
 
 
 class TestSanitizeCalls(unittest.TestCase):

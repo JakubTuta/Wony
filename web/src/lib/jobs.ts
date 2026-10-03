@@ -1,19 +1,21 @@
-import type { Confirms } from '../api';
+import type { Job } from '../api';
 
-/** Mirrors helpers/confirm.py's `_applies`: `true` covers every call, a list
- * covers only the listed values of the job's `action` argument. Kept in sync
- * with the backend on purpose — this must never invent its own rule. */
-export function needsConfirm(confirms: Confirms, args: Record<string, unknown>): boolean {
-  if (confirms === true) return true;
-  if (!confirms || confirms.length === 0) return false;
+type Gate = Pick<Job, 'confirms' | 'confirm_words'>;
+
+/** Mirrors helpers/confirm.py's `_applies`: a gated job with no word list asks
+ * on every call, otherwise only on the listed values of its `action` argument.
+ * Kept in sync with the backend on purpose — this must never invent its own rule. */
+export function needsConfirm(job: Gate, args: Record<string, unknown>): boolean {
+  if (!job.confirms) return false;
+  if (job.confirm_words === null) return true;
   const action = String(args.action ?? '').trim().toLowerCase();
-  return confirms.some((value) => String(value).toLowerCase() === action);
+  return job.confirm_words.includes(action);
 }
 
-export function confirmLabel(confirms: Confirms): string {
-  if (confirms === true) return 'Always confirms';
-  if (Array.isArray(confirms) && confirms.length > 0) return `Confirms on: ${confirms.join(', ')}`;
-  return '';
+export function confirmLabel(job: Gate): string {
+  if (!job.confirms) return '';
+  if (job.confirm_words === null) return 'Always confirms';
+  return `Confirms on: ${job.confirm_words.join(', ')}`;
 }
 
 /** `note(action="add", text="milk")` — only args with a value are shown, the

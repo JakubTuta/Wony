@@ -13,8 +13,13 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from helpers import local_only
 from helpers.config import Config
 from helpers.registry import ServiceRegistry
+
+# The built UI (not in the repo). A constant so a test can point it elsewhere.
+_DIST_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "web", "dist")
+
 
 def _coerce_args(
     func: typing.Callable,
@@ -80,11 +85,6 @@ class DeviceControlRequest(BaseModel):
     option: str = ""
 
 
-class NotificationAckRequest(BaseModel):
-    # None clears everything unread.
-    id: typing.Optional[int] = None
-
-
 class SettingsRequest(BaseModel):
     updates: typing.Dict[str, typing.Any] = {}
     # None leaves the enabled modules alone; a list replaces them.
@@ -127,40 +127,26 @@ def _migrate_pins(pins: typing.List[typing.Dict[str, typing.Any]]) -> typing.Lis
     return out
 
 
-class _LocalOnlyMiddleware:
-    """Refuse requests a website could have made on the user's behalf.
+def _allowed_hosts() -> typing.Optional[typing.Tuple[str, ...]]:
+    """The host names this server answers to; None means any."""
+    return local_only.LOOPBACK_NAMES
 
-    The API has no password, so any page the user visits could otherwise post
-    to it or open /api/ws (browsers do not apply CORS to WebSockets). The Host
-    check stops DNS rebinding; the Origin check stops cross-site requests.
-    """
+
+class _LocalOnlyMiddleware:
+    """Refuse requests a website could have made on the user's behalf
+    (helpers/local_only.py)."""
 
     def __init__(self, app: typing.Any) -> None:
         self.app = app
 
     async def __call__(self, scope: dict, receive: typing.Any, send: typing.Any) -> None:
-        if scope["type"] in ("http", "websocket") and not self._allowed(scope):
+        if scope["type"] in ("http", "websocket") and not local_only.allowed(scope, _allowed_hosts()):
             if scope["type"] == "websocket":
                 await send({"type": "websocket.close", "code": 1008})
             else:
                 await JSONResponse({"detail": "Forbidden"}, status_code=403)(scope, receive, send)
             return
         await self.app(scope, receive, send)
-
-    @staticmethod
-    def _allowed(scope: dict) -> bool:
-        from helpers.server_address import LOOPBACK_NAMES, allowed_origin
-
-        headers = {k.decode("latin-1"): v.decode("latin-1") for k, v in scope.get("headers", [])}
-        host = headers.get("host", "")
-        if host.rsplit(":", 1)[0] not in LOOPBACK_NAMES:
-            return False
-        # Belt and suspenders alongside the Origin check: a fetch() a site
-        # makes to this server is neither same-origin nor absent, whatever
-        # Origin header it happens to send.
-        if headers.get("sec-fetch-site") in ("cross-site", "same-site"):
-            return False
-        return allowed_origin(headers.get("origin"), host)
 
 
 def build_app() -> FastAPI:
@@ -331,11 +317,15 @@ def build_app() -> FastAPI:
             except Exception:
                 description, properties, required = "", {}, []
 
-            raw_confirms = confirms.get(name)
-            if isinstance(raw_confirms, (set, frozenset, list, tuple)):
-                confirms_out: typing.Union[bool, typing.List[str]] = sorted(raw_confirms)
-            else:
-                confirms_out = bool(raw_confirms)
+            declared = confirms.get(name)
+            # True (or a truthy anything-but-a-collection) means every call
+            # confirms, so there is no fixed word list to hand the UI — only a
+            # set/list of gate words narrows it to specific `action` values.
+            confirm_words = (
+                sorted(str(v).lower() for v in declared)
+                if isinstance(declared, (set, frozenset, list, tuple))
+                else None
+            )
 
             jobs_out.append(
                 {
@@ -343,7 +333,8 @@ def build_app() -> FastAPI:
                     "module": job_modules.get(name, ""),
                     "summary": job_summaries.get(name, ""),
                     "description": description,
-                    "confirms": confirms_out,
+                    "confirms": bool(declared),
+                    "confirm_words": confirm_words,
                     "parameters": {
                         "properties": properties,
                         "required": required,
@@ -384,7 +375,7 @@ def build_app() -> FastAPI:
 
         The one panel with a write path, and the reason it is not /api/invoke:
         control_home_device resolves a spoken name, which would toggle both
-        lamps called 'Lamp'. The UI already knows which one was clicked.
+        lamps called 'Lamp'. The UI already knows which one was pressed.
         """
         if "home_assistant" not in Config.enabled_modules():
             raise HTTPException(status_code=503, detail="Home Assistant is not enabled.")
@@ -402,29 +393,40 @@ def build_app() -> FastAPI:
         except Exception as e:
             logger.log_error(str(e), "web_device_control")
             raise HTTPException(status_code=502, detail=str(e))
+
+        logger.log_function_response("control_device", text[:200], "[web]")
         return {"ok": ok, "text": text}
 
     @app.get("/api/notifications")
-    def list_notifications(include_acknowledged: bool = False, limit: int = 50):
+    def list_notifications(
+        include_acknowledged: bool = False,
+        limit: int = 50,
+    ) -> typing.Dict[str, typing.Any]:
+        """Proactive messages the user has not seen yet (newest first)."""
         from helpers.memory_db import all_notifications
 
         return {
             "notifications": all_notifications(
-                include_acknowledged=include_acknowledged, limit=min(limit, 200)
+                include_acknowledged=include_acknowledged,
+                limit=min(limit, 200),
             )
         }
 
-    @app.post("/api/notifications/ack")
-    def ack_notifications(req: NotificationAckRequest) -> typing.Dict[str, typing.Any]:
-        """Clear one notification, or every unread one when no id is given."""
-        from helpers.memory_db import (
-            acknowledge_all_notifications,
-            acknowledge_notification,
-        )
+    @app.post("/api/notifications/{notification_id}/ack")
+    def ack_notification(notification_id: int) -> typing.Dict[str, str]:
+        from helpers.memory_db import acknowledge_notification
 
-        if req.id is None:
-            return {"cleared": acknowledge_all_notifications()}
-        return {"cleared": 1 if acknowledge_notification(req.id) else 0}
+        if not acknowledge_notification(notification_id):
+            raise HTTPException(
+                status_code=404, detail=f"No notification {notification_id}."
+            )
+        return {"status": "acknowledged"}
+
+    @app.post("/api/notifications/ack-all")
+    def ack_all_notifications() -> typing.Dict[str, int]:
+        from helpers.memory_db import acknowledge_all_notifications
+
+        return {"cleared": acknowledge_all_notifications()}
 
     @app.get("/api/settings")
     def get_settings() -> typing.Dict[str, typing.Any]:
@@ -493,7 +495,7 @@ def build_app() -> FastAPI:
             )
 
         if ServiceRegistry.job_confirms(req.name):
-            # Deliberately not routed through helpers/confirm.py: the click
+            # Deliberately not routed through helpers/confirm.py: the button
             # already passed the UI's confirm dialog and the user is watching
             # the result. Logged separately so the audit trail says which of
             # these ran from a button rather than from the model.
@@ -501,14 +503,12 @@ def build_app() -> FastAPI:
 
         logger.log_function_call(req.name, "[web]", coerced)
         try:
-            # agent_lock guards the per-turn tool-outcome ledger (see
-            # scheduler._run_action). set_agent_active keeps capture_response
-            # from speaking the result: the user clicked a button and is
-            # looking at the answer, not waiting to hear it read out.
+            # Same lock every agent turn takes — a button press reaches the same
+            # jobs and the same Conversation state as a typed sentence.
             from helpers.decorators import agent_lock, set_agent_active
             from helpers.turn_context import user_request
 
-            # A click is the user asking, so a Sign in again button may open
+            # A button press is the user asking, so a Sign in again button may open
             # Google's consent page.
             with agent_lock, user_request():
                 set_agent_active(True)
@@ -528,20 +528,18 @@ def build_app() -> FastAPI:
     def chat(req: ChatRequest) -> typing.Dict[str, typing.Any]:
         from helpers.conversation import Conversation, sanitize_calls
         from helpers.logger import logger
+        from helpers.turn import run_turn
 
         if not req.message or not req.message.strip():
             raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
-        from helpers.turn import run_turn
-
         result = run_turn(req.message)
-        if result.error:
+        if result.error is not None:
             logger.log_error(result.error, "web_chat")
             raise HTTPException(status_code=503, detail=result.error)
+
         safe_calls = sanitize_calls(result.calls)
-        turn_id = Conversation.record_turn(
-            req.message, result.text, calls=safe_calls
-        )
+        turn_id = Conversation.record_turn(req.message, result.text, calls=safe_calls)
         return {"id": turn_id, "text": result.text, "calls": safe_calls}
 
 
@@ -711,7 +709,7 @@ def build_app() -> FastAPI:
         finally:
             _ws_clients.discard(ws)
 
-    _dist = os.path.join(os.path.dirname(os.path.dirname(__file__)), "web", "dist")
+    _dist = _DIST_DIR
 
     if os.path.isdir(_dist):
         _assets = os.path.join(_dist, "assets")
@@ -726,7 +724,11 @@ def build_app() -> FastAPI:
                 return JSONResponse({"detail": "Not found"}, status_code=404)
             index = os.path.join(_dist, "index.html")
             if os.path.isfile(index):
-                return FileResponse(index)
+                # no-cache means "revalidate every time", not "never store".
+                # Without it the browser may serve this shell from disk, and a
+                # stale shell keeps naming the old hashed bundle after a rebuild.
+                # The bundles are content-hashed and safe to cache; this is not.
+                return FileResponse(index, headers={"Cache-Control": "no-cache"})
             return JSONResponse({"detail": "Not found"}, status_code=404)
 
     return app

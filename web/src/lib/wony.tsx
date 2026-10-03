@@ -402,7 +402,7 @@ export function WonyProvider({ children }: { children: ReactNode }) {
         return res;
       };
 
-      if (job && needsConfirm(job.confirms, args)) {
+      if (job && needsConfirm(job, args)) {
         return new Promise((resolve) => {
           setConfirmRequest({
             title: opts.title ?? `Run ${humanize(name)}?`,

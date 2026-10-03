@@ -34,6 +34,13 @@ if sys.stderr and hasattr(sys.stderr, "reconfigure"):
 # ── Setup gate ────────────────────────────────────────────────────────────────
 
 
+# What to tell someone whose second copy was refused (helpers/instance.py).
+_STOP_HINT = (
+    "Exit the running one first — from its tray icon near the clock, or by closing "
+    "its window — then try again."
+)
+
+
 def _require_setup() -> None:
     """Block the app until setup.py has run.
 
@@ -149,6 +156,10 @@ def cmd_text(args: argparse.Namespace) -> None:
 
     Config.load()
 
+    from helpers import instance
+
+    instance.claim_or_exit(_STOP_HINT)
+
     from helpers.bootstrap import BootstrapError, bootstrap
 
     try:
@@ -175,6 +186,10 @@ def cmd_voice(args: argparse.Namespace) -> None:
     from helpers.config import Config
 
     Config.load()
+
+    from helpers import instance
+
+    instance.claim_or_exit(_STOP_HINT)
 
     from helpers.bootstrap import BootstrapError, bootstrap
 
@@ -232,6 +247,10 @@ def cmd_web(args: argparse.Namespace) -> None:
     from helpers.config import Config
 
     Config.load()
+
+    from helpers import instance
+
+    instance.claim_or_exit(_STOP_HINT)
 
     from helpers.bootstrap import BootstrapError, bootstrap
 

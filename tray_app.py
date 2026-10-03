@@ -14,10 +14,11 @@ Threading model:
 
 import atexit
 import os
-import socket
 import sys
 import threading
 import typing
+
+from helpers import instance
 
 # pythonw.exe has no console; redirect stdout/stderr to a UTF-8 null sink so
 # print() calls don't raise AttributeError or UnicodeEncodeError.
@@ -35,64 +36,6 @@ elif hasattr(sys.stderr, "reconfigure"):
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
-
-_INSTANCE_NAME = "WonyAssistantTraySingleInstance"
-_lock_handle: typing.Any = None
-_lock_socket: typing.Optional[socket.socket] = None
-
-
-def _try_acquire_instance_lock() -> bool:
-    """True if this process is the only tray instance.
-
-    A named mutex, not a bound port: any unrelated program holding the port
-    would otherwise look like a running Wony and block startup entirely.
-    """
-    global _lock_handle, _lock_socket
-
-    if sys.platform == "win32":
-        import ctypes
-
-        ERROR_ALREADY_EXISTS = 183
-        # use_last_error so the error code belongs to CreateMutexW, and
-        # c_void_p so a 64-bit handle is not truncated on the way back.
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel32.CreateMutexW.restype = ctypes.c_void_p
-        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
-
-        handle = kernel32.CreateMutexW(None, False, _INSTANCE_NAME)
-        if handle and ctypes.get_last_error() == ERROR_ALREADY_EXISTS:
-            kernel32.CloseHandle(handle)
-            return False
-        _lock_handle = handle  # released when the process exits
-        return True
-
-    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    try:
-        sock.bind("\0" + _INSTANCE_NAME)  # abstract namespace: no file to clean up
-        _lock_socket = sock
-        return True
-    except OSError:
-        sock.close()
-        return False
-
-
-def _release_instance_lock() -> None:
-    """Free the single-instance guard right now, instead of waiting for this
-    process to exit — Restart needs this so the new instance's own lock
-    attempt doesn't lose a race against this one still shutting down."""
-    global _lock_handle, _lock_socket
-
-    if sys.platform == "win32":
-        if _lock_handle:
-            import ctypes
-
-            ctypes.windll.kernel32.CloseHandle(_lock_handle)  # type: ignore[attr-defined]
-            _lock_handle = None
-        return
-
-    if _lock_socket:
-        _lock_socket.close()
-        _lock_socket = None
 
 
 def _relaunch_self() -> None:
@@ -159,7 +102,7 @@ def run_tray() -> None:
         sys.exit(1)
 
     # Single-instance guard
-    if not _try_acquire_instance_lock():
+    if not instance.acquire():
         try:
             import ctypes
 
@@ -377,7 +320,7 @@ def run_tray() -> None:
     def _do_restart() -> None:
         # Full teardown *before* spawning the new process — it binds the same
         # web port, and starting it while this one still holds that port (or
-        # the instance-lock name) would just lose the race and quit right
+        # the instance lock) would just lose the race and quit right
         # back out. icon.stop() at the end runs the normal exit path's own
         # (idempotent) cleanup and os._exit — no need to repeat it here.
         _stop_hotkey()
@@ -385,7 +328,7 @@ def run_tray() -> None:
         from helpers.media_pause import resume_all
 
         resume_all()
-        _release_instance_lock()
+        instance.release()
         _relaunch_self()
         if _icon_ref[0] is not None:
             _icon_ref[0].stop()

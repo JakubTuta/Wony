@@ -37,6 +37,26 @@ class TestShortcutGate(unittest.TestCase):
     def test_a_harmless_job_still_runs_directly(self) -> None:
         self.assertEqual(self._match("system status", audio=True, confirms={}).__name__, "system_status")
 
+    def test_a_job_whose_default_action_confirms_goes_to_the_model(self) -> None:
+        """Said bare, a job runs with its defaults. The gate only reads the
+        arguments it is given, so a default of "sleep" slipped past a set of
+        gate words that lists "sleep"."""
+        from modules.employer import Employer
+
+        def power(action: str = "sleep") -> str:
+            return action
+
+        def background_jobs(action: str = "list") -> str:
+            return action
+
+        fake = types.SimpleNamespace(available_functions=[power, background_jobs])
+        confirms = {"power": {"shutdown", "sleep"}, "background_jobs": {"stop"}}
+        with mock.patch("helpers.registry.ServiceRegistry.get_job_confirms", return_value=confirms):
+            self.assertIsNone(Employer._check_if_user_input_is_command(fake, "power"))
+            self.assertIs(
+                Employer._check_if_user_input_is_command(fake, "background jobs"), background_jobs
+            )
+
     def test_typed_exit_still_works_but_spoken_exit_asks(self) -> None:
         self.assertIsNotNone(self._match("exit", audio=False, confirms={"exit": True}))
         self.assertIsNone(self._match("exit", audio=True, confirms={"exit": True}))
