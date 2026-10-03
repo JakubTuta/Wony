@@ -40,9 +40,11 @@ def _run_power_command(verb: str, systemctl_action: str) -> str:
     console on this device, and a touch screen cannot answer input(). The UI
     confirms before it ever gets here."""
     if not bool(Config.get("modules.basics.allow_power_off", False)):
+        from helpers.settings import where
+
         logger.log_system_event(f"{systemctl_action}_refused", "Power control is disabled.")
         return (
-            f"Power control is off. Turn on 'Power off this device' in Settings "
+            f"Power control is off. Turn on {where('modules.basics.allow_power_off')} "
             f"to let me {verb} this device."
         )
 

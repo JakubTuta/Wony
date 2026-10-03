@@ -41,7 +41,9 @@ It will:
 4. Install what you ticked
 5. Ask for the keys, credentials and permissions those features need — checking
    each key against the service, and opening a browser for the Spotify and
-   Google sign-ins
+   Google sign-ins — and how you want Wony to behave: its personality, whether
+   it may speak up on its own or learn about you, and when the screen goes to
+   the clock. Every answer can be changed later on the Settings screen.
 
 Press Enter to skip anything you do not have yet; it lists what is left. To come
 back to that part on its own:
@@ -85,14 +87,13 @@ bottom: **Home**, **Rooms**, **Music**, **Macros**.
 tile** for anything not already placed, or the × on a tile to remove it. A
 tile is a routine, a device, a 10-minute timer, music play/pause, or Sleep —
 whole-button actions that run the moment you tap them, no confirmation needed
-except for a locked door or an alarm. The layout is saved on the device itself,
-not in `config.yaml` — there is nothing to hand-edit here. Next to the grid, a
-Now playing card and a Coming up list (your next timers, events and reminders)
-stay visible without a tap.
+except for a locked door or an alarm. The layout is saved on the device itself.
+Next to the grid, a Now playing card and a Coming up list (your next timers,
+events and reminders) stay visible without a tap.
 
 **Rooms** lists your Home Assistant devices by room, one card each — a switch,
 a slider, Open/Stop/Close, a thermostat's ± , a lock, or a vacuum's Start/Dock
-— built from whatever `modules.home_assistant` reports.
+— built from whatever Home Assistant reports.
 
 **Music** is cover art, transport controls, volume and your playlists, wired
 to Spotify.
@@ -126,6 +127,14 @@ down, so your timers still go off overnight and waking is instant. Touch
 anywhere to come back. Whatever you picked is what it offers you tomorrow
 night.
 
+### Asking Wony about itself
+
+The panel itself has no chat, but in `python wony.py text` you can ask _"how long
+before the clock screen shows"_, _"how do I set up Gmail"_ or _"why is the weather
+switched off"_. Wony looks the answer up in its own settings and in this guide
+instead of guessing, and tells you where to change something. It cannot change a
+setting for you, and it never shows your keys.
+
 ## Start at boot
 
 Setup offers this at the end. To do it later:
@@ -146,60 +155,35 @@ On a device with no display, add `--no-browser`.
 
 ## Settings
 
-Tap the **cog** in the top bar. Everything there is also in `config.yaml`, which
-you can still edit by hand; the screen just means you do not have to find a
-keyboard. Your passwords and keys live in `.env`, and never go anywhere else.
+Tap the **cog** in the top bar, then **Settings**. You never need a keyboard or a
+text editor: everything you might want to change is here.
 
-The settings screen changes the assistant's name and personality, which AI
-provider answers, which features are switched on, what Wony may do on its own,
-and how long the screen waits before showing the clock. It also tells you
-whether a newer Wony is waiting — it never installs one; that is `git pull` and
-`python setup.py`, run by you.
+- **Assistant** — its name, what it calls you, its personality, and your home
+  address for local weather
+- **AI** — which service answers, the Ollama model, and how many past exchanges
+  it keeps in mind
+- **What Wony may do on its own** — the switches below
+- **This device** — where Home Assistant lives, your working day, how long the
+  screen waits before showing the clock, how many tiles fit across the Home
+  tab, whether every device tap asks first, and the port of the web page
+- **Features** — an on/off switch for each feature
+- **Updates** — whether a newer Wony is waiting. It never installs one; that is
+  `git pull` and `python setup.py`, run by you.
 
-```yaml
-assistant:
-  name: "Wony"
-  owner_name: "Jakub"
-  personality: "Friendly and concise."
-  language: "en" # "en", "pl", ...
+Passwords and keys are not on the screen. They live in `.env`, are added with
+`python setup.py configure`, and never go anywhere else.
 
-ai:
-  provider: null # leave empty to pick automatically
-  ollama_model: "llama3.1"
+These six start **off**, so nothing surprising can happen by accident. Turn them
+on under **Settings → What Wony may do on its own**:
 
-# Only what is listed here is switched on.
-enabled_modules:
-  - basics # time, date, sleep, power off
-  - routines # the briefing, and any you save yourself
-  - scheduler # timers, alarms, reminders
-  - notes # shopping and todo lists
-  - weather
-  - gmail
-  - calendar
-  # - system           # disk space, memory, processor load, network
-  # - spotify
-  # - home_assistant
-
-kiosk:
-  idle_minutes: 15 # minutes untouched before the clock screen appears
-  home_columns: 3 # 3 or 4 tiles across on the Home tab
-  confirm_all_devices: false # true: every device tap asks first, like a lock
-```
-
-The Home tab's own tile layout is arranged by touch (**Edit**, on the panel)
-and saved on the device — there is no `tiles:` list in `config.yaml` to hand-edit.
-
-A few things are switched off until you say otherwise, so nothing surprising can
-happen by accident. All six are on the settings screen too:
-
-| Setting                              | Allows                                                                   |
-| ------------------------------------ | ------------------------------------------------------------------------ |
-| `modules.basics.allow_power_off`     | Switching the device off or restarting it from the screen                |
-| `modules.gmail.allow_write`          | Sending, replying to and deleting email. Off, Wony saves a draft instead |
-| `modules.calendar.allow_write`       | Creating, changing and deleting events                                   |
-| `modules.home_assistant.allow_locks` | Unlocking doors, opening the garage, disarming alarms                    |
-| `assistant.proactive.enabled`        | Speaking up on its own about a drive nearly full, the device running hot, a meeting about to start, or important mail |
-| `assistant.memory.learn_from_my_data` | Keeping facts it works out from your own conversations, and how you write from your sent mail |
+| Switch                           | Allows                                                                   |
+| -------------------------------- | ------------------------------------------------------------------------ |
+| Power off this device            | Switching the device off or restarting it from the screen                |
+| Change my mailbox                | Sending, replying to and deleting email. Off, Wony saves a draft instead |
+| Change my calendar               | Creating, changing and deleting events                                   |
+| Unlock doors and open the garage | Unlocking doors, opening the garage, disarming alarms                    |
+| Speak up on its own              | Speaking up about a drive nearly full, the device running hot, a meeting about to start, or important mail |
+| Learn about me on its own        | Keeping facts it works out from your own conversations, and how you write from your sent mail |
 
 **Speaking up on its own** says it in Wony's own words rather than a canned
 alert. Ask _"what do you watch for"_ to see the list, or _"stop watching for
@@ -300,7 +284,7 @@ here.
 
 The **Devices** tile then lists your devices by room, one card each, with its
 switch, slider and settings on it. Doors, garages and alarms are shown but stay
-locked until you set `modules.home_assistant.allow_locks: true`.
+locked until you turn on **Unlock doors and open the garage** in Settings.
 
 ### Ollama, for a local AI
 
@@ -308,7 +292,7 @@ locked until you set `modules.home_assistant.allow_locks: true`.
 ollama serve
 ```
 
-Then set `ai.provider: ollama` and `ai.ollama_model` in `config.yaml`. A Pi with
+Then pick **Ollama** under **Settings → AI** and type the model's name. A Pi with
 2 GB of memory cannot run a useful model itself, so point `OLLAMA_HOST` at
 another machine on your network.
 
@@ -321,9 +305,10 @@ out if the device is short on it.
 ## Privacy
 
 Conversations, remembered facts, lists and reminders live in `wony.db` in this
-folder. **Wipe data** deletes that file's contents, the Spotify sign-in cache and
-every log file. It does not remove your API keys or Google sign-ins; delete those
-by hand (`.env`, `credentials/`).
+folder. The panel has no button to clear it. To start clean, stop Wony and delete
+`wony.db`, `cache.json` (the Spotify sign-in) and the files in `logs/`; they are
+made again on the next start. Your API keys and Google sign-ins are separate:
+delete those by hand (`.env`, `credentials/`).
 
 What leaves the device, and only when a feature you set up needs it:
 
@@ -331,7 +316,7 @@ What leaves the device, and only when a feature you set up needs it:
 | ----------------------------- | ----------------------------------------------------------- |
 | Your AI service               | Your requests, recent turns, remembered facts and whatever it reads to answer (mail, calendar entries) |
 | OpenWeatherMap, OpenStreetMap | A city name or coordinates for the weather                  |
-| ipinfo.io                     | Only to guess your city when `assistant.home_address` is empty |
+| ipinfo.io                     | Only to guess your city when no home address is set in Settings |
 | Google (Gmail, Calendar)      | What the feature needs, once signed in                      |
 | Spotify, Home Assistant       | Playback and device commands                                |
 
@@ -359,8 +344,3 @@ You can also just ask Wony "check setup" on the screen.
 | Something else                             | `journalctl --user -u wony -f` shows what she is doing                 |
 
 Logs are also kept in the `logs/` folder, and tidied up automatically.
-
----
-
-Building on Wony or curious how she works inside? See
-[docs/development.md](docs/development.md).

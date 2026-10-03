@@ -97,8 +97,47 @@ class TestConfigWriter(unittest.TestCase):
         config_writer.update(self.path, {"enabled_modules": ["ai", "weather"]})
         text = self._text()
         self.assertIn("# how long the screen waits before sleeping", text)
-        self.assertIn("# - weather", text)  # the options a user can switch on
         self.assertEqual(self._load()["enabled_modules"], ["ai", "weather"])
+
+    def test_switching_an_option_on_does_not_leave_its_comment_behind(self) -> None:
+        """The commented-out option and the new active line used to sit side by
+        side, so every module a user switched on was listed twice."""
+        config_writer.update(self.path, {"enabled_modules": ["ai", "basics", "weather"]})
+        text = self._text()
+        self.assertIn("  - weather        # switch on for forecasts\n", text)
+        self.assertNotIn("# - weather", text)
+        self.assertEqual(text.count("switch on for forecasts"), 1)
+
+    def test_switching_an_option_off_keeps_it_as_a_comment_with_its_note(self) -> None:
+        config_writer.update(self.path, {"enabled_modules": ["ai", "weather"]})
+        config_writer.update(self.path, {"enabled_modules": ["ai"]})
+        text = self._text()
+        self.assertIn("  # - weather        # switch on for forecasts\n", text)
+        self.assertEqual(self._load()["enabled_modules"], ["ai"])
+
+    def test_a_list_written_twice_is_unchanged(self) -> None:
+        wanted = {"enabled_modules": ["ai", "weather"]}
+        config_writer.update(self.path, wanted)
+        once = self._text()
+        config_writer.update(self.path, wanted)
+        self.assertEqual(self._text(), once)
+
+    def test_an_already_doubled_list_is_merged(self) -> None:
+        """What the old writer left in config.yaml: the module as a bare line and
+        again as a commented line carrying the description."""
+        with io.open(self.path, "w", encoding="utf-8") as handle:
+            handle.write(
+                "enabled_modules:\n  - basics\n  - system\n"
+                "  # - system         # battery, disk space, memory, network\n"
+                "  # - spotify        # play, pause, skip\n\nkiosk:\n  idle_minutes: 15\n"
+            )
+        config_writer.update(self.path, {"enabled_modules": ["basics", "system"]})
+        self.assertEqual(
+            self._text(),
+            "enabled_modules:\n  - basics\n"
+            "  - system         # battery, disk space, memory, network\n"
+            "  # - spotify        # play, pause, skip\n\nkiosk:\n  idle_minutes: 15\n",
+        )
 
     def test_list_is_replaced_wholesale(self) -> None:
         config_writer.update(self.path, {"enabled_modules": ["ai", "status", "weather"]})
@@ -218,6 +257,55 @@ class TestSettingsSurface(unittest.TestCase):
         self.assertTrue(described)
         for key in described:
             self.assertIn(key, self.settings._BY_KEY, f"{key} is shown but not writable")
+
+    def test_every_option_in_the_example_config_is_on_the_screen(self) -> None:
+        """config.example.yaml promises "everything here can also be changed on
+        the Settings screen". An option added to the file but not to _FIELDS
+        leaves the screen silently short."""
+        import yaml
+
+        with io.open(os.path.join(_REPO_ROOT, "config.example.yaml"), encoding="utf-8") as handle:
+            example = yaml.safe_load(handle)
+
+        def leaves(node: dict, prefix: str = "") -> list:
+            found = []
+            for name, value in node.items():
+                if isinstance(value, dict):
+                    found += leaves(value, f"{prefix}{name}.")
+                else:
+                    found.append(f"{prefix}{name}")
+            return found
+
+        # enabled_modules is the Features list, not a field. The bind address
+        # stays out of the screen it would expose to the network.
+        not_fields = {"enabled_modules", "server.host"}
+        for key in leaves({k: v for k, v in example.items() if k != "enabled_modules"}):
+            if key in not_fields:
+                continue
+            with self.subTest(key=key):
+                self.assertIn(key, self.settings._BY_KEY, f"{key} is in config.example.yaml but not on the Settings screen")
+
+    def test_describe_field_matches_what_the_screen_gets(self) -> None:
+        """setup.py asks through describe_field; it must be the screen's own field."""
+        screen = {
+            field["key"]: field
+            for section in self.settings.describe()["sections"]
+            for field in section["fields"]
+        }
+        self.assertEqual(
+            self.settings.describe_field("kiosk.idle_minutes"), screen["kiosk.idle_minutes"]
+        )
+        with self.assertRaises(self.settings.SettingsError):
+            self.settings.describe_field("not.a.setting")
+
+    def test_a_choice_of_numbers_is_written_as_a_number(self) -> None:
+        """The screen sends "4" as text; quoted in the file it stops looking like
+        the number the example config has."""
+        self.settings.apply({"kiosk.home_columns": "4"})
+        import yaml
+
+        with io.open(self.path, encoding="utf-8") as handle:
+            self.assertEqual(yaml.safe_load(handle)["kiosk"]["home_columns"], 4)
 
     def test_every_module_in_the_picker_exists(self) -> None:
         """A module the picker offers but modules/ has no file for switches on

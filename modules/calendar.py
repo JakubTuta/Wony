@@ -653,9 +653,11 @@ class Calendar:
         return bool(self._cfg().get("allow_write", False))
 
     def _write_disabled_note(self) -> str:
+        from helpers.settings import where
+
         return (
-            "Changing the calendar is switched off. Turn on 'Change my calendar' "
-            "in Settings to allow it."
+            "Changing the calendar is switched off. Turn on "
+            f"{where('modules.calendar.allow_write')} to allow it."
         )
 
     @capture_response

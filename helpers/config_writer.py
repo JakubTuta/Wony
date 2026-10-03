@@ -10,9 +10,13 @@ Stdlib only — setup.py uses it before any dependency is installed.
 import io
 import json
 import os
+import re
 import typing
 
 INDENT = "  "
+
+# `- name  # description`, or the same switched off: `# - name  # description`.
+_LIST_LINE = re.compile(r"^\s*(#\s*)?-\s+(\S+)\s*(?:#\s*(.*?))?\s*$")
 
 
 def _line_key(line: str) -> typing.Optional[typing.Tuple[int, str]]:
@@ -44,20 +48,16 @@ def _block_end(lines: typing.List[str], header: int, indent: int) -> int:
     return end
 
 
-def _entry_end(
-    lines: typing.List[str], at: int, indent: int, value: typing.Any
-) -> int:
-    """Index just past what a new value at `at` should replace.
+def _entry_end(lines: typing.List[str], at: int, indent: int) -> int:
+    """Index just past what a new scalar at `at` should replace.
 
     A scalar owns exactly its own line — the comments under it belong to the
-    next key. Anything with children (a list, a nested block) owns them, and a
-    new value replaces the lot.
+    next key. A key that heads a nested block owns the block, and the new value
+    replaces the lot.
     """
     _, _, after = lines[at].partition(":")
     heads_a_block = not after.strip() or after.strip().startswith("#")
-    if isinstance(value, (list, tuple)) or heads_a_block:
-        return _block_end(lines, at, indent)
-    return at + 1
+    return _block_end(lines, at, indent) if heads_a_block else at + 1
 
 
 def _find_key(
@@ -109,12 +109,66 @@ def _trailing_comment(line: str) -> str:
     return "  " + after[after.index("#"):].strip()
 
 
+def _list_entry(line: str) -> typing.Optional[typing.Tuple[str, bool, str]]:
+    """(name, switched on, description) for a list line, else None."""
+    match = _LIST_LINE.match(line)
+    if not match:
+        return None
+    switched_off, name, description = match.groups()
+    return name, not switched_off, description or ""
+
+
+def _list_end(lines: typing.List[str], header: int) -> int:
+    """Index just past a list's lines, switched-off options included."""
+    end = header + 1
+    while end < len(lines) and _list_entry(lines[end]):
+        end += 1
+    return end
+
+
+def _render_list(
+    key: str, items: typing.Sequence[typing.Any], indent: int, old: typing.List[str]
+) -> typing.List[str]:
+    """A list with one line per option: the wanted ones, then the others as
+    comments. A description written on the old lines moves to the new one, so
+    switching an option on or off never leaves a second copy of it behind."""
+    descriptions: typing.Dict[str, str] = {}
+    for line in old:
+        name, _, description = _list_entry(line)  # type: ignore[misc]
+        descriptions[name] = descriptions.get(name) or description
+
+    wanted = [str(item) for item in dict.fromkeys(items)]
+    pad = " " * indent + INDENT
+
+    def render(name: str, on: bool) -> str:
+        description = descriptions.get(name, "")
+        text = f"- {name:<14} # {description}" if description else f"- {name}"
+        return f"{pad}{'' if on else '# '}{text}\n"
+
+    return (
+        [f"{' ' * indent}{key}:\n"]
+        + [render(name, True) for name in wanted]
+        + [render(name, False) for name in descriptions if name not in wanted]
+    )
+
+
+def _set_list(
+    lines: typing.List[str],
+    key: str,
+    items: typing.Sequence[typing.Any],
+    indent: int,
+    at: typing.Optional[int],
+    end: int,
+) -> None:
+    if at is None:
+        lines[end:end] = _render_list(key, items, indent, [])
+        return
+    stop = _list_end(lines, at)
+    lines[at:stop] = _render_list(key, items, indent, lines[at + 1 : stop])
+
+
 def _render(key: str, value: typing.Any, indent: int, comment: str = "") -> typing.List[str]:
-    pad = " " * indent
-    if isinstance(value, (list, tuple)):
-        item_pad = pad + INDENT
-        return [f"{pad}{key}:\n"] + [f"{item_pad}- {item}\n" for item in value]
-    return [f"{pad}{key}: {format_value(value)}{comment}\n"]
+    return [f"{' ' * indent}{key}: {format_value(value)}{comment}\n"]
 
 
 def set_value(lines: typing.List[str], dotted_key: str, value: typing.Any) -> None:
@@ -126,12 +180,15 @@ def set_value(lines: typing.List[str], dotted_key: str, value: typing.Any) -> No
         at = _find_key(lines, part, indent, start, end)
 
         if depth == len(parts) - 1:
+            if isinstance(value, (list, tuple)):
+                _set_list(lines, part, value, indent, at, end)
+                return
             comment = _trailing_comment(lines[at]) if at is not None else ""
             block = _render(part, value, indent, comment)
             if at is None:
                 lines[end:end] = block
             else:
-                lines[at : _entry_end(lines, at, indent, value)] = block
+                lines[at : _entry_end(lines, at, indent)] = block
             return
 
         if at is None:

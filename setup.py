@@ -7,9 +7,10 @@ Wony setup — the required, single-file installer.
 Sets the whole app up and leaves it working: picks/creates the Python
 environment, installs only the dependencies for the features you choose,
 writes .env / config.yaml and the required folders, builds the touch screen UI
-with npm, then asks for every API key, credentials file and permission those
-features need — checking each key against the service and running the Spotify
-and Google sign-ins right here.
+with npm, then asks for every API key, credentials file, permission and
+preference those features need — checking each key against the service and
+running the Spotify and Google sign-ins right here. The preferences are the
+same ones the Settings screen offers, asked in the screen's own words.
 
 Re-run any time to add/remove modules: it reuses an existing venv, keeps your
 .env and config.yaml, pre-marks what you already have, and SKIPS reinstalling
@@ -17,8 +18,8 @@ modules that are already set up — only the newly checked ones get installed.
 
     python setup.py configure
 
-Just the keys-and-sign-ins part, for finishing a service you skipped or
-signing in again later. Nothing is installed.
+Just the keys, sign-ins and preferences, for finishing a service you skipped
+or signing in again later. Nothing is installed.
 
 The installer itself is stdlib only; the configure step runs after the install
 and may use what it put there (the app's own config reader, the Spotify and
@@ -32,6 +33,7 @@ import os
 import re
 import subprocess
 import sys
+import textwrap
 
 if sys.version_info < (3, 10):
     print(
@@ -698,6 +700,52 @@ def gate(question, key):
     write_config({key: confirm(question, default=bool(config_value(key, False)))})
 
 
+def _show_help(field):
+    print()
+    print(c(textwrap.fill(field["help"], 76, initial_indent="  . ", subsequent_indent="    "), "90"))
+
+
+def _ask_value(field):
+    label, value = field["label"], field["value"]
+    if field["kind"] == "choice":
+        names = field["choices"]
+        current = names.index(str(value)) + 1 if str(value) in names else 1
+        return choose(label, [(name, name) for name in names], default=current)
+    if field["kind"] == "number":
+        low, high = field["min"], field["max"]
+        if low is not None and high is not None:
+            label += f" ({low:g} to {high:g})"
+        return ask(label, f"{value:g}")
+    return ask(label, "" if value is None else str(value))
+
+
+def ask_setting(key):
+    """Ask about one setting the Settings screen also has, in that screen's own
+    words, and save the answer through the same validation. Enter keeps the
+    current value.
+
+    The label, help and limits come from helpers/settings.py, so the two
+    cannot describe one setting differently.
+    """
+    repo_on_path()
+    from helpers import settings
+    from helpers.config import Config
+
+    Config.load()  # an earlier step may have written the file behind its back
+    field = settings.describe_field(key)
+    if field["help"]:
+        _show_help(field)
+    if field["kind"] == "toggle":
+        gate(f"{field['label']}?", key)
+        return
+    while True:
+        try:
+            settings.apply({key: _ask_value(field)})
+            return
+        except settings.SettingsError as e:
+            warn(str(e))
+
+
 def configure(chosen):
     """Ask for every key, file and permission the chosen features need, and
     finish what can be finished here. Returns what is still missing."""
@@ -709,8 +757,9 @@ def configure(chosen):
         note("This terminal cannot ask questions — no keys or sign-ins were set up.")
         return ["Keys and sign-ins: run 'python setup.py configure' in a terminal."]
 
-    note("Press Enter to skip any question.")
+    note("Press Enter to skip a question or keep the answer in [brackets].")
     note("Run 'python setup.py configure' to come back to this at any time.")
+    note("Everything asked here is also on the Settings screen.")
 
     env = env_values()
     step_assistant()
@@ -719,10 +768,13 @@ def configure(chosen):
         step_weather(env, pending)
     if "spotify" in keys:
         step_spotify(env, pending)
+    if "calendar" in keys:
+        step_working_day()
     if keys & {"gmail", "calendar"}:
         step_google(keys, pending)
     if "home_assistant" in keys:
         step_home_assistant(env, pending)
+    step_device(keys)
     if "kiosk" in keys:
         step_autostart()
     return pending
@@ -741,6 +793,9 @@ def step_assistant():
             ),
         }
     )
+    ask_setting("assistant.personality")
+    ask_setting("assistant.proactive.enabled")
+    ask_setting("assistant.memory.learn_from_my_data")
 
 
 # ── AI provider ───────────────────────────────────────────────────────────────
@@ -770,6 +825,11 @@ _AI_PROVIDERS = {
 
 def step_ai(env, pending):
     section("AI provider — Wony cannot answer anything without one")
+    _choose_provider(env, pending)
+    ask_setting("ai.history.max_turns")
+
+
+def _choose_provider(env, pending):
     provider = choose(
         "Which service should answer?",
         [
@@ -1087,6 +1147,21 @@ def step_home_assistant(env, pending):
         "May Wony unlock doors, open the garage and disarm alarms?",
         "modules.home_assistant.allow_locks",
     )
+
+
+def step_working_day():
+    section("Your working day")
+    ask_setting("modules.calendar.work_start_hour")
+    ask_setting("modules.calendar.work_end_hour")
+
+
+def step_device(keys):
+    section("This device")
+    ask_setting("modules.basics.allow_power_off")
+    if "kiosk" in keys:
+        ask_setting("kiosk.idle_minutes")
+        ask_setting("kiosk.home_columns")
+        ask_setting("kiosk.confirm_all_devices")
 
 
 def step_autostart():
