@@ -385,6 +385,14 @@ class TestHomeAssistant(unittest.TestCase):
         self.assertIsNone(control["target"])
         self.assertIsNone(control["current"])
 
+    def test_a_thermostat_with_no_reading_yet_is_none_not_a_crash(self) -> None:
+        """Home Assistant reports an empty attribute while a thermostat is
+        unavailable or has not been read yet."""
+        entity = self.ha._Entity("climate.thermostat", "Thermostat", "Hallway", "unavailable", "")
+        control = self.ha._control(entity)
+        self.assertIsNone(control["target"])
+        self.assertIsNone(control["current"])
+
 
 if __name__ == "__main__":
     sys.exit(0 if unittest.main(exit=False).result.wasSuccessful() else 1)

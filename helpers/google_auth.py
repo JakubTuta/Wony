@@ -152,7 +152,7 @@ def _consent(name: str, scopes: typing.Set[str]) -> typing.Any:
 
     if not os.path.exists(CREDENTIALS_FILE):
         raise SignInNeeded(
-            "credentials/google_credentials.json is missing — run 'python setup.py "
+            "credentials/google_credentials.json is missing — run './wony.sh setup "
             "configure' to add Google."
         )
     # Google answers with every scope ever granted when include_granted_scopes is

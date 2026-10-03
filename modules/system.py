@@ -41,7 +41,9 @@ _GIB = 1024 ** 3
     summary="Disk, memory, processor, temperature and network",
 )
 @capture_response
-def device_health(what: str = "all") -> str:
+def device_health(
+    what: typing.Literal["all", "disk", "memory", "cpu", "temperature", "network", "battery"] = "all",
+) -> str:
     """
     [SYSTEM JOB] Reports how this device is doing: free disk space, memory and
     processor load, how hot it is running, and network status.
@@ -80,9 +82,6 @@ def device_health(what: str = "all") -> str:
 
 _ALIASES = {
     "power": "battery",
-    "temp": "temperature",
-    "heat": "temperature",
-    "hot": "temperature",
     "storage": "disk",
     "space": "disk",
     "ram": "memory",

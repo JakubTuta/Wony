@@ -1,17 +1,17 @@
 # Wony — Personal AI Assistant
 
 Wony runs on a small Linux box with a touch screen — a Raspberry Pi 4B is the
-target. Tap a tile or type a question, and the answer appears on the display.
-She can read your calendar and mail, control your lights, run your music and
-set timers. (The full assistant, with web browsing, maps and Drive, is the PC
-version.)
+target. Tap a tile and the answer appears on the display. It can read your
+calendar and mail, control your lights, run your music and set timers. (The
+full assistant, with voice, web browsing, maps and Drive, is the PC version.)
 
 You only get the parts you set up. Anything you skip is quietly left out.
 
 ## What you need
 
 - A Raspberry Pi (or any computer) running **64-bit** Raspberry Pi OS or Linux
-- Python 3.10 or newer
+- Python 3.10 or newer (`./wony.sh` finds `python` or `python3` itself, and tells you
+  what to install if there is neither)
 - An API key from Anthropic or Gemini — or your own Ollama server
 - A touch screen, if you want to use it by hand
 
@@ -30,7 +30,7 @@ Run the setup script first. It creates everything, asks which features you want,
 and installs only those.
 
 ```bash
-python setup.py
+./wony.sh setup
 ```
 
 It will:
@@ -49,7 +49,7 @@ Press Enter to skip anything you do not have yet; it lists what is left. To come
 back to that part on its own:
 
 ```bash
-python setup.py configure
+./wony.sh setup configure
 ```
 
 Then build the screen:
@@ -60,28 +60,30 @@ npm install
 npm run build
 ```
 
-You can re-run `python setup.py` any time to add or remove features. It keeps
+You can re-run `./wony.sh setup` any time to add or remove features. It keeps
 your settings and skips anything already installed.
 
 ## Start it
 
 ```bash
-./venv/bin/python wony.py doctor   # check everything is set up
-./venv/bin/python wony.py          # start
+./wony.sh doctor   # check everything is set up
+./wony.sh          # start
 ```
 
-Open `http://localhost:8000` on the device. Other ways to start:
+If a copy of Wony lost its executable bit on the way here, `chmod +x wony.sh`
+once. Open `http://localhost:8000` on the device. Other ways to start:
 
-| Command                 | What it does                                       |
-| ----------------------- | -------------------------------------------------- |
-| `python wony.py`        | Normal start — the screen and everything behind it |
-| `python wony.py text`   | Type to Wony in a terminal instead                 |
-| `python wony.py doctor` | Check the setup and exit                           |
+| Command            | What it does                                       |
+| ------------------ | -------------------------------------------------- |
+| `./wony.sh`        | Normal start — the screen and everything behind it |
+| `./wony.sh text`   | Type to Wony in a terminal instead (see below)     |
+| `./wony.sh doctor` | Check the setup and exit                           |
 
 ## Using the screen
 
-The panel is touch-only — no typing, no microphone. Four tabs across the
-bottom: **Home**, **Rooms**, **Music**, **Macros**.
+The panel has no chat and no microphone: you tap. (A text field in Settings
+raises the display's own keyboard.) Four tabs across the bottom: **Home**,
+**Rooms**, **Music**, **Macros**.
 
 **Home** is a grid of tiles you arrange yourself: tap **Edit**, then **+ Add
 tile** for anything not already placed, or the × on a tile to remove it. A
@@ -107,11 +109,17 @@ as a System view — see below.
 ### Routines
 
 Say _"save a routine called good night that turns off the lights and sets an
-alarm for seven"_ to your phone or desktop Wony, then run it from the panel's
-Macros tab, or a Home tile you've added for it. A routine is just your own
-words, so it can use anything Wony can do. Saving or deleting one is read back
-to you first. The panel has no keyboard, so routines are made and edited from
-another Wony surface (phone, desktop) and simply appear here to run.
+alarm for seven"_ in `./wony.sh text` (over SSH, or from a keyboard plugged
+in), then run it from the panel's Macros tab, or a Home tile you've added for
+it. A routine is just your own words, so it can use anything Wony can do.
+Saving or deleting one is read back to you first. The panel has no chat, so
+routines are made and edited in the terminal and simply appear here to run.
+Routines live in this device's own `wony.db`; a Wony on another computer has
+its own and shares nothing with it.
+
+Only one Wony runs at a time, so `./wony.sh text` refuses to start while the
+screen is up. Stop the screen for as long as you type: `systemctl --user stop wony`,
+then `systemctl --user start wony` afterwards.
 
 **Notifications** appear when something happens on its own — a timer going off,
 new mail arriving. The bell in the header shows how many are waiting; tap it to
@@ -129,34 +137,35 @@ night.
 
 ### Asking Wony about itself
 
-The panel itself has no chat, but in `python wony.py text` you can ask _"how long
+The panel itself has no chat, but in `./wony.sh text` you can ask _"how long
 before the clock screen shows"_, _"how do I set up Gmail"_ or _"why is the weather
 switched off"_. Wony looks the answer up in its own settings and in this guide
 instead of guessing, and tells you where to change something. It cannot change a
-setting for you, and it never shows your keys.
+setting for you, and it never shows your keys. Ask _"check setup"_ there for the
+same checklist as `./wony.sh doctor`.
 
 ## Start at boot
 
 Setup offers this at the end. To do it later:
 
 ```bash
-python wony.py autostart install
+./wony.sh autostart install
 ```
 
 Wony and the screen now come up on their own whenever the device is switched on,
 without anyone logging in.
 
 ```bash
-python wony.py autostart status      # is it running?
-python wony.py autostart uninstall   # stop doing that
+./wony.sh autostart status      # is it running?
+./wony.sh autostart uninstall   # stop doing that
 ```
 
 On a device with no display, add `--no-browser`.
 
 ## Settings
 
-Tap the **cog** in the top bar, then **Settings**. You never need a keyboard or a
-text editor: everything you might want to change is here.
+Tap the **cog** in the top bar, then **Settings**. You never need a text editor:
+everything you might want to change is here, except passwords and keys.
 
 - **Assistant** — its name, what it calls you, its personality, and your home
   address for local weather
@@ -168,10 +177,10 @@ text editor: everything you might want to change is here.
   tab, whether every device tap asks first, and the port of the web page
 - **Features** — an on/off switch for each feature
 - **Updates** — whether a newer Wony is waiting. It never installs one; that is
-  `git pull` and `python setup.py`, run by you.
+  `git pull` and `./wony.sh setup`, run by you.
 
 Passwords and keys are not on the screen. They live in `.env`, are added with
-`python setup.py configure`, and never go anywhere else.
+`./wony.sh setup configure`, and never go anywhere else.
 
 These six start **off**, so nothing surprising can happen by accident. Turn them
 on under **Settings → What Wony may do on its own**:
@@ -298,7 +307,7 @@ another machine on your network.
 
 ### Long-term memory
 
-Lets Wony search everything she has been told by meaning rather than by keyword.
+Lets Wony search everything it has been told by meaning rather than by keyword.
 No key needed — tick it during setup. Uses about 120 MB of memory, so leave it
 out if the device is short on it.
 
@@ -327,20 +336,22 @@ No telemetry. Keys and `appid=`/`key=`/`token=` values are removed from the logs
 Start here — it checks everything and tells you exactly what to fix:
 
 ```bash
-python wony.py doctor
+./wony.sh doctor
 ```
 
-You can also just ask Wony "check setup" on the screen.
+The same checklist is there when you type "check setup" in `./wony.sh text`.
 
 | Problem                                    | Fix                                                                    |
 | ------------------------------------------ | ---------------------------------------------------------------------- |
 | The screen is blank                        | The screen was never built: `cd kiosk && npm install && npm run build` |
 | You rebuilt, but the screen looks the same | Press Ctrl+Shift+R once to refresh it properly                         |
-| "AI provider not ready"                    | `python setup.py configure` and give it a key, then restart            |
-| The screen stays lit after Sleep           | `sudo apt install wlopm`, then check with `python wony.py doctor`      |
-| Nothing happens after a reboot             | Run `python wony.py autostart install` again                           |
+| "No AI service is set up yet"              | Add a key with `./wony.sh setup configure`, then try again             |
+| The screen stays lit after Sleep           | `sudo apt install wlopm`, then check with `./wony.sh doctor`           |
+| Nothing happens after a reboot             | Run `./wony.sh autostart install` again                                |
 | The screen never appears at boot           | `systemctl --user status wony-kiosk`                                   |
-| "Port already in use"                      | Wony is already running: `systemctl --user stop wony`                  |
-| Something else                             | `journalctl --user -u wony -f` shows what she is doing                 |
+| "Wony is already running"                  | Only one runs at a time: `systemctl --user stop wony`                  |
+| Something else                             | `journalctl --user -u wony -f` shows what it is doing                  |
 
 Logs are also kept in the `logs/` folder, and tidied up automatically.
+
+Changing Wony itself? See [docs/developers.md](docs/developers.md).

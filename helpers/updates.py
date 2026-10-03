@@ -1,4 +1,4 @@
-﻿"""Is there a newer version of Wony?
+"""Is there a newer version of Wony?
 
 Checks only — it never pulls. Updating changes dependencies as well as code, so
 the safe end of that is a person running the two commands with the output in
@@ -58,5 +58,5 @@ def check() -> str:
     return (
         f"{behind} new {change} available.{warning} To update, run:\n"
         "    git pull\n"
-        "    python setup.py"
+        "    ./wony.sh setup"
     )

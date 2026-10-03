@@ -22,8 +22,8 @@ def evaluate(req: Requirement) -> typing.Tuple[bool, str]:
             return False, f"missing env: {var}"
 
     for path in req.files:
-        # Repo-relative, not CWD-relative — the tray starts from wherever
-        # Task Scheduler puts it.
+        # Repo-relative, not CWD-relative — systemd starts the service from
+        # wherever it likes.
         if not os.path.exists(_resolve_path(path)):
             return False, f"missing file: {path}"
 

@@ -46,7 +46,11 @@ def _note_needs_confirm(args: typing.Dict[str, typing.Any]) -> bool:
     confirms=_note_needs_confirm,
 )
 @capture_response
-def note(action: str = "add", text: str = "", list_name: str = "") -> str:
+def note(
+    action: typing.Literal["add", "list", "remove", "clear", "lists"] = "add",
+    text: str = "",
+    list_name: str = "",
+) -> str:
     """
     [NOTES JOB] Keeps written lists — shopping, todo, ideas — by adding an item,
     reading a list back, ticking something off, or clearing it.

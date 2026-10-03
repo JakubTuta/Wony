@@ -367,11 +367,11 @@ class TestTheRealGuide(unittest.TestCase):
         Config.load()
 
     def test_installing_names_the_setup_script_and_how_to_start(self) -> None:
-        self.assertIn("python setup.py", guide.search(lookup.keywords("install")))
-        self.assertIn("python wony.py", guide.search(lookup.keywords("start")))
+        self.assertIn("./wony.sh setup", guide.search(lookup.keywords("install")))
+        self.assertIn("./wony.sh", guide.search(lookup.keywords("start")))
 
     def test_adding_a_feature_later_is_covered(self) -> None:
-        self.assertIn("python setup.py configure", guide.search(lookup.keywords("configure keys")))
+        self.assertIn("./wony.sh setup configure", guide.search(lookup.keywords("configure keys")))
 
     def test_a_feature_comes_with_what_to_bring(self) -> None:
         for question, answer in (
@@ -389,7 +389,7 @@ class TestTheRealGuide(unittest.TestCase):
         self.assertNotIn("Only what is listed here", guide.headings())
 
     def test_a_problem_points_at_the_doctor(self) -> None:
-        self.assertIn("python wony.py doctor", guide.search(lookup.keywords("something goes wrong")))
+        self.assertIn("./wony.sh doctor", guide.search(lookup.keywords("something goes wrong")))
 
     def test_a_setting_question_does_not_drag_in_the_whole_guide(self) -> None:
         self.assertLess(len(guide.search(lookup.keywords("idle clock"))), 2500)

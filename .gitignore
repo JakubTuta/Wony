@@ -6,6 +6,7 @@ venv/
 config.yaml
 config.yaml.bak
 .wony_setup
+.wony_lock
 logs/
 .vscode/
 *.db

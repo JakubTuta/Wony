@@ -14,10 +14,10 @@ user ends — `loginctl enable-linger` is what keeps it alive on a headless boot
 so install() turns it on.
 
 Usage:
-  python wony.py autostart install
-  python wony.py autostart install --no-browser
-  python wony.py autostart uninstall
-  python wony.py autostart status
+  ./wony.sh autostart install
+  ./wony.sh autostart install --no-browser
+  ./wony.sh autostart uninstall
+  ./wony.sh autostart status
 """
 import os
 import shutil
@@ -238,7 +238,7 @@ def status() -> None:
         return
 
     if not os.path.exists(_unit_path()):
-        print(f"'{UNIT_NAME}' is not installed. Run: python wony.py autostart install")
+        print(f"'{UNIT_NAME}' is not installed. Run: ./wony.sh autostart install")
         return
 
     for name in (UNIT_NAME, BROWSER_UNIT_NAME):
@@ -256,7 +256,7 @@ def _has_systemd() -> bool:
     if not os.path.isdir("/run/systemd/system"):
         print(
             "[autostart] This machine does not run systemd, so there is no unit "
-            "to install. Start Wony with: python wony.py kiosk"
+            "to install. Start Wony with: ./wony.sh kiosk"
         )
         return False
     return True

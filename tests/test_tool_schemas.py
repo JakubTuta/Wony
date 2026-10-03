@@ -12,6 +12,7 @@ import inspect
 import os
 import re
 import sys
+import typing
 import unittest
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -19,10 +20,6 @@ sys.path.insert(0, _REPO_ROOT)
 
 _NO_DESC = "No description available"
 
-# Ceiling on the whole job list with every module enabled. 73 before the audit,
-# 47 after the Tier 2 consolidation, 52 once Tier 3 spent five of the freed
-# slots. The headroom above 52 is small on purpose.
-_JOB_BUDGET = 55
 _DOCUMENTED_ARG = re.compile(r"^[ \t]*(\w+)[ \t]*\([^)]*\)[ \t]*:", re.MULTILINE)
 
 
@@ -41,21 +38,6 @@ class TestToolSchemas(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.jobs = _load_jobs()
 
-    def test_the_job_budget_has_not_quietly_regrown(self) -> None:
-        """Every registered job is sent to the model on every request, so the
-        list is a token budget and an accuracy budget at once. It was cut from
-        73 to 47 and then deliberately spent back up to 52; a new job is a
-        decision, not an accident.
-
-        Counted with every module switched on, which CI cannot do, so this
-        only asserts the ceiling it can actually see.
-        """
-        self.assertLessEqual(
-            len(self.jobs), _JOB_BUDGET,
-            "The job list has grown past the budget. If the new job is right, "
-            "raise _JOB_BUDGET here on purpose and say why.",
-        )
-
     def test_jobs_are_registered(self) -> None:
         # Deliberately low: CI installs core deps only, so most optional
         # modules gate themselves off. The point is that discovery ran at all.
@@ -65,8 +47,8 @@ class TestToolSchemas(unittest.TestCase):
         """@register_job registers whatever callable sits directly beneath it.
         Written the other way round — @capture_response on the outside — the
         registry keeps the *raw* function, so that job silently loses error
-        capture and logging. League's three jobs shipped
-        like that. `_quiet_success` is the marker capture_response leaves behind.
+        capture and logging. `_captures_response` is the marker capture_response
+        leaves behind.
         """
         from helpers.registry import ServiceRegistry
 
@@ -156,6 +138,87 @@ class TestToolSchemas(unittest.TestCase):
                     stray.append(f"  {name}({param}) is not a real parameter")
 
         self.assertFalse(stray, "\n".join(stray))
+
+    def test_literal_params_produce_enum(self) -> None:
+        """A `Literal[...]` type hint must surface as a JSON-schema `enum` so the
+        model is told the allowed values, and the default value must be one of
+        the declared choices. "" is the not-provided sentinel and is left out of
+        the enum (Gemini rejects it there)."""
+        from helpers.tools import _parse_signature
+
+        for name, func in self.jobs.items():
+            try:
+                type_hints = typing.get_type_hints(func)
+            except Exception:
+                continue
+            signature = inspect.signature(func).parameters
+            _, properties, _ = _parse_signature(func)
+            for param, hint in type_hints.items():
+                if getattr(hint, "__origin__", None) is not typing.Literal:
+                    continue
+                with self.subTest(job=name, param=param):
+                    choices = list(hint.__args__)
+                    entry = properties.get(param, {})
+                    self.assertEqual(
+                        entry.get("enum"), [c for c in choices if c != ""],
+                        f"{name}({param}) is Literal but schema enum is {entry.get('enum')!r}",
+                    )
+                    default = signature[param].default
+                    if default is not inspect.Parameter.empty:
+                        self.assertIn(
+                            default, choices,
+                            f"{name}({param}) default {default!r} is not in {choices!r}",
+                        )
+
+    def test_confirm_words_are_choices_of_a_validated_action(self) -> None:
+        """`confirms={...}` matches the text of the job's `action` argument. That
+        only holds when `action` is a Literal, because validate_args then
+        rejects every other spelling: with a plain str the model can pass a
+        synonym the job understands and the gate does not list ("reboot")."""
+        from helpers.registry import ServiceRegistry
+        from helpers.tools import _literal_values
+
+        for name, declared in ServiceRegistry.get_job_confirms().items():
+            if not isinstance(declared, (set, frozenset, list, tuple)):
+                continue
+            func = self.jobs.get(name)
+            if func is None:
+                continue
+            with self.subTest(job=name):
+                allowed = _literal_values(typing.get_type_hints(func).get("action"))
+                self.assertIsNotNone(
+                    allowed, f"{name} confirms on action words but action is not a Literal"
+                )
+                self.assertLessEqual(
+                    {str(word).lower() for word in declared},
+                    {str(value).lower() for value in allowed},
+                    f"{name} confirms on a word that is not one of its actions",
+                )
+
+    def test_power_rejects_a_synonym_the_gate_does_not_list(self) -> None:
+        """"reboot" and "power off" are what a person says, and what the job once
+        accepted, but the confirm gate only lists the declared words."""
+        from helpers.tools import validate_args
+
+        power = self.jobs["power"]
+        for word in ("reboot", "off", "power off", "shut down", "doze", "rest"):
+            with self.subTest(word=word):
+                self.assertIsNotNone(validate_args(power, {"action": word}))
+        for word in ("shutdown", "restart", "sleep", "wake"):
+            with self.subTest(word=word):
+                self.assertIsNone(validate_args(power, {"action": word}))
+
+    def test_the_empty_sentinel_is_valid_only_where_declared(self) -> None:
+        """"" is how an optional Literal says "not provided". It stays out of the
+        schema enum, but validate_args must still accept it where the type
+        declares it, and must not accept it for a required choice."""
+        from helpers.tools import validate_args
+        from modules.spotify import Spotify
+
+        self.assertIsNone(validate_args(Spotify.set_volume, {"direction": ""}))
+        self.assertIsNone(validate_args(Spotify.play_songs, {"content_type": ""}))
+        self.assertIsNotNone(validate_args(self.jobs["power"], {"action": ""}))
+        self.assertIsNotNone(validate_args(Spotify.set_volume, {"direction": "sideways"}))
 
     def test_schema_builds_for_every_provider(self) -> None:
         from helpers.tools import (

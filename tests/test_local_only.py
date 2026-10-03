@@ -1,59 +1,110 @@
-"""Browsers do not apply CORS to WebSockets, so before this any website open on
-a machine that could reach the panel could open /api/ws, read every turn and
-send chat messages — or post to the password-less API.
+"""Browsers do not apply CORS to WebSockets, so any website open on a machine that
+can reach the server could open /api/ws, read every turn and send chat messages
+— or post to the password-less API. helpers/local_only.py is the one check both
+the web page and the wall panel use.
 
 Run directly: python tests/test_local_only.py
 """
 import os
 import sys
 import unittest
-from unittest import mock
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _REPO_ROOT)
 
 
-def _scope(host: str, origin: str = "") -> dict:
-    headers = [(b"host", host.encode())]
+def _scope(host: str, origin: str = "", **headers: str) -> dict:
+    pairs = [(b"host", host.encode())]
     if origin:
-        headers.append((b"origin", origin.encode()))
-    return {"type": "websocket", "headers": headers}
+        pairs.append((b"origin", origin.encode()))
+    pairs += [(k.replace("_", "-").encode(), v.encode()) for k, v in headers.items()]
+    return {"type": "websocket", "headers": pairs}
 
 
 class TestLocalOnly(unittest.TestCase):
-    def _allowed(self, scope: dict, configured: str = "127.0.0.1") -> bool:
-        from helpers.web_app import _allowed
+    def _allowed(self, scope: dict, hosts="loopback") -> bool:
+        from helpers import local_only
 
-        with mock.patch("helpers.config.Config.get", side_effect=lambda k, d=None: configured if k == "server.host" else d):
-            return _allowed(scope)
+        return local_only.allowed(scope, local_only.LOOPBACK_NAMES if hosts == "loopback" else hosts)
 
-    def test_the_panels_own_page_is_allowed(self) -> None:
+    def test_the_servers_own_page_is_allowed(self) -> None:
         self.assertTrue(self._allowed(_scope("localhost:8000", "http://localhost:8000")))
+        self.assertTrue(self._allowed(_scope("127.0.0.1:9000", "http://127.0.0.1:9000")))
 
     def test_another_website_is_refused(self) -> None:
         self.assertFalse(self._allowed(_scope("localhost:8000", "https://evil.example")))
+        self.assertFalse(self._allowed(_scope("localhost:8000", "http://evil.example:8000")))
+        self.assertFalse(self._allowed(_scope("localhost:8000", "null")))
+
+    def test_a_non_browser_client_sends_no_origin_and_is_allowed(self) -> None:
+        self.assertTrue(self._allowed(_scope("127.0.0.1:8000")))
+
+    def test_a_different_port_or_scheme_is_a_different_site(self) -> None:
+        self.assertFalse(self._allowed(_scope("127.0.0.1:9000", "http://127.0.0.1:9001")))
+        self.assertFalse(self._allowed(_scope("localhost:8000", "https://localhost:8000")))
+
+    def test_the_dev_server_origin_is_not_special(self) -> None:
+        """Vite rewrites its proxied requests' Origin to match (vite.config.ts)."""
+        self.assertFalse(self._allowed(_scope("127.0.0.1:9000", "http://localhost:5173")))
 
     def test_a_rebound_host_name_is_refused(self) -> None:
         self.assertFalse(self._allowed(_scope("evil.example:8000", "http://evil.example:8000")))
+        self.assertFalse(self._allowed(_scope("evil.example:8000")))
 
-    def test_a_screen_on_another_machine_still_works(self) -> None:
-        self.assertTrue(self._allowed(_scope("192.168.1.20:8000", "http://192.168.1.20:8000"), "192.168.1.20"))
-
-    def test_cross_site_fetch_metadata_is_refused_even_with_the_panels_own_origin(self) -> None:
+    def test_cross_site_fetch_metadata_is_refused_even_with_the_servers_own_origin(self) -> None:
         for site in ("cross-site", "same-site"):
             with self.subTest(site=site):
-                scope = _scope("localhost:8000", "http://localhost:8000")
-                scope["headers"].append((b"sec-fetch-site", site.encode()))
+                scope = _scope("localhost:8000", "http://localhost:8000", sec_fetch_site=site)
                 self.assertFalse(self._allowed(scope))
 
     def test_same_origin_fetch_metadata_is_allowed(self) -> None:
-        scope = _scope("localhost:8000", "http://localhost:8000")
-        scope["headers"].append((b"sec-fetch-site", b"same-origin"))
+        scope = _scope("localhost:8000", "http://localhost:8000", sec_fetch_site="same-origin")
         self.assertTrue(self._allowed(scope))
 
-    def test_the_dev_server_origin_is_no_longer_special(self) -> None:
-        """Vite rewrites its proxied requests' Origin (kiosk/vite.config.ts)."""
-        self.assertFalse(self._allowed(_scope("localhost:8000", "http://localhost:5173")))
+    def test_a_screen_on_another_machine_works_when_that_host_is_served(self) -> None:
+        served = ("127.0.0.1", "localhost", "192.168.1.20")
+        self.assertTrue(self._allowed(_scope("192.168.1.20:8000", "http://192.168.1.20:8000"), served))
+        self.assertFalse(self._allowed(_scope("192.168.1.99:8000", "http://192.168.1.99:8000"), served))
+
+    def test_bound_to_every_interface_still_checks_the_origin(self) -> None:
+        self.assertTrue(self._allowed(_scope("10.0.0.5:8000", "http://10.0.0.5:8000"), None))
+        self.assertFalse(self._allowed(_scope("10.0.0.5:8000", "http://evil.example"), None))
+
+    def test_an_ipv6_host_is_read_as_a_host_not_cut_at_a_colon(self) -> None:
+        self.assertFalse(self._allowed(_scope("[::1]:8000", "http://[::1]:8000")))
+        self.assertTrue(self._allowed(_scope("[::1]:8000", "http://[::1]:8000"), ("::1",)))
+
+    def test_the_app_serves_at_least_the_loopback_names(self) -> None:
+        from helpers.web_app import _allowed_hosts
+
+        hosts = _allowed_hosts()
+        self.assertTrue(hosts is None or {"127.0.0.1", "localhost"} <= set(hosts))
+
+
+class TestServedHosts(unittest.TestCase):
+    """`server.host` is a setting here, so the names the panel answers to follow it."""
+
+    def _hosts(self, configured):
+        from unittest import mock
+
+        from helpers.web_app import _allowed_hosts
+
+        with mock.patch(
+            "helpers.config.Config.get",
+            side_effect=lambda key, default=None: configured if key == "server.host" else default,
+        ):
+            return _allowed_hosts()
+
+    def test_loopback_is_served_by_default(self) -> None:
+        self.assertEqual(set(self._hosts("127.0.0.1")), {"127.0.0.1", "localhost"})
+
+    def test_a_configured_address_is_served_as_well(self) -> None:
+        self.assertIn("192.168.1.20", self._hosts("192.168.1.20"))
+        self.assertIn("localhost", self._hosts("192.168.1.20"))
+
+    def test_every_interface_means_any_host_name(self) -> None:
+        self.assertIsNone(self._hosts("0.0.0.0"))
+        self.assertIsNone(self._hosts("::"))
 
 
 if __name__ == "__main__":

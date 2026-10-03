@@ -58,8 +58,8 @@ def add(
     except Exception:
         pass
 
-    # pythonw.exe (tray mode) has no console — print() above goes to a devnull
-    # sink, so this is the only durable trace of the failure.
+    # Under systemd stdout only reaches the journal, which rotates away —
+    # this is the durable trace of the failure.
     try:
         from helpers.logger import logger
         full = f"{message} (hint: {hint})" if hint else message

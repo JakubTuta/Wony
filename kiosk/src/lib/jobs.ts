@@ -17,13 +17,12 @@ export async function loadJobs(): Promise<Job[]> {
   return inflight
 }
 
-/** Whether this call needs the confirm sheet, per the job catalog's
- *  `destructive` flag and gate words (§10 of the capability inventory) — the
- *  generic rule for anything invoked through /api/invoke. Device controls on
- *  this panel are a deliberate exception: see needsDeviceConfirm in
- *  lib/devices.ts. */
+/** Whether this call needs the confirm sheet, per the job catalog's `confirms`
+ *  flag and gate words — the generic rule for anything invoked through
+ *  /api/invoke. Device controls on this panel are a deliberate exception: see
+ *  needsDeviceConfirm in lib/devices.ts. */
 export function needsConfirm(job: Job | undefined, args: Record<string, unknown> = {}): boolean {
-  if (!job || !job.destructive) return false
+  if (!job || !job.confirms) return false
   if (job.confirm_words === null) return true
   const action = String(args.action ?? '').trim().toLowerCase()
   return job.confirm_words.includes(action)

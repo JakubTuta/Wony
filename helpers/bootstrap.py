@@ -35,6 +35,14 @@ class BootstrapError(Exception):
     pass
 
 
+# Shown as the answer to a turn and as a notification on the screen, which has
+# no chat and no key field of its own to say it in.
+NO_AI_MESSAGE = (
+    "No AI service is set up yet. On the device, run `./wony.sh setup configure` "
+    "and add a key from Anthropic or Google Gemini, or point Wony at an Ollama server."
+)
+
+
 def shutdown() -> None:
     """Idempotent shutdown: stop jobs, scheduler, close DB."""
     global _shutdown_done
@@ -75,11 +83,25 @@ def shutdown() -> None:
 
 
 def get_ai_client() -> typing.Any:
+    """The AI provider's client, resolved lazily so a key added after startup
+    works on the next turn without a restart.
+
+    No key at all is a normal state the first time Wony runs: the AI service's
+    own __init__ fails and register_service leaves it unregistered. Retrying
+    here is what picks up a key written to .env since — by another process, so
+    .env has to be read again.
+    """
     from helpers.registry import ServiceRegistry
 
     inst = ServiceRegistry.get_service_instance("ai")
     if inst is None:
-        raise BootstrapError("AI service not registered.")
+        import dotenv
+
+        dotenv.load_dotenv(override=True)
+        ServiceRegistry.reinitialize_module("ai")
+        inst = ServiceRegistry.get_service_instance("ai")
+    if inst is None:
+        raise BootstrapError(NO_AI_MESSAGE)
     return inst.client
 
 
@@ -122,7 +144,15 @@ def bootstrap(
 
     ai_ok, ai_msg = describe_readiness()
     if not ai_ok:
-        raise BootstrapError(f"AI provider not ready.\n{ai_msg}")
+        # Degrade, don't disable: with no key the device still has to come up,
+        # because timers, music and the smart home do not need one. The AI
+        # service fails on its own and register_service leaves it unregistered;
+        # run_turn() answers with NO_AI_MESSAGE until a key is added.
+        import helpers.diagnostics
+
+        helpers.diagnostics.add("warning", "AI", f"AI provider not ready: {ai_msg}")
+        if not quiet:
+            print(f"[AI] Not ready: {ai_msg}")
 
     # Import Employer AFTER Config.load() so module decorators see correct gates.
     from modules.employer import Employer
@@ -168,6 +198,8 @@ def bootstrap(
     except Exception:
         pass
 
+    if not ai_ok:
+        _announce_missing_ai()
     _warn_if_web_exposed(Config)
     _start_health_watcher(quiet)
     _start_triggers(quiet)
@@ -183,11 +215,25 @@ def bootstrap(
     return employer
 
 
+def _announce_missing_ai() -> None:
+    """Put the missing AI service on the screen's bell. Not repeated on every
+    restart while the first one is still unread."""
+    try:
+        from helpers.memory_db import all_notifications
+        from helpers.notify import notify
+
+        unread = all_notifications(include_acknowledged=False, limit=50)
+        if not any(n.get("text") == NO_AI_MESSAGE for n in unread):
+            notify(NO_AI_MESSAGE, kind="alert", source="ai")
+    except Exception:
+        pass
+
+
 def _warn_if_web_exposed(Config: typing.Any) -> None:
     """Flag a web server bound beyond localhost.
 
     The HTTP API has no authentication: /api/invoke can run any registered job
-    — send an email, delete a calendar event, type on the desktop, wipe the
+    — send an email, delete a calendar event, power off the device, wipe the
     database, exit the app. On 127.0.0.1 that is fine; on any other address it
     hands those to everyone who can reach the port.
     """

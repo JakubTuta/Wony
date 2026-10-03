@@ -2,13 +2,13 @@
 Wony unified entry point.
 
 Usage:
-  python wony.py              # default: kiosk (web API + touch UI on the display)
-  python wony.py kiosk        # same, explicitly
-  python wony.py text         # console text REPL — the way to debug over SSH
-  python wony.py doctor       # validate setup and exit
-  python wony.py autostart install    # start Wony + the browser at boot (systemd)
-  python wony.py autostart uninstall  # remove both units
-  python wony.py autostart status     # show unit status
+  ./wony.sh              # default: kiosk (web API + touch UI on the display)
+  ./wony.sh kiosk        # same, explicitly
+  ./wony.sh text         # console text REPL — the way to debug over SSH
+  ./wony.sh doctor       # validate setup and exit
+  ./wony.sh autostart install    # start Wony + the browser at boot (systemd)
+  ./wony.sh autostart uninstall  # remove both units
+  ./wony.sh autostart status     # show unit status
 
 All subcommands that start the assistant brain load Config before importing
 modules, preserving the invariant that Config.load() precedes Employer import.
@@ -33,6 +33,13 @@ if sys.stderr and hasattr(sys.stderr, "reconfigure"):
 # ── Setup gate ────────────────────────────────────────────────────────────────
 
 
+# What to tell someone whose second copy was refused (helpers/instance.py).
+_STOP_HINT = (
+    "Stop it first — `systemctl --user stop wony` if it starts at boot, otherwise "
+    "close the terminal it runs in — then try again."
+)
+
+
 def _require_setup() -> None:
     """Block the app until setup.py has run.
 
@@ -47,7 +54,7 @@ def _require_setup() -> None:
 
     root = os.path.dirname(os.path.abspath(__file__))
     marker = os.path.join(root, ".wony_setup")
-    setup_cmd = "python setup.py"
+    setup_cmd = "./wony.sh setup"
 
     if not os.path.exists(marker):
         print(
@@ -70,13 +77,18 @@ def _require_setup() -> None:
         have_dir
     ):
         want_py = data.get("python", os.path.join(want_dir, "python"))
+        if os.path.exists(want_py):
+            # Run by hand with another Python (`python3 wony.py ...`): switch to
+            # the one setup.py actually installed everything for — refusing just
+            # moves the same cryptic ImportError one step later. execv never
+            # returns.
+            os.execv(want_py, [want_py, os.path.abspath(__file__)] + sys.argv[1:])
+            return
         print(
             "\nWrong Python interpreter for Wony.\n"
             f"Setup installed everything for:\n    {want_py}\n"
             f"but you launched with:\n    {sys.executable}\n\n"
-            f"Run instead:\n    {want_py} {os.path.basename(__file__)} "
-            f"{' '.join(sys.argv[1:])}\n"
-            "(or re-run setup.py to target this interpreter.)\n"
+            "That interpreter no longer exists. Re-run setup.py to target this one.\n"
         )
         sys.exit(1)
 
@@ -89,6 +101,10 @@ def cmd_kiosk(args: argparse.Namespace) -> None:
     from helpers.config import Config
 
     Config.load()
+
+    from helpers import instance
+
+    instance.claim_or_exit(_STOP_HINT)
 
     from helpers.bootstrap import BootstrapError, bootstrap
 
@@ -116,6 +132,10 @@ def cmd_text(args: argparse.Namespace) -> None:
     from helpers.config import Config
 
     Config.load()
+
+    from helpers import instance
+
+    instance.claim_or_exit(_STOP_HINT)
 
     from helpers.bootstrap import BootstrapError, bootstrap
 
@@ -184,9 +204,9 @@ def main() -> None:
         epilog=(
             "Run with no subcommand to start the kiosk.\n"
             "Examples:\n"
-            "  python wony.py              # kiosk (default)\n"
-            "  python wony.py text         # console text REPL\n"
-            "  python wony.py autostart install"
+            "  ./wony.sh              # kiosk (default)\n"
+            "  ./wony.sh text         # console text REPL\n"
+            "  ./wony.sh autostart install"
         ),
     )
 

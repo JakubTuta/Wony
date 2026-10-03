@@ -17,8 +17,8 @@ class Cache:
     @staticmethod
     def load_values() -> None:
         # Explicit utf-8 both ways: Python's default on Windows is the ANSI code
-        # page, so a cached value with any non-ASCII character (a device name, a
-        # voice name) round-trips wrong or raises on read.
+        # page, so a cached value with any non-ASCII character (a device name)
+        # round-trips wrong or raises on read.
         try:
             with open(Cache._filename, "r", encoding="utf-8") as file:
                 Cache._values = json.load(file)

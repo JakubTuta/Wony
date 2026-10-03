@@ -1,4 +1,4 @@
-﻿"""Edit config.yaml in place, keeping its comments.
+"""Edit config.yaml in place, keeping its comments.
 
 config.yaml is a file people read and hand-edit: the comments in it are half of
 what makes it usable. Loading it with a YAML library and dumping it back would

@@ -1,9 +1,9 @@
 """Repo-root anchored paths.
 
-Every data file Wony owns (db, cache, credentials, logs, models) must resolve
-against the repo, not the process CWD — the tray is launched by Task Scheduler
-and `wony.py text` can be run from anywhere, and both used to fork their own
-copy of wony.db / cache.json wherever they happened to start.
+Every data file Wony owns (db, cache, credentials, logs) must resolve against
+the repo, not the process CWD — the service is launched by systemd and
+`wony.py text` can be run from anywhere, and both used to fork their own copy
+of wony.db / cache.json wherever they happened to start.
 """
 import os
 

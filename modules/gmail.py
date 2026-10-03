@@ -1,4 +1,4 @@
-﻿import base64
+import base64
 import dataclasses
 import email.message
 import re
@@ -153,18 +153,13 @@ def _build_mime_raw(
     requires=Requirement(
         files=[CREDENTIALS_FILE],
         pip_modules=["googleapiclient", "google_auth_oauthlib"],
-        setup_hint=(
-            "Follow simplegmail OAuth setup (pypi.org/project/simplegmail), "
-            "place credentials/google_credentials.json in the credentials/ folder, "
-            "then run: pip install -r requirements/gmail.txt"
-        ),
+        setup_hint="Run: ./wony.sh setup configure — it sets up Google sign-in.",
     ),
 )
 class Gmail:
     """Gmail service for email management. Supports multiple Google accounts."""
 
     def __init__(self):
-        self._clients: typing.Dict[str, typing.Any] = {}
         self._label_maps: typing.Dict[str, typing.Dict[str, str]] = {}
 
     # ------------------------------------------------------------------
@@ -576,7 +571,7 @@ class Gmail:
         important: bool = False,
         has_attachment: bool = False,
         max_results: int = 0,
-        view: str = "list",
+        view: typing.Literal["list", "full", "thread", "overview"] = "list",
         account: str = "",
     ) -> str:
         """
@@ -921,7 +916,9 @@ class Gmail:
     @method_job(confirms=True)
     def modify_emails(
         self,
-        action: str = "read",
+        action: typing.Literal[
+            "read", "unread", "star", "unstar", "archive", "label", "unlabel", "delete"
+        ] = "read",
         query: str = "",
         sender: str = "",
         subject: str = "",
@@ -1047,7 +1044,7 @@ class Gmail:
     @method_job(confirms={"delete"})
     def manage_drafts(
         self,
-        action: str = "list",
+        action: typing.Literal["list", "create", "edit", "delete"] = "list",
         draft_id: str = "",
         to: str = "",
         subject: str = "",

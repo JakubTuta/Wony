@@ -38,10 +38,20 @@ def _literal_values(hint: typing.Any) -> typing.Optional[typing.List[typing.Any]
         return _literal_values(inner)
 
     if origin is typing.Literal:
-        # "" is used as a not-provided sentinel on optional string params.
-        return [a for a in args if a != ""]
+        return list(args)
 
     return None
+
+
+def _schema_enum(hint: typing.Any) -> typing.Optional[typing.List[typing.Any]]:
+    """The enum to advertise for hint, or None if it is not a Literal.
+
+    "" is the not-provided sentinel on optional string params and stays a valid
+    value for validate_args, but Gemini's function-calling schema rejects an
+    empty-string enum value, so it is left out here.
+    """
+    values = _literal_values(hint)
+    return None if values is None else [v for v in values if v != ""]
 
 
 # ------------------------------------------------------------------ schema building
@@ -148,6 +158,9 @@ def _parse_signature(
         }
         if json_type == "array":
             entry["items"] = {"type": "string"}
+        enum = _schema_enum(hint)
+        if enum is not None:
+            entry["enum"] = enum
 
         properties[param_name] = entry
 
@@ -167,10 +180,14 @@ def _parse_signature(
             continue
         hint = type_hints.get(param_name)
         json_type = _python_type_to_json(hint) if hint is not None else "string"
-        properties[param_name] = {
+        entry = {
             "type": json_type,
             "description": "No description available",
         }
+        enum = _schema_enum(hint)
+        if enum is not None:
+            entry["enum"] = enum
+        properties[param_name] = entry
         if (
             param.default is inspect.Parameter.empty
             and param.kind != inspect.Parameter.VAR_POSITIONAL

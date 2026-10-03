@@ -14,8 +14,12 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from helpers import local_only
 from helpers.config import Config
 from helpers.registry import ServiceRegistry
+
+# The built touch UI (not in the repo). A constant so a test can point it elsewhere.
+_DIST_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "kiosk", "dist")
 
 
 def _coerce_args(
@@ -66,23 +70,6 @@ def _coerce_args(
 
 
 
-def _sanitize_calls(
-    calls: typing.List[typing.Dict[str, typing.Any]],
-) -> typing.List[typing.Dict[str, typing.Any]]:
-    """Ensure every call is JSON-serializable (coerce non-serializable args to str)."""
-    safe = []
-    for c in calls:
-        safe_args: typing.Dict[str, typing.Any] = {}
-        for k, v in (c.get("args") or {}).items():
-            try:
-                json.dumps(v)
-                safe_args[k] = v
-            except (TypeError, ValueError):
-                safe_args[k] = str(v)
-        safe.append({"name": c.get("name", ""), "args": safe_args, "result": str(c.get("result", ""))})
-    return safe
-
-
 class InvokeRequest(BaseModel):
     name: str
     args: typing.Dict[str, typing.Any] = {}
@@ -116,53 +103,34 @@ class SettingsRequest(BaseModel):
     modules: typing.Optional[typing.List[str]] = None
 
 
-_LOOPBACK = ("127.0.0.1", "localhost")
+def _allowed_hosts() -> typing.Optional[typing.Tuple[str, ...]]:
+    """The host names this server answers to; None means any.
+
+    A screen on another machine (server.host set to this device's address) is
+    the same site as far as its own page is concerned, so it still works. Bound
+    to every interface the address cannot be known: only Origin can be checked.
+    """
+    configured = str(Config.get("server.host", "127.0.0.1"))
+    if configured in ("0.0.0.0", "::"):
+        return None
+    return local_only.LOOPBACK_NAMES + (configured,)
 
 
 class _LocalOnlyMiddleware:
-    """Refuse requests a website could have made on the user's behalf.
-
-    The API has no password, so any page open in a browser could otherwise post
-    to it or open /api/ws (browsers do not apply CORS to WebSockets). The Host
-    check stops DNS rebinding; the Origin check stops cross-site requests. A
-    screen on another machine (server.host set to this device's address) is
-    the same site as far as its own page is concerned, so it still works.
-    """
+    """Refuse requests a website could have made on the user's behalf
+    (helpers/local_only.py)."""
 
     def __init__(self, app: typing.Any) -> None:
         self.app = app
 
     async def __call__(self, scope: dict, receive: typing.Any, send: typing.Any) -> None:
-        if scope["type"] in ("http", "websocket") and not _allowed(scope):
+        if scope["type"] in ("http", "websocket") and not local_only.allowed(scope, _allowed_hosts()):
             if scope["type"] == "websocket":
                 await send({"type": "websocket.close", "code": 1008})
             else:
-                from fastapi.responses import JSONResponse
-
                 await JSONResponse({"detail": "Forbidden"}, status_code=403)(scope, receive, send)
             return
         await self.app(scope, receive, send)
-
-
-def _allowed(scope: dict) -> bool:
-    from urllib.parse import urlsplit
-
-    headers = {k.decode("latin-1"): v.decode("latin-1") for k, v in scope.get("headers", [])}
-    host = headers.get("host", "")
-    configured = str(Config.get("server.host", "127.0.0.1"))
-    # Bound to every interface, any name may reach it; only Origin can be checked.
-    if configured not in ("0.0.0.0", "::") and host.rsplit(":", 1)[0] not in _LOOPBACK + (configured,):
-        return False
-    # Belt and suspenders alongside the Origin check: a fetch() a site makes to
-    # this server is neither same-origin nor absent, whatever Origin it sends.
-    if headers.get("sec-fetch-site") in ("cross-site", "same-site"):
-        return False
-    origin = headers.get("origin")
-    if not origin:
-        return True  # not a browser: no website can drive it
-    # The Vite dev server rewrites its proxied requests' Origin to this
-    # server's own (kiosk/vite.config.ts), so it needs no carve-out here.
-    return urlsplit(origin).netloc == host
 
 
 def build_app() -> FastAPI:
@@ -296,7 +264,7 @@ def build_app() -> FastAPI:
                     "module": job_modules.get(name, ""),
                     "summary": job_summaries.get(name, ""),
                     "description": description,
-                    "destructive": bool(declared),
+                    "confirms": bool(declared),
                     "confirm_words": confirm_words,
                     "parameters": {
                         "properties": properties,
@@ -324,7 +292,7 @@ def build_app() -> FastAPI:
             )
 
         if ServiceRegistry.job_confirms(req.name):
-            # Deliberately not routed through helpers/confirm.py: the tap
+            # Deliberately not routed through helpers/confirm.py: the button
             # already passed the UI's confirm dialog and the user is watching
             # the result. Logged separately so the audit trail says which of
             # these ran from a button rather than from the model.
@@ -337,7 +305,7 @@ def build_app() -> FastAPI:
             from helpers.decorators import agent_lock, set_agent_active
             from helpers.turn_context import user_request
 
-            # A tap is the user asking, so a Sign in again button may open
+            # A button press is the user asking, so a Sign in again button may open
             # Google's consent page.
             with agent_lock, user_request():
                 set_agent_active(True)
@@ -355,7 +323,7 @@ def build_app() -> FastAPI:
 
     @app.post("/api/chat")
     def chat(req: ChatRequest) -> typing.Dict[str, typing.Any]:
-        from helpers.conversation import Conversation
+        from helpers.conversation import Conversation, sanitize_calls
         from helpers.logger import logger
         from helpers.turn import run_turn
 
@@ -367,7 +335,7 @@ def build_app() -> FastAPI:
             logger.log_error(result.error, "web_chat")
             raise HTTPException(status_code=503, detail=result.error)
 
-        safe_calls = _sanitize_calls(result.calls)
+        safe_calls = sanitize_calls(result.calls)
         turn_id = Conversation.record_turn(req.message, result.text, calls=safe_calls)
         return {"id": turn_id, "text": result.text, "calls": safe_calls}
 
@@ -430,9 +398,8 @@ def build_app() -> FastAPI:
 
     @app.get("/api/panel/{key}")
     def get_panel(key: str) -> typing.Dict[str, typing.Any]:
-        """Structured data for one screen — weather, agenda, timers, devices,
-        music, accounts. The write side of every panel goes through /api/invoke
-        like any other job; only reading needs a shape."""
+        """Structured data for one panel. The write side of every panel goes
+        through /api/invoke like any other job; only reading needs a shape."""
         from helpers.panels import PanelUnavailable, panel
 
         try:
@@ -453,7 +420,7 @@ def build_app() -> FastAPI:
 
         The one panel with a write path, and the reason it is not /api/invoke:
         control_home_device resolves a spoken name, which would toggle both
-        lamps called 'Lamp'. The screen already knows which one was tapped.
+        lamps called 'Lamp'. The UI already knows which one was pressed.
         """
         if "home_assistant" not in Config.enabled_modules():
             raise HTTPException(status_code=503, detail="Home Assistant is not enabled.")
@@ -462,17 +429,17 @@ def build_app() -> FastAPI:
         from modules import home_assistant
 
         logger.log_function_call(
-            "control_device", "[screen]", {"entity_id": req.entity_id, "action": req.action}
+            "control_device", "[web]", {"entity_id": req.entity_id, "action": req.action}
         )
         try:
             ok, text = home_assistant.control(
                 req.entity_id, req.action, req.value, req.option
             )
         except Exception as e:
-            logger.log_error(str(e), "web_control_device")
+            logger.log_error(str(e), "web_device_control")
             raise HTTPException(status_code=502, detail=str(e))
 
-        logger.log_function_response("control_device", text[:200], "[screen]")
+        logger.log_function_response("control_device", text[:200], "[web]")
         return {"ok": ok, "text": text}
 
     @app.get("/api/notifications")
@@ -480,7 +447,7 @@ def build_app() -> FastAPI:
         include_acknowledged: bool = False,
         limit: int = 50,
     ) -> typing.Dict[str, typing.Any]:
-        """Proactive messages the screen has not shown yet (newest first)."""
+        """Proactive messages the user has not seen yet (newest first)."""
         from helpers.memory_db import all_notifications
 
         return {
@@ -603,7 +570,7 @@ def build_app() -> FastAPI:
         loop = asyncio.get_running_loop()
 
         def _run() -> None:
-            from helpers.conversation import Conversation
+            from helpers.conversation import Conversation, sanitize_calls
             from helpers.logger import logger
             from helpers.turn import run_turn
 
@@ -614,7 +581,7 @@ def build_app() -> FastAPI:
                     q.put(("error", result.error))
                     return
 
-                safe_calls = _sanitize_calls(result.calls)
+                safe_calls = sanitize_calls(result.calls)
                 # emit=False: we broadcast ourselves below with session_id included
                 turn_id = Conversation.record_turn(message, result.text, calls=safe_calls, emit=False)
                 q.put(("done", {
@@ -668,7 +635,7 @@ def build_app() -> FastAPI:
         finally:
             _ws_clients.discard(ws)
 
-    _dist = os.path.join(os.path.dirname(os.path.dirname(__file__)), "kiosk", "dist")
+    _dist = _DIST_DIR
 
     if os.path.isdir(_dist):
         _assets = os.path.join(_dist, "assets")

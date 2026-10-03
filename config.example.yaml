@@ -1,6 +1,6 @@
 # Wony settings. Everything here can also be changed on the Settings screen.
 # API keys and passwords live in .env, not here.
-# Not sure something works? Run:  python wony.py doctor
+# Not sure something works? Run:  ./wony.sh doctor
 
 assistant:
   name: "Wony"

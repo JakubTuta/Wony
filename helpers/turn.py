@@ -51,7 +51,7 @@ def run_turn(
     open a sign-in window or follow a link the user never mentioned.
     """
     from helpers import confirm
-    from helpers.agent import run_agent
+    from helpers.agent import _fallback_from_calls, run_agent
     from helpers.bootstrap import get_ai_client
     from helpers.conversation import Conversation
     from helpers.decorators import agent_lock, set_agent_active
@@ -105,8 +105,8 @@ def run_turn(
         emit_state("idle")
 
     if agent_err is not None:
-        return TurnResult(text=_describe_failure(agent_err), calls=[],
-                          timed_out=False, error=_describe_failure(agent_err))
+        message = _describe_failure(agent_err)
+        return TurnResult(text=message, calls=[], timed_out=False, error=message)
 
     if timed_out.is_set() and not agent_result.text:
         import helpers.diagnostics
@@ -117,14 +117,11 @@ def run_turn(
         )
         # A tool did run and returned something before the clock ran out —
         # showing that beats showing an apology.
-        fallback = ""
-        for call in reversed(agent_result.calls):
-            result = (call.get("result") or "").strip()
-            if result:
-                fallback = result
-                break
+        fallback = _fallback_from_calls(agent_result.calls)
+        if fallback == "Done.":
+            fallback = "Sorry, that took too long — I'm stopping there."
         return TurnResult(
-            text=fallback or "Sorry, that took too long — I'm stopping there.",
+            text=fallback,
             calls=agent_result.calls,
             timed_out=True,
             error=None,
@@ -148,7 +145,14 @@ def _describe_failure(exc: Exception) -> str:
     """Turn an exception into a message worth putting on screen, and file a
     diagnostic so /api/health shows it too."""
     import helpers.diagnostics
+    from helpers.bootstrap import BootstrapError
     from helpers.errors import classify_api_error, emit_api_diagnostic
+
+    if isinstance(exc, BootstrapError):
+        # Not finding an AI key is expected the first time Wony runs, not a
+        # failure worth the "something went wrong" framing.
+        helpers.diagnostics.add("warning", "AI", str(exc))
+        return str(exc)
 
     classified = classify_api_error(exc)
     if classified:

@@ -1,4 +1,4 @@
-"""Kiosk home-screen tile storage and the job catalog's confirm_words.
+"""Kiosk home-screen tile storage.
 
 Run directly: python tests/test_kiosk_tiles.py
 """
@@ -43,43 +43,6 @@ class TestKioskTileStorage(unittest.TestCase):
     def test_bare_kind_with_no_arg_is_valid(self) -> None:
         self.kiosk.save_tiles(["music", "sleep"])
         self.assertEqual(self.kiosk.load_tiles(), ["music", "sleep"])
-
-
-class TestJobConfirmWords(unittest.TestCase):
-    """/api/jobs flattens ServiceRegistry.get_job_confirms() to `destructive` +
-    `confirm_words`, so the UI can drive its confirm sheet generically instead
-    of hardcoding which jobs are dangerous."""
-
-    def _confirm_words(self, declared):
-        # Mirrors the derivation in helpers/web_app.py:list_jobs — kept as a
-        # small pure function there would just move this test, not simplify it.
-        if isinstance(declared, (set, frozenset, list, tuple)):
-            return sorted(str(v).lower() for v in declared)
-        return None
-
-    def test_true_has_no_word_list(self) -> None:
-        self.assertIsNone(self._confirm_words(True))
-
-    def test_false_has_no_word_list(self) -> None:
-        self.assertIsNone(self._confirm_words(False))
-
-    def test_a_set_becomes_a_sorted_word_list(self) -> None:
-        self.assertEqual(
-            self._confirm_words({"cancel", "Delete"}), ["cancel", "delete"]
-        )
-
-    def test_registry_confirms_reach_the_same_shape(self) -> None:
-        from helpers.config import Config
-        from helpers.registry import ServiceRegistry
-
-        Config.load(os.path.join(_REPO_ROOT, "config.example.yaml"))
-        import modules.scheduler  # noqa: F401 — registers manage_reminders
-
-        declared = ServiceRegistry.get_job_confirms().get("manage_reminders")
-        self.assertIsNotNone(declared)
-        words = self._confirm_words(declared)
-        self.assertIsInstance(words, list)
-        self.assertIn("cancel", words)
 
 
 if __name__ == "__main__":

@@ -195,9 +195,9 @@ export interface Job {
   module: string
   summary: string
   description: string
-  destructive: boolean
-  /** Which values of `args.action` need confirming — null when `destructive`
-   *  is true with no word list (every call confirms) or when it is false. */
+  /** The job has a confirm gate (see helpers/confirm.py). */
+  confirms: boolean
+  /** Which values of `args.action` ask first — null when every call does. */
   confirm_words: string[] | null
   parameters: {
     properties: Record<string, JobParameter>

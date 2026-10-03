@@ -33,6 +33,23 @@ MODULES: typing.List[typing.Tuple[str, str, str]] = [
 ]
 
 
+def working_modules() -> typing.Set[str]:
+    """Keys of the switchable features that are on and actually working.
+
+    What the system prompt may claim Wony can do. A module that is switched on
+    but broken (a missing package, a bad key) is not listed: it has its own
+    fix-it hint in system_status and doctor.
+    """
+    from helpers.registry import ServiceRegistry
+
+    enabled = Config.enabled_modules()
+    statuses = ServiceRegistry.get_module_status()
+    return {
+        key for key, _, _ in MODULES
+        if key in enabled and statuses.get(key, ("", ""))[0] == "enabled"
+    }
+
+
 # A field the UI renders. restart=True means the change only takes effect after
 # Wony is restarted, and the UI says so rather than letting it look broken.
 class Field(typing.NamedTuple):

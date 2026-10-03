@@ -119,20 +119,6 @@ def _init_schema(conn: sqlite3.Connection) -> None:
         )
     """)
     conn.execute("""
-        CREATE TABLE IF NOT EXISTS mcp_servers (
-            name         TEXT PRIMARY KEY,
-            transport    TEXT NOT NULL DEFAULT 'stdio',
-            command      TEXT,
-            args         TEXT,
-            env          TEXT,
-            url          TEXT,
-            oauth_tokens TEXT,
-            enabled      INTEGER NOT NULL DEFAULT 1,
-            created_ts   TEXT NOT NULL,
-            updated_ts   TEXT NOT NULL
-        )
-    """)
-    conn.execute("""
         CREATE TABLE IF NOT EXISTS embeddings (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             source_type TEXT NOT NULL,
@@ -609,78 +595,6 @@ def acknowledge_all_notifications() -> int:
         return cur.rowcount
 
 
-# ------------------------------------------------------------------ mcp servers
-
-def upsert_mcp_server(record: typing.Dict) -> None:
-    conn = _get_conn()
-    ts = datetime.now().isoformat(timespec="seconds")
-    with _lock:
-        conn.execute(
-            """
-            INSERT INTO mcp_servers (name, transport, command, args, env, url, oauth_tokens, enabled, created_ts, updated_ts)
-            VALUES (:name, :transport, :command, :args, :env, :url, :oauth_tokens, :enabled, :created_ts, :updated_ts)
-            ON CONFLICT(name) DO UPDATE SET
-                transport=excluded.transport, command=excluded.command, args=excluded.args,
-                env=excluded.env, url=excluded.url, oauth_tokens=excluded.oauth_tokens,
-                enabled=excluded.enabled, updated_ts=excluded.updated_ts
-            """,
-            {
-                "name": record["name"],
-                "transport": record.get("transport", "stdio"),
-                "command": record.get("command") or None,
-                "args": record.get("args") or "[]",
-                "env": record.get("env") or "{}",
-                "url": record.get("url") or None,
-                "oauth_tokens": record.get("oauth_tokens") or None,
-                "enabled": int(record.get("enabled", 1)),
-                "created_ts": record.get("created_ts", ts),
-                "updated_ts": ts,
-            },
-        )
-        conn.commit()
-
-
-def get_mcp_server(name: str) -> typing.Optional[typing.Dict]:
-    conn = _get_conn()
-    with _lock:
-        row = conn.execute(
-            "SELECT * FROM mcp_servers WHERE name = ?", (name,)
-        ).fetchone()
-        return dict(row) if row else None
-
-
-def delete_mcp_server(name: str) -> None:
-    conn = _get_conn()
-    with _lock:
-        conn.execute("DELETE FROM mcp_servers WHERE name = ?", (name,))
-        conn.commit()
-
-
-def all_mcp_servers(enabled_only: bool = False) -> typing.List[typing.Dict]:
-    conn = _get_conn()
-    with _lock:
-        if enabled_only:
-            rows = conn.execute(
-                "SELECT * FROM mcp_servers WHERE enabled = 1 ORDER BY name"
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM mcp_servers ORDER BY name"
-            ).fetchall()
-        return [dict(r) for r in rows]
-
-
-def set_mcp_server_tokens(name: str, tokens: typing.Dict) -> None:
-    conn = _get_conn()
-    ts = datetime.now().isoformat(timespec="seconds")
-    with _lock:
-        conn.execute(
-            "UPDATE mcp_servers SET oauth_tokens = ?, updated_ts = ? WHERE name = ?",
-            (_json.dumps(tokens), ts, name),
-        )
-        conn.commit()
-
-
 # ------------------------------------------------------------------ embeddings
 
 def upsert_embedding(
@@ -757,7 +671,7 @@ def delete_embedding_by_ref(
 
 def wipe_all() -> None:
     """Delete every row the user owns: turns, facts, notes, routines, reminders,
-    notifications, mcp servers, embeddings, kv.
+    notifications, embeddings, kv.
 
     Resets a fresh session id, clears the in-memory conversation window, and
     reclaims the freed space with VACUUM — otherwise wony.db stays exactly
@@ -767,7 +681,7 @@ def wipe_all() -> None:
     conn = _get_conn()
     with _lock:
         for table in ("turns", "facts", "kv", "notes", "routines", "reminders",
-                      "notifications", "mcp_servers", "embeddings"):
+                      "notifications", "embeddings"):
             try:
                 conn.execute(f"DELETE FROM {table}")
             except sqlite3.OperationalError:

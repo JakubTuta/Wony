@@ -14,7 +14,7 @@ from helpers import net
 
 ATTRIBUTION = "Map data © OpenStreetMap contributors"
 
-_USER_AGENT = "Wony/1.0 (personal voice assistant; one user, low volume)"
+_USER_AGENT = "Wony/1.0 (personal assistant; one user, low volume)"
 _NOMINATIM = "https://nominatim.openstreetmap.org"
 _OVERPASS = "https://overpass-api.de/api/interpreter"
 _OSRM = "https://routing.openstreetmap.de/routed-{profile}/route/v1/driving/{coords}"

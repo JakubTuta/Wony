@@ -32,7 +32,7 @@ class GoogleAccountsService:
         if not os.path.exists(CREDENTIALS_FILE):
             return (
                 "credentials/google_credentials.json is missing — run "
-                "'python setup.py configure' to add Google first."
+                "'./wony.sh setup configure' to add Google first."
             )
 
         problem: typing.List[str] = []
@@ -83,7 +83,9 @@ class GoogleAccountsService:
     @method_job(confirms={"add", "remove", "rename", "set_primary"})
     def manage_google_accounts(
         self,
-        action: str = "list",
+        action: typing.Literal[
+            "list", "add", "authorize", "remove", "rename", "set_primary"
+        ] = "list",
         name: str = "",
         new_name: str = "",
     ) -> str:

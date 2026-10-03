@@ -1,4 +1,4 @@
-﻿import base64
+import base64
 import datetime
 import http.server
 import os
@@ -104,7 +104,12 @@ class Spotify:
     @capture_response
     @retry_on_unauthorized("_refresh_access_token")
     @method_job
-    def play_songs(self, title: str, artist: str, content_type: str = "") -> typing.Optional[str]:
+    def play_songs(
+        self,
+        title: str,
+        artist: str,
+        content_type: typing.Literal["", "track", "album", "artist", "playlist"] = "",
+    ) -> typing.Optional[str]:
         """
         [SPOTIFY JOB] Plays music on Spotify: a song, an album, everything by an artist,
         or one of the user's own playlists. With no title and no artist it just resumes
@@ -327,7 +332,14 @@ class Spotify:
 
     @capture_response
     @method_job
-    def control_playback(self, action: str = "toggle", value: str = "") -> str:
+    def control_playback(
+        self,
+        action: typing.Literal[
+            "toggle", "play", "pause", "next", "previous", "restart",
+            "seek", "shuffle", "repeat", "like", "unlike", "transfer",
+        ] = "toggle",
+        value: str = "",
+    ) -> str:
         """
         [SPOTIFY JOB] Controls Spotify playback: play, pause, skip, go back, restart,
         jump to a position, shuffle, repeat, like or unlike the current song, or move
@@ -435,7 +447,11 @@ class Spotify:
 
     @capture_response
     @method_job
-    def set_volume(self, level: int = -1, direction: str = "") -> str:
+    def set_volume(
+        self,
+        level: int = -1,
+        direction: typing.Literal["", "up", "down", "max", "min", "get"] = "",
+    ) -> str:
         """
         [SPOTIFY JOB] Sets, adjusts, or reports the Spotify playback volume. Call this
         for anything about volume, every time, even if the volume was already discussed:
@@ -476,7 +492,11 @@ class Spotify:
     @capture_response
     @retry_on_unauthorized("_refresh_access_token")
     @method_job
-    def spotify_info(self, what: str = "current", query: str = "") -> str:
+    def spotify_info(
+        self,
+        what: typing.Literal["current", "queue", "playlists", "devices", "search"] = "current",
+        query: str = "",
+    ) -> str:
         """
         [SPOTIFY JOB] Reports what Spotify is doing or knows: the song playing now, what
         is queued next, the user's playlists, the devices they can play on, or the
@@ -604,7 +624,7 @@ class Spotify:
     @method_job(confirms=True)
     def manage_playlist(
         self,
-        action: str = "add",
+        action: typing.Literal["add", "remove", "create", "delete"] = "add",
         playlist_name: str = "",
         title: str = "",
         artist: str = "",
@@ -769,7 +789,14 @@ class Spotify:
     ) -> requests.Response:
         """Make a Spotify API request with standard headers and error handling"""
         headers = kwargs.pop("headers", self._get_auth_headers())
-        response = getattr(net, method.lower())(url, headers=headers, **kwargs)
+        try:
+            response = getattr(net, method.lower())(url, headers=headers, **kwargs)
+        except requests.exceptions.Timeout as e:
+            # A bare "Read timed out" means nothing on the now-playing card, and
+            # the panel polls again in a few seconds anyway — no retry needed.
+            raise Exception("Spotify didn't respond in time — try again in a moment.") from e
+        except requests.exceptions.ConnectionError as e:
+            raise Exception("Could not reach Spotify — check your internet connection.") from e
         try:
             response.raise_for_status()
         except requests.exceptions.HTTPError as e:

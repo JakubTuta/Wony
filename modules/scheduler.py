@@ -285,7 +285,7 @@ class Scheduler:
     @method_job(confirms={"edit", "cancel"})
     def manage_reminders(
         self,
-        action: str = "list",
+        action: typing.Literal["list", "edit", "cancel"] = "list",
         id_or_text: str = "",
         new_when: str = "",
         new_text: str = "",

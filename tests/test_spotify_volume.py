@@ -149,5 +149,35 @@ class TestSpotifyVolume(unittest.TestCase):
         self.assertEqual(result, "Spotify volume is 63% on Laptop.")
 
 
+class TestSpotifyNetworkErrors(unittest.TestCase):
+    """A dropped connection reached the screen as the library's own
+    "HTTPSConnectionPool(host='api.spotify.com'...): Read timed out"."""
+
+    def _request_that_raises(self, error: Exception) -> Exception:
+        from unittest import mock
+
+        from modules.spotify import Spotify
+
+        spotify = Spotify.__new__(Spotify)
+        with mock.patch.object(Spotify, "_get_auth_headers", return_value={}), \
+                mock.patch("modules.spotify.net.get", side_effect=error):
+            with self.assertRaises(Exception) as ctx:
+                spotify._make_spotify_request("get", "https://api.spotify.com/v1/me")
+        return ctx.exception
+
+    def test_a_timeout_says_spotify_did_not_answer(self) -> None:
+        import requests
+
+        error = self._request_that_raises(requests.exceptions.ReadTimeout("Read timed out."))
+        self.assertIn("didn't respond in time", str(error))
+        self.assertNotIn("HTTPSConnectionPool", str(error))
+
+    def test_a_lost_connection_says_to_check_the_internet(self) -> None:
+        import requests
+
+        error = self._request_that_raises(requests.exceptions.ConnectionError("Max retries exceeded"))
+        self.assertIn("internet connection", str(error))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

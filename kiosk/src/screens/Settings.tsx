@@ -102,7 +102,7 @@ export function Settings() {
         <h2 className="t-small text-muted uppercase tracking-wide px-1">Features</h2>
         <p className="t-small text-muted px-1">
           Switching one on needs its packages installed — run{' '}
-          <code>python setup.py</code> if something stays unavailable. These take
+          <code>./wony.sh setup</code> if something stays unavailable. These take
           effect after a restart.
         </p>
         <div className="rounded-xl bg-surface border border-line divide-y divide-line">

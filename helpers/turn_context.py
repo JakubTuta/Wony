@@ -18,13 +18,12 @@ def user_request(text: str = "") -> typing.Iterator[None]:
         getattr(_local, "present", False),
         getattr(_local, "text", ""),
         getattr(_local, "untrusted", False),
-        getattr(_local, "search_hrefs", None),
     )
-    _local.present, _local.text, _local.untrusted, _local.search_hrefs = True, text, False, set()
+    _local.present, _local.text, _local.untrusted = True, text, False
     try:
         yield
     finally:
-        _local.present, _local.text, _local.untrusted, _local.search_hrefs = previous
+        _local.present, _local.text, _local.untrusted = previous
 
 
 def user_present() -> bool:
@@ -47,14 +46,3 @@ def mark_untrusted_read() -> None:
 def untrusted_read() -> bool:
     return getattr(_local, "untrusted", False)
 
-
-def record_search_hrefs(hrefs: typing.Iterable[str]) -> None:
-    """Remember the links a web_search call returned this turn, so a browse
-    call that only visits one of them can skip the "did the user ask for this
-    site" check — the search itself was the user's request."""
-    existing = getattr(_local, "search_hrefs", None) or set()
-    _local.search_hrefs = existing | set(hrefs)
-
-
-def search_hrefs() -> typing.Set[str]:
-    return getattr(_local, "search_hrefs", None) or set()

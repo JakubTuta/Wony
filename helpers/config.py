@@ -160,8 +160,8 @@ def _resolve_yaml_path(path: str) -> typing.Optional[str]:
     """Locate the config file, anchoring relative names to the repo root.
 
     Resolving against the process CWD instead meant `wony.py text` started from
-    another directory — and the tray, which Task Scheduler starts from wherever
-    it likes — silently fell through to config.example.yaml and ran on defaults.
+    another directory — and the service, which systemd starts from wherever it
+    likes — silently fell through to config.example.yaml and ran on defaults.
     """
     from helpers.paths import resolve as _repo_resolve
 

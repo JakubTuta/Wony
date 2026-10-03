@@ -94,8 +94,8 @@ class Logger:
         """Initialize the logging system with both regular and CSV loggers"""
 
         # Create logs directory if it doesn't exist. Anchored to the repo root
-        # (not the process CWD) so tray mode (launched by Task Scheduler,
-        # which may set a different working directory) still writes here.
+        # (not the process CWD) so the systemd service, whose working
+        # directory is its own business, still writes here.
         logs_dir = self.get_logs_directory()
         logs_dir.mkdir(exist_ok=True)
 

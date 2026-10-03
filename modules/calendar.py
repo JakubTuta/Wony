@@ -56,7 +56,7 @@ def _reports_bad_dates(func: typing.Callable) -> typing.Callable:
     requires=Requirement(
         files=[CREDENTIALS_FILE],
         pip_modules=["googleapiclient", "google_auth_oauthlib"],
-        setup_hint="Run: python setup.py configure — it sets up Google sign-in.",
+        setup_hint="Run: ./wony.sh setup configure — it sets up Google sign-in.",
     ),
 )
 class Calendar:
@@ -665,7 +665,7 @@ class Calendar:
     @_reports_bad_dates
     def manage_event(
         self,
-        action: str = "create",
+        action: typing.Literal["create", "edit", "delete"] = "create",
         title: str = "",
         query: str = "",
         date: str = "",

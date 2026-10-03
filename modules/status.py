@@ -6,7 +6,10 @@ from helpers.registry import ServiceRegistry, register_job
 
 @register_job(module_name="status", summary="What Wony can do, how it is set up, and how to change it")
 @capture_response
-def system_status(scope: str = "modules", query: str = "") -> str:
+def system_status(
+    scope: typing.Literal["modules", "setup", "commands", "retry", "about"] = "modules",
+    query: str = "",
+) -> str:
     """
     [SYSTEM INFORMATION JOB] Answers questions about Wony itself: a setting's current
     value, what it can be and where to change it; how to install, set up or switch on
@@ -58,7 +61,7 @@ def _manage_triggers_needs_confirm(args: typing.Dict[str, typing.Any]) -> bool:
 
 @register_job(module_name="status", summary="What Wony watches on its own", confirms=_manage_triggers_needs_confirm)
 @capture_response
-def manage_triggers(action: str = "list", name: str = "") -> str:
+def manage_triggers(action: typing.Literal["list", "off", "on"] = "list", name: str = "") -> str:
     """
     [SYSTEM INFORMATION JOB] Lists the things Wony watches for on its own — the device
     running hot, a full disk, a meeting about to start, important mail, new mail, new

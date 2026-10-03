@@ -1,19 +1,12 @@
 """Where this device is, for local weather.
 
 Best source first: the home address from Settings, then a guess from the
-internet connection, which is only good to roughly the city. (Windows' location
-service is tried first on a PC; on the Pi it is simply absent.)
+internet connection, which is only good to roughly the city.
 """
 import threading
 import time
 import typing
 
-# Windows reports how sure it is. A desktop without Wi-Fi often gets a fix good
-# only to several kilometres; past this a typed home address is better.
-_PRECISE_METRES = 1000.0
-_WINDOWS_TIMEOUT_SECONDS = 6.0
-# A desktop does not move; a laptop that does is right again within minutes.
-_WINDOWS_TTL_SECONDS = 600.0
 _INTERNET_TTL_SECONDS = 6 * 3600.0
 
 _lock = threading.Lock()
@@ -24,7 +17,7 @@ class Place(typing.NamedTuple):
     lat: float
     lon: float
     label: str  # "" when the source gives no name for it
-    source: str  # "windows", "home" or "internet"
+    source: str  # "home" or "internet"
 
     @property
     def approximate(self) -> bool:
@@ -40,36 +33,6 @@ def _remember(key: str, ttl: float, fetch: typing.Callable[[], typing.Any]) -> t
     with _lock:
         _cache[key] = (time.time(), place)
     return place
-
-
-def _windows_fix() -> typing.Optional[typing.Tuple[Place, float]]:
-    """(place, accuracy in metres) from Windows, or None when it is off or denied."""
-    try:
-        import asyncio
-
-        from winrt.windows.devices.geolocation import GeolocationAccessStatus, Geolocator
-    except ImportError:
-        return None
-
-    async def ask() -> typing.Optional[typing.Tuple[Place, float]]:
-        if await Geolocator.request_access_async() != GeolocationAccessStatus.ALLOWED:
-            return None
-        position = await asyncio.wait_for(Geolocator().get_geoposition_async(), _WINDOWS_TIMEOUT_SECONDS)
-        point = position.coordinate.point.position
-        return Place(point.latitude, point.longitude, "", "windows"), float(position.coordinate.accuracy)
-
-    try:
-        return asyncio.run(ask())
-    except Exception:
-        return None  # location service off, timed out, or no positioning hardware
-
-
-def windows_status() -> str:
-    """One line for doctor and setup: is Windows location usable?"""
-    fix = _windows_fix()
-    if fix is None:
-        return "off or not allowed for desktop apps"
-    return f"on (accurate to about {round(fix[1])} m)"
 
 
 def _home() -> typing.Optional[Place]:
@@ -108,14 +71,6 @@ def _internet() -> typing.Optional[Place]:
 
 
 def here() -> typing.Optional[Place]:
-    """This computer's location from the best source available, or None."""
-    fix = _remember("windows", _WINDOWS_TTL_SECONDS, _windows_fix)
-    if fix and fix[1] <= _PRECISE_METRES:
-        return fix[0]
-    home = _home()
-    if home:
-        return home
-    if fix:
-        return fix[0]
-    return _internet()
+    """This device's location from the best source available, or None."""
+    return _home() or _internet()
 

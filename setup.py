@@ -2,7 +2,7 @@
 """
 Wony setup — the required, single-file installer.
 
-    python setup.py
+    ./wony.sh setup
 
 Sets the whole app up and leaves it working: picks/creates the Python
 environment, installs only the dependencies for the features you choose,
@@ -16,7 +16,7 @@ Re-run any time to add/remove modules: it reuses an existing venv, keeps your
 .env and config.yaml, pre-marks what you already have, and SKIPS reinstalling
 modules that are already set up — only the newly checked ones get installed.
 
-    python setup.py configure
+    ./wony.sh setup configure
 
 Just the keys, sign-ins and preferences, for finishing a service you skipped
 or signing in again later. Nothing is installed.
@@ -39,7 +39,7 @@ if sys.version_info < (3, 10):
     print(
         "\nWony requires Python 3.10 or newer — you are running %s.\n"
         "Install a newer Python from https://www.python.org/downloads/ and re-run:\n\n"
-        "    python setup.py\n" % sys.version.split()[0]
+        "    ./wony.sh setup\n" % sys.version.split()[0]
     )
     sys.exit(1)
 
@@ -97,7 +97,7 @@ FEATURES = [
         "default": True,
         "desc": "Run Wony as a wall panel: tap tiles, devices and routines — touch only, no keyboard.",
         "needs": "Node.js 20.19+ — setup builds the screen for you. "
-        "Start with: python wony.py   (then open the URL it prints).",
+        "Start with: ./wony.sh   (then open the URL it prints).",
     },
     {
         "key": "weather",
@@ -755,10 +755,10 @@ def configure(chosen):
     section("Connecting your services")
     if not interactive():
         note("This terminal cannot ask questions — no keys or sign-ins were set up.")
-        return ["Keys and sign-ins: run 'python setup.py configure' in a terminal."]
+        return ["Keys and sign-ins: run './wony.sh setup configure' in a terminal."]
 
     note("Press Enter to skip a question or keep the answer in [brackets].")
-    note("Run 'python setup.py configure' to come back to this at any time.")
+    note("Run './wony.sh setup configure' to come back to this at any time.")
     note("Everything asked here is also on the Settings screen.")
 
     env = env_values()
@@ -973,7 +973,7 @@ def step_spotify(env, pending):
     env_set({"SPOTIFY_CLIENT_ID": client_id, "SPOTIFY_CLIENT_SECRET": secret})
 
     if not confirm("Sign in to Spotify now? This opens your browser.", default=True):
-        pending.append("Spotify: not signed in — run 'python setup.py configure'.")
+        pending.append("Spotify: not signed in — run './wony.sh setup configure'.")
         return
     _spotify_sign_in(pending)
 
@@ -989,7 +989,7 @@ def _spotify_sign_in(pending):
         ok("Spotify signed in.")
     except Exception as e:
         warn(f"Spotify sign-in did not finish: {e}")
-        pending.append("Spotify: sign-in unfinished — run 'python setup.py configure'.")
+        pending.append("Spotify: sign-in unfinished — run './wony.sh setup configure'.")
 
 
 # ── Google (Gmail and Calendar) ───────────────────────────────────────────────
@@ -1034,7 +1034,7 @@ def step_google(keys, pending):
     if confirm("Sign in to your Google account now? This opens a browser.", default=True):
         _google_sign_in(pending)
     else:
-        pending.append("Google: not signed in — run 'python setup.py configure'.")
+        pending.append("Google: not signed in — run './wony.sh setup configure'.")
 
 
 def _install_google_credentials():
@@ -1172,7 +1172,7 @@ def step_autostart():
         return
     command = [sys.executable, os.path.join(ROOT, "wony.py"), "autostart", "install"]
     if subprocess.call(command) != 0:
-        warn("The boot units were not installed — 'python wony.py' still starts Wony.")
+        warn("The boot units were not installed — './wony.sh' still starts Wony.")
 
 
 def prune_config():
@@ -1405,7 +1405,7 @@ def verify_install(chosen):
                     (
                         f"      fix: pip install -r requirements/{f['reqs'][0]}"
                         if f["reqs"]
-                        else f"      fix: re-run python setup.py ({reqs})"
+                        else f"      fix: re-run ./wony.sh setup ({reqs})"
                     ),
                     "90",
                 )
@@ -1433,7 +1433,7 @@ def show_pending(pending):
     print(c("  Still to finish:", "1"))
     for item in pending:
         print(f"     • {item}")
-    note("Come back to these with:  python setup.py configure")
+    note("Come back to these with:  ./wony.sh setup configure")
 
 
 def run_doctor():
@@ -1460,11 +1460,38 @@ def next_steps(chosen, use_venv, pending):
 # ── Main ─────────────────────────────────────────────────────────────────────────
 
 
+def _relaunch_under_setup_python():
+    """Switch to the interpreter .wony_setup recorded, if a different one is
+    running this. The packages 'configure' needs (Google/Spotify auth, dotenv)
+    live wherever the original install put them — typically ./venv — so
+    running this under the system Python instead fails on import, not with
+    a message that says why."""
+    if not os.path.exists(MARKER):
+        return
+    import json
+
+    try:
+        with open(MARKER, "r", encoding="utf-8-sig") as fh:
+            data = json.load(fh)
+    except Exception:
+        return
+    want_py = data.get("python", "")
+    if not want_py or not os.path.exists(want_py):
+        return
+    if os.path.normcase(os.path.abspath(want_py)) == os.path.normcase(
+        os.path.abspath(sys.executable)
+    ):
+        return
+    print(c(f"  → switching to {want_py}\n", "36"))
+    os.execv(want_py, [want_py, os.path.abspath(__file__)] + sys.argv[1:])
+
+
 def cmd_configure():
     """Re-run only the keys and sign-ins, for a service added or skipped later.
     Nothing is installed, so it works on whatever is already set up here."""
+    _relaunch_under_setup_python()
     if not os.path.exists(CONFIG):
-        warn("Nothing is installed yet — run 'python setup.py' first.")
+        warn("Nothing is installed yet — run './wony.sh setup' first.")
         return
     ensure_env()
     prune_config()

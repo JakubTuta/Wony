@@ -1,3 +1,4 @@
+import inspect
 import sys
 import typing
 
@@ -8,7 +9,15 @@ from helpers.jobs import BackgroundJobs
 from helpers.logger import logger
 from helpers.registry import ServiceRegistry, register_job
 from helpers.turn import run_turn
-from modules.ai import AI
+
+
+def _default_args(func: typing.Callable) -> typing.Dict[str, typing.Any]:
+    """The arguments a job runs with when it is called with none."""
+    return {
+        name: param.default
+        for name, param in inspect.signature(func).parameters.items()
+        if param.default is not inspect.Parameter.empty
+    }
 
 
 class Employer:
@@ -18,7 +27,6 @@ class Employer:
 
     def __init__(self) -> None:
         self.service_instances = {}
-        self.ai_model = AI()
 
     @staticmethod
     def set_exit_hook(callback: typing.Callable) -> None:
@@ -93,10 +101,10 @@ class Employer:
         Conversation.record_turn(user_input, result.text, calls=result.calls)
         return result.text
 
-    @register_job(module_name="employer", confirms={"stop", "cancel", "stop all"})
+    @register_job(module_name="employer", confirms={"stop"})
     @capture_response
     @staticmethod
-    def background_jobs(action: str = "list") -> str:
+    def background_jobs(action: typing.Literal["list", "stop"] = "list") -> str:
         """
         [SYSTEM CONTROL JOB] Lists what is running in the background or stops all of
         it. Not timers and reminders (manage_reminders), and not what Wony watches for
@@ -175,7 +183,9 @@ class Employer:
             func_name = func.__name__.replace("_", " ").lower()
             if normalized_input != func_name:
                 continue
-            if confirm._applies(confirms.get(func.__name__), {}):
+            # Called bare, a job runs with its defaults: a job whose default
+            # action is one that confirms must not slip through with no action.
+            if confirm._applies(confirms.get(func.__name__), _default_args(func)):
                 return None
             return func
         return None

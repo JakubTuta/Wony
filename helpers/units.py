@@ -1,10 +1,9 @@
 """Which units to answer in, without asking the user to configure it.
 
-The country's own convention (from the Windows region setting) decides, and a
+The country's own convention (from the device's locale) decides, and a
 spoken preference remembered as the `preferred_units` fact wins over that.
 """
 import locale
-import sys
 import typing
 
 # Countries that use Fahrenheit and miles. Everywhere else is metric, except
@@ -19,18 +18,7 @@ class Units(typing.NamedTuple):
 
 
 def region_country() -> str:
-    """Two-letter country code of this computer's region, or "" if unknown."""
-    if sys.platform == "win32":
-        try:
-            import ctypes
-
-            buffer = ctypes.create_unicode_buffer(16)
-            if ctypes.windll.kernel32.GetUserDefaultGeoName(buffer, len(buffer)):  # type: ignore[attr-defined]
-                code = buffer.value.strip().upper()
-                if len(code) == 2 and code.isalpha():
-                    return code
-        except Exception:
-            pass
+    """Two-letter country code of this device's locale, or "" if unknown."""
     name = locale.getlocale()[0] or ""
     # "en_US" / "English_United States" — only the first form carries a code.
     _, _, country = name.partition("_")

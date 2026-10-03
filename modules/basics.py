@@ -1,4 +1,5 @@
 import subprocess
+import typing
 from datetime import datetime
 
 from helpers.config import Config
@@ -12,7 +13,7 @@ from helpers.registry import register_job
 
 @register_job(module_name="basics", summary="Tell the current time and date")
 @capture_response
-def get_datetime(part: str = "both") -> str:
+def get_datetime(part: typing.Literal["time", "date", "both"] = "both") -> str:
     """
     [CLOCK JOB] Tells the current local time, today's date, or both.
 
@@ -75,7 +76,10 @@ def _run_power_command(verb: str, systemctl_action: str) -> str:
 @register_job(module_name="basics", summary="Shut down, restart, sleep or wake this device",
               confirms={"shutdown", "restart", "sleep"})
 @capture_response
-def power(action: str = "sleep", wake_at: str = "") -> str:
+def power(
+    action: typing.Literal["shutdown", "restart", "sleep", "wake"] = "sleep",
+    wake_at: str = "",
+) -> str:
     """
     [SYSTEM CONTROL JOB] Shuts down or restarts this device, puts the screen to sleep,
     or wakes it. Sleep is not a shutdown: timers still fire and waking is instant.
@@ -91,17 +95,19 @@ def power(action: str = "sleep", wake_at: str = "") -> str:
     """
     from helpers import lowpower
 
+    # Only the four declared words reach here from the agent (validate_args
+    # rejects the rest), which is what keeps the confirm gate's list complete.
     wanted = (action or "sleep").strip().lower()
-    if wanted in ("restart", "reboot"):
+    if wanted == "restart":
         return _run_power_command("restart", "reboot")
-    if wanted in ("shutdown", "shut down", "off", "power off"):
+    if wanted == "shutdown":
         return _run_power_command("shut down", "poweroff")
-    if wanted in ("wake", "wake up", "on"):
+    if wanted == "wake":
         if not lowpower.is_asleep():
             return "The screen is already awake."
         lowpower.wake(reason="asked")
         return "Awake. 🤍"
-    if wanted not in ("sleep", "doze", "rest"):
+    if wanted != "sleep":
         return f"Unknown action '{action}'. Use shutdown, restart, sleep or wake."
 
     # A Raspberry Pi cannot suspend to RAM: the screen goes dark and the
