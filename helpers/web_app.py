@@ -10,7 +10,6 @@ import os
 import typing
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -118,7 +117,6 @@ class SettingsRequest(BaseModel):
 
 
 _LOOPBACK = ("127.0.0.1", "localhost")
-_DEV_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
 
 class _LocalOnlyMiddleware:
@@ -155,10 +153,16 @@ def _allowed(scope: dict) -> bool:
     # Bound to every interface, any name may reach it; only Origin can be checked.
     if configured not in ("0.0.0.0", "::") and host.rsplit(":", 1)[0] not in _LOOPBACK + (configured,):
         return False
+    # Belt and suspenders alongside the Origin check: a fetch() a site makes to
+    # this server is neither same-origin nor absent, whatever Origin it sends.
+    if headers.get("sec-fetch-site") in ("cross-site", "same-site"):
+        return False
     origin = headers.get("origin")
     if not origin:
         return True  # not a browser: no website can drive it
-    return urlsplit(origin).netloc == host or origin in _DEV_ORIGINS
+    # The Vite dev server rewrites its proxied requests' Origin to this
+    # server's own (kiosk/vite.config.ts), so it needs no carve-out here.
+    return urlsplit(origin).netloc == host
 
 
 def build_app() -> FastAPI:
@@ -199,16 +203,13 @@ def build_app() -> FastAPI:
         finally:
             unsubscribe(_on_event)
 
-    app = FastAPI(title="Wony Web API", lifespan=_lifespan)
-    app.add_middleware(_LocalOnlyMiddleware)
-
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=_DEV_ORIGINS,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+    # No docs/OpenAPI: this API has no auth, so the schema is one more thing
+    # a page in the browser could fetch to learn what is callable.
+    app = FastAPI(
+        title="Wony Web API", lifespan=_lifespan,
+        docs_url=None, redoc_url=None, openapi_url=None,
     )
+    app.add_middleware(_LocalOnlyMiddleware)
 
     @app.get("/api/config")
     def get_config() -> typing.Dict[str, typing.Any]:

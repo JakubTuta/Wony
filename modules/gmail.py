@@ -719,10 +719,8 @@ class Gmail:
         lines = [headline, f"With attachments (last 7 days): {attachments}"]
         top = sorted(senders.items(), key=lambda item: item[1], reverse=True)[:5]
         if top:
-            lines.append(
-                "Top unread senders: "
-                + ", ".join(f"{who} ({count})" for who, count in top)
-            )
+            senders_line = ", ".join(f"{who} ({count})" for who, count in top)
+            lines.append("Top unread senders: " + wrap(senders_line, "email sender"))
         return "\n".join(lines)
 
     @capture_response

@@ -42,6 +42,17 @@ export default defineConfig({
         changeOrigin: true,
         // /api/ws is a WebSocket; without this the dev server 404s the upgrade.
         ws: true,
+        // Wony's backend only accepts same-origin requests, and knows nothing
+        // of the Vite dev server, so the proxy is what makes the dev page's
+        // requests look same-origin.
+        rewriteWsOrigin: true,
+        configure: (proxy, options) => {
+          proxy.on('proxyReq', (proxyReq) => {
+            if (proxyReq.getHeader('origin')) {
+              proxyReq.setHeader('origin', options.target as string)
+            }
+          })
+        },
       },
     },
   },

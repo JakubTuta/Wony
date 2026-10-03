@@ -5,6 +5,45 @@ import typing
 import helpers.model as helpers_model
 
 
+def validate_args(func: typing.Callable, args: typing.Dict[str, typing.Any]) -> typing.Optional[str]:
+    """None if every Literal-typed argument is one of its declared values,
+    else an error the model can read and correct from.
+
+    The schema already advertises the enum, but nothing stops a model from
+    sending a value outside it anyway — an alias it invented, or one a prior
+    version of a job used to accept. Jobs then trust `action` is one of their
+    exact enum strings, so a value that slips past here can fall through
+    every `if wanted == ...` branch into whichever one happens to be last.
+    """
+    try:
+        type_hints = typing.get_type_hints(func)
+    except Exception:
+        return None
+    for name, value in args.items():
+        allowed = _literal_values(type_hints.get(name))
+        if allowed is not None and value not in allowed:
+            choices = ", ".join(repr(v) for v in allowed)
+            return f"Error: '{name}' must be one of [{choices}], not {value!r}."
+    return None
+
+
+def _literal_values(hint: typing.Any) -> typing.Optional[typing.List[typing.Any]]:
+    """Return the allowed values if hint is Literal[...] (optionally wrapped in
+    Optional[...]), else None."""
+    origin = getattr(hint, "__origin__", None)
+    args = getattr(hint, "__args__", ())
+
+    if origin is typing.Union and type(None) in args:
+        inner = next((a for a in args if a is not type(None)), None)
+        return _literal_values(inner)
+
+    if origin is typing.Literal:
+        # "" is used as a not-provided sentinel on optional string params.
+        return [a for a in args if a != ""]
+
+    return None
+
+
 # ------------------------------------------------------------------ schema building
 
 def _python_type_to_json(hint: typing.Any) -> str:

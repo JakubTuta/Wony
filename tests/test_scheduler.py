@@ -185,5 +185,18 @@ class TestReminders(unittest.TestCase):
         self.assertEqual(_fired, [("lamp", "on")])
 
 
+class TestAddReminderConfirms(unittest.TestCase):
+    def test_scheduling_an_action_needs_confirm_but_a_plain_timer_does_not(self) -> None:
+        """_run_action fires straight from the scheduler thread with no agent
+        turn and no model in the loop to ask — consent has to be given when
+        the timer is set, or never at all."""
+        from helpers.registry import ServiceRegistry
+        import modules.scheduler  # noqa: F401  (registers add_reminder)
+
+        declared = ServiceRegistry.get_job_confirms()["add_reminder"]
+        self.assertTrue(declared({"when": "in 1 hour", "action_job": "power", "action_args": {"action": "shutdown"}}))
+        self.assertFalse(declared({"when": "in 5 minutes", "text": "tea is ready"}))
+
+
 if __name__ == "__main__":
     sys.exit(0 if unittest.main(exit=False).result.wasSuccessful() else 1)

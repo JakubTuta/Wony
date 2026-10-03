@@ -8,6 +8,7 @@ values it was asked to change.
 Stdlib only — setup.py uses it before any dependency is installed.
 """
 import io
+import json
 import os
 import typing
 
@@ -78,11 +79,20 @@ def format_value(value: typing.Any) -> str:
         return str(value)
 
     text = str(value)
-    if text == "" or text.lower() in ("true", "false", "null", "yes", "no", "on", "off"):
-        return f'"{text}"'
-    if any(ch in text for ch in ':#\n"\'{}[]&*!|>%@`,') or text != text.strip():
-        escaped = text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
-        return f'"{escaped}"'
+    needs_quoting = (
+        text == ""
+        or text.lower() in ("true", "false", "null", "yes", "no", "on", "off")
+        or text != text.strip()
+        or any(ch in text for ch in ':#\n"\'{}[]&*!|>%@`,')
+        or any(ord(ch) < 0x20 for ch in text)
+    )
+    if needs_quoting:
+        # json's string escaping is a valid subset of YAML's double-quoted
+        # style and covers every control character, not just the handful a
+        # hand-rolled replace() chain happened to list — a raw \r or \t left
+        # unescaped there could otherwise be read as a line break by some
+        # YAML parsers and break out of the quotes entirely.
+        return json.dumps(text)
     try:
         float(text)
         return f'"{text}"'  # keep "1.0" a string, not a number

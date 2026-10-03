@@ -174,7 +174,7 @@ class Scheduler:
     # ------------------------------------------------------------------ jobs
 
     @capture_response
-    @method_job
+    @method_job(confirms=lambda a: bool(a.get("action_job")))
     def add_reminder(self, when: str, text: str = "", action_job: str = "", action_args: typing.Optional[dict] = None) -> str:
         """
         [TIMER JOB] Sets a timer, alarm, reminder or recurring notification. This is the
@@ -217,10 +217,14 @@ class Scheduler:
         action: typing.Optional[typing.Dict] = None
         if action_job:
             from helpers.agent import _resolve_job_name
+            from helpers.tools import validate_args
             jobs = ServiceRegistry.get_all_jobs()
             resolved = _resolve_job_name(action_job, jobs)
             if resolved is None:
                 return f"Error: Unknown action job '{action_job}'. Ask what Wony can do to see them."
+            invalid = validate_args(jobs[resolved], action_args)
+            if invalid is not None:
+                return invalid
             action = {"job": resolved, "args": action_args}
 
         trigger_type, trigger_kw, error = _parse_trigger(when)
@@ -278,7 +282,7 @@ class Scheduler:
         return f"{kind} set: {_label(meta)} — {trigger_display} (id: {reminder_id})"
 
     @capture_response
-    @method_job(confirms={"edit", "cancel", "delete", "remove", "stop"})
+    @method_job(confirms={"edit", "cancel"})
     def manage_reminders(
         self,
         action: str = "list",
@@ -306,13 +310,13 @@ class Scheduler:
             str: The list of timers, or confirmation of the change.
         """
         wanted = (action or "list").strip().lower()
-        if wanted in ("edit", "change", "update"):
+        if wanted == "edit":
             return self._edit_reminder(
                 id_or_text, new_when, new_text, new_action_job, new_action_args
             )
-        if wanted in ("cancel", "delete", "remove", "stop"):
+        if wanted == "cancel":
             return self._cancel_reminder(id_or_text)
-        if wanted not in ("list", "show"):
+        if wanted != "list":
             return f"Unknown action '{action}'. Use list, edit or cancel."
 
         jobs = self._sched.get_jobs()
@@ -367,11 +371,16 @@ class Scheduler:
                 except Exception:
                     new_action_args = {}
             from helpers.agent import _resolve_job_name
+            from helpers.tools import validate_args
             jobs = ServiceRegistry.get_all_jobs()
             resolved = _resolve_job_name(new_action_job, jobs)
             if resolved is None:
                 return f"Error: Unknown action job '{new_action_job}'."
-            action: typing.Optional[typing.Dict] = {"job": resolved, "args": new_action_args or {}}
+            new_action_args = new_action_args or {}
+            invalid = validate_args(jobs[resolved], new_action_args)
+            if invalid is not None:
+                return invalid
+            action: typing.Optional[typing.Dict] = {"job": resolved, "args": new_action_args}
         else:
             action = meta.get("action")
 

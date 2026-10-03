@@ -159,6 +159,16 @@ def run_agent(
             exec_name = _resolve_job_name(name, available_jobs)
             if exec_name is not None:
                 from helpers import confirm as _confirm
+                from helpers.tools import validate_args
+
+                invalid = validate_args(available_jobs[exec_name], args)
+                if invalid is not None:
+                    logger.log_function_response(name, invalid, user_input)
+                    calls_made.append({"name": name, "args": args, "result": invalid})
+                    messages.append(
+                        {"role": "tool_result", "id": tool_id, "name": name, "content": invalid}
+                    )
+                    continue
 
                 needs_ok = _confirm.check(exec_name, args)
                 if needs_ok is not None:

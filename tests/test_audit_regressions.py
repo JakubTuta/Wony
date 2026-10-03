@@ -624,11 +624,12 @@ class TestConfirmGate(unittest.TestCase):
         from unittest import mock
 
         from helpers import confirm
+        from helpers.turn_context import user_request
 
         with mock.patch(
             "helpers.registry.ServiceRegistry.get_job_confirms",
             return_value={"delete_it": True},
-        ):
+        ), user_request("delete everything"):
             confirm.begin_turn()
             first = confirm.check("delete_it", {"what": "everything"})
             self.assertIsNotNone(first)
@@ -668,6 +669,66 @@ class TestConfirmGate(unittest.TestCase):
             confirm.begin_turn()
             self.assertIsNone(confirm.check("manage_drafts", {"action": "list"}))
             self.assertIsNotNone(confirm.check("manage_drafts", {"action": "delete"}))
+
+    def test_an_unattended_turn_cannot_arm_or_spend_a_confirmation(self) -> None:
+        """A trigger turn (from_user=False) has nobody to ask, and must not be
+        able to arm a confirmation a later real turn would then spend, nor
+        spend one a real turn armed earlier."""
+        from unittest import mock
+
+        from helpers import confirm
+
+        with mock.patch(
+            "helpers.registry.ServiceRegistry.get_job_confirms",
+            return_value={"delete_it": True},
+        ):
+            confirm.reset()
+            confirm.begin_turn()
+            # No turn_context.user_request() active: nobody is present.
+            self.assertIsNotNone(confirm.check("delete_it", {"what": "everything"}))
+            confirm.begin_turn()
+            # Had the first call armed it, this would now be spent (None).
+            self.assertIsNotNone(confirm.check("delete_it", {"what": "everything"}))
+
+
+def _probe(action: typing.Literal["add", "remove"] = "add") -> str:
+    return "ran"
+
+
+class TestValidateArgs(unittest.TestCase):
+    """The Pi's jobs take plain-string actions and answer "Unknown action"
+    themselves; validate_args covers any job that does declare a Literal."""
+
+    def test_a_value_outside_the_enum_is_rejected(self) -> None:
+        from helpers.tools import validate_args
+
+        self.assertIsNotNone(validate_args(_probe, {"action": "update"}))
+        self.assertIsNone(validate_args(_probe, {"action": "add"}))
+
+    def test_an_unknown_action_is_rejected_before_the_job_runs(self) -> None:
+        """The agent loop calls validate_args before confirm.check and before
+        the job itself — a value outside the enum must never reach it."""
+        from unittest import mock
+
+        from helpers import agent
+
+        with mock.patch.object(
+            agent, "_extract_all_tool_calls",
+            return_value=[{"id": "1", "name": "_probe", "args": {"action": "update"}}],
+        ), mock.patch("helpers.model.send_agent_messages", return_value=object()), \
+                mock.patch("helpers.model.get_text_from_response", return_value=""):
+            result = agent.run_agent(
+                client=None, user_input="do it",
+                available_jobs={"_probe": _probe}, system_instructions="", max_steps=1,
+            )
+        self.assertIn("must be one of", result.calls[0]["result"])
+
+    def test_remember_declares_its_actions(self) -> None:
+        """remember's confirm predicate only knows "save" and "forget"."""
+        from helpers.tools import validate_args
+        from modules.ai import AI
+
+        self.assertIsNotNone(validate_args(AI.remember, {"action": "store"}))
 
 
 class TestFrontendJobNames(unittest.TestCase):

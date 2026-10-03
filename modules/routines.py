@@ -65,7 +65,7 @@ def _normalize(name: str) -> str:
 @register_job(
     module_name="routines",
     summary="Named sequences of steps you can run by name",
-    confirms={"add", "save", "create", "edit", "remove", "delete", "forget"},
+    confirms={"add", "remove"},
 )
 @capture_response
 def routine(action: str = "run", name: str = "", steps: str = "") -> str:
@@ -90,20 +90,20 @@ def routine(action: str = "run", name: str = "", steps: str = "") -> str:
     wanted = (action or "run").strip().lower()
     key = _normalize(name)
 
-    if wanted in ("list", "show", "routines"):
+    if wanted == "list":
         return _list()
 
-    if wanted in ("add", "save", "create", "edit", "update"):
+    if wanted == "add":
         return _add(key, name, steps)
 
-    if wanted in ("remove", "delete", "forget"):
+    if wanted == "remove":
         if not key:
             return "Error: which routine should I remove?"
         if delete_routine(key):
             return f"Removed the '{key}' routine."
         return f"There is no '{key}' routine. {_names_hint()}"
 
-    if wanted not in ("run", "do", "start"):
+    if wanted != "run":
         return f"Unknown action '{action}'. Use run, list, add or remove."
 
     if not key:
