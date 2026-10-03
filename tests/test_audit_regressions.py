@@ -867,6 +867,17 @@ class TestNoAiKeyStartup(unittest.TestCase):
                 mock.patch("helpers.registry.ServiceRegistry.reinitialize_module"):
             self.assertIs(get_ai_client(), fake_client)
 
+    def test_the_employer_builds_without_an_ai_key(self) -> None:
+        """bootstrap() builds the Employer last. It used to construct its own AI
+        client there, so with no key startup still died on the very next line
+        and the friendly path above was never reached."""
+        from unittest import mock
+
+        from modules.employer import Employer
+
+        with mock.patch("helpers.model.get_model", return_value=None):
+            Employer()
+
     def test_a_missing_ai_service_reads_as_a_setup_nudge_not_an_error(self) -> None:
         from helpers.bootstrap import BootstrapError
         from helpers.turn import describe_failure
@@ -1165,16 +1176,18 @@ class TestClickText(unittest.TestCase):
         from modules.desktop import Desktop
 
         box = {"top_left": (0, 0), "bottom_right": (10, 10)}
+        # A fake module: the real one needs a display, which CI does not have.
+        pyautogui = mock.MagicMock()
         with mock.patch("modules.desktop._actions_allowed", return_value=True), \
                 mock.patch("helpers.screenReader.ScreenReader.take_screenshot",
                            return_value=object()), \
                 mock.patch("helpers.screenReader.ScreenReader.find_text_matches",
                            return_value=[{"caption": "Delete", "box": box},
                                          {"caption": "delete", "box": box}]), \
-                mock.patch("pyautogui.click") as click:
+                mock.patch.dict(sys.modules, {"pyautogui": pyautogui}):
             result = Desktop.click(Desktop.__new__(Desktop), "delete")
 
-        click.assert_not_called()
+        pyautogui.click.assert_not_called()
         self.assertIn("didn't click", result)
 
     def test_clicking_is_gated_on_allow_actions(self) -> None:
@@ -1182,14 +1195,34 @@ class TestClickText(unittest.TestCase):
 
         from modules.desktop import Desktop
 
+        pyautogui = mock.MagicMock()
         with mock.patch("modules.desktop._actions_allowed", return_value=False), \
-                mock.patch("pyautogui.click") as click:
+                mock.patch.dict(sys.modules, {"pyautogui": pyautogui}):
             result = Desktop.click(Desktop.__new__(Desktop), "delete")
 
         from helpers.settings import where
 
-        click.assert_not_called()
+        pyautogui.click.assert_not_called()
         self.assertIn(where("modules.desktop.allow_actions"), result)
+
+
+class TestJobSummary(unittest.TestCase):
+    def test_a_wrapped_docstring_is_cut_at_a_sentence_not_at_a_column(self) -> None:
+        """Docstrings are wrapped by hand, so the opening sentence spans lines.
+        Cutting the first line handed the job list a summary that stopped
+        mid-sentence wherever the source happened to wrap."""
+        from helpers.registry import ServiceRegistry
+
+        def job() -> None:
+            """
+            [SYSTEM CONTROL JOB] Lists what is running in the background or stops all of
+            it. Not timers and reminders.
+            """
+
+        self.assertEqual(
+            ServiceRegistry._extract_summary(job),
+            "Lists what is running in the background or stops all of it.",
+        )
 
 
 class TestNotes(unittest.TestCase):

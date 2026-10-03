@@ -5,16 +5,15 @@ export interface JobParameter {
   enum?: (string | number | boolean)[];
 }
 
-/** `true` = always confirms, `false` = never, a list = confirms when its
- * `action` argument matches one of these words (see helpers/confirm.py). */
-export type Confirms = boolean | string[];
-
 export interface Job {
   name: string;
   module: string;
   summary: string;
   description: string;
-  confirms: Confirms;
+  /** The job has a confirm gate (see helpers/confirm.py). */
+  confirms: boolean;
+  /** Which values of `args.action` ask first — null when every call does. */
+  confirm_words: string[] | null;
   parameters: {
     properties: Record<string, JobParameter>;
     required: string[];
@@ -153,6 +152,9 @@ export interface Control {
   toggle: boolean;
   slider: boolean;
   guarded: boolean;
+  /** Setpoint and the room's own reading in degrees; null for anything that is not a thermostat. */
+  target: number | null;
+  current: number | null;
 }
 
 export interface Device {
@@ -287,11 +289,8 @@ export async function fetchNotifications(): Promise<Notification[]> {
 
 /** Omit the id to clear everything unread. */
 export async function ackNotifications(id?: number): Promise<void> {
-  await fetch(`${BASE}/notifications/ack`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(id === undefined ? {} : { id }),
-  }).catch(() => {});
+  const url = id === undefined ? `${BASE}/notifications/ack-all` : `${BASE}/notifications/${id}/ack`;
+  await fetch(url, { method: 'POST' }).catch(() => {});
 }
 
 export interface AppConfig {

@@ -359,7 +359,7 @@ small model; see [docs/developers.md](docs/developers.md).
 | "Google signed me out"               | **Sign in again** (Settings → Google accounts, or the tray) |
 | "Near me" is in the wrong place      | Turn on Windows location, or set your home address in Settings |
 | A file search misses a file          | Add its folder to the Windows search index                 |
-| A second copy exits silently         | Only one Wony runs at a time — check the tray              |
+| "Wony is already running"            | Only one runs at a time — exit the one in the tray, or close its window |
 
 Ask Wony _"check setup"_ for a full checklist.
 

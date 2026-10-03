@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Lock } from 'lucide-react';
+import { Lock, Minus, Plus } from 'lucide-react';
 import { controlDevice, fetchPanel } from '../../api';
 import type { Control, DevicesPanel } from '../../api';
 import { useWony } from '../../lib/wonyContext';
@@ -9,6 +9,10 @@ import { CARD, SectionLabel, Switch } from '../../components/ui';
 const PLACEHOLDER_DEVICES = ['Living room lamp', 'Kitchen switch', 'Thermostat'];
 
 const REFRESH_MS = 30 * 1000;
+
+// Degrees per tap on a thermostat. Home Assistant refuses a value outside the
+// device's own limits, and the refusal is shown like any other device error.
+const TEMPERATURE_STEP = 0.5;
 
 const DOMAIN_LABELS: Record<string, string> = {
   light: 'Lights',
@@ -142,9 +146,11 @@ export function Home() {
               ? 'Locks are off in Settings'
               : !main.available
                 ? 'Unavailable'
-                : main.level !== null
-                  ? `${main.state} · ${main.level}%`
-                  : main.state;
+                : main.current !== null
+                  ? `${main.state} · now ${main.current}°`
+                  : main.level !== null
+                    ? `${main.state} · ${main.level}%`
+                    : main.state;
 
             return (
               <div key={main.entity_id} className="flex items-center justify-between gap-2.5 px-3 py-2.5 rounded-[10px] bg-page">
@@ -155,6 +161,17 @@ export function Home() {
                   </span>
                   <span className="text-xs text-muted truncate">{stateText}</span>
                 </div>
+                {main.target !== null && (
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <StepButton label={`Colder: ${device.name}`} disabled={disabled} onClick={() => act(main, 'set', main.target! - TEMPERATURE_STEP)}>
+                      <Minus size={13} />
+                    </StepButton>
+                    <span className="text-sm font-semibold tabular-nums">{main.target.toFixed(1)}°</span>
+                    <StepButton label={`Warmer: ${device.name}`} disabled={disabled} onClick={() => act(main, 'set', main.target! + TEMPERATURE_STEP)}>
+                      <Plus size={13} />
+                    </StepButton>
+                  </div>
+                )}
                 {main.toggle && (
                   <Switch checked={main.on} disabled={disabled} onChange={() => toggle(main, device.name)} label={device.name} />
                 )}
@@ -164,6 +181,22 @@ export function Home() {
         </div>
       )}
     </div>
+  );
+}
+
+function StepButton({
+  label, disabled, onClick, children,
+}: { label: string; disabled: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={label}
+      className="w-7 h-7 rounded-full border flex items-center justify-center disabled:opacity-40"
+      style={{ borderColor: 'var(--color-border)', color: 'var(--color-muted)' }}
+    >
+      {children}
+    </button>
   );
 }
 

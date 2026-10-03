@@ -74,7 +74,7 @@ def _valid_json(value: str, shape: type) -> bool:
     module_name="mcp",
     requires=_MCP_REQUIREMENT,
     summary="List, add, edit, remove, connect or disconnect MCP servers",
-    confirms={"add", "edit", "remove", "delete", "connect", "disconnect"},
+    confirms={"add", "edit", "remove", "connect", "disconnect"},
 )
 @capture_response
 def manage_mcp_server(

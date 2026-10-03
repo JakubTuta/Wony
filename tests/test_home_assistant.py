@@ -314,7 +314,7 @@ class TestHomeAssistant(unittest.TestCase):
         """Hiding an entity in Home Assistant means 'do not show me this'."""
         def row(entity_id: str, hidden: bool) -> str:
             return self.ha._SEP.join(
-                [entity_id, "A", "Hall", "off", "", "", "", "Lamp", str(hidden)]
+                [entity_id, "A", "Hall", "off", "", "", "", "Lamp", "", "", str(hidden)]
             )
 
         parsed = self.ha._parse_index("\n".join([row("light.a", False), row("light.b", True)]))
@@ -369,6 +369,29 @@ class TestHomeAssistant(unittest.TestCase):
         listing = self.ha.list_home_devices(query="robot battery")
         self.assertIn("79", listing)
         self.assertNotIn("Suction", listing)
+
+    def test_climate_control_carries_target_and_current(self) -> None:
+        entity = self.ha._Entity(
+            "climate.thermostat", "Thermostat", "Hallway", "heat", "",
+            target="21.5", current="19.0",
+        )
+        control = self.ha._control(entity)
+        self.assertEqual(control["target"], 21.5)
+        self.assertEqual(control["current"], 19.0)
+
+    def test_non_climate_control_has_no_target(self) -> None:
+        entity = self.ha._Entity("light.kitchen_ceiling", "Ceiling", "Kitchen", "off", "")
+        control = self.ha._control(entity)
+        self.assertIsNone(control["target"])
+        self.assertIsNone(control["current"])
+
+    def test_a_thermostat_with_no_reading_yet_is_none_not_a_crash(self) -> None:
+        """Home Assistant reports an empty attribute while a thermostat is
+        unavailable or has not been read yet."""
+        entity = self.ha._Entity("climate.thermostat", "Thermostat", "Hallway", "unavailable", "")
+        control = self.ha._control(entity)
+        self.assertIsNone(control["target"])
+        self.assertIsNone(control["current"])
 
 
 if __name__ == "__main__":

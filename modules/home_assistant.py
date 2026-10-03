@@ -43,10 +43,12 @@ _INDEX_TEMPLATE = (
     " or s.attributes.get('source_list') or s.attributes.get('operation_list')"
     " or []) | join('\x01') }}\x1f"
     "{{ device_attr(s.entity_id, 'name') or '' }}\x1f"
+    "{{ s.attributes.get('temperature', '') }}\x1f"
+    "{{ s.attributes.get('current_temperature', '') }}\x1f"
     "{{ is_hidden_entity(s.entity_id) }}\n{% endfor %}"
 )
 # The last field is the hidden flag, which is dropped rather than stored.
-_INDEX_FIELDS = 9
+_INDEX_FIELDS = 11
 
 # Service calls block until Home Assistant has run the handler; the default
 # 8s read timeout would report failure for a command that actually landed.
@@ -221,6 +223,10 @@ class _Entity:
     # The physical thing this entity belongs to. One robot vacuum is twenty-odd
     # entities; without this they are twenty-odd unrelated devices.
     device: str = ""
+    # Climate/water-heater setpoint and the room's own reading. Empty for
+    # every other domain — Home Assistant only puts these on thermostats.
+    target: str = ""
+    current: str = ""
 
     @property
     def domain(self) -> str:
@@ -666,6 +672,13 @@ def snapshot() -> typing.Dict[str, typing.Any]:
     return {"areas": areas, "locks_allowed": _locks_allowed()}
 
 
+def _as_float(raw: str) -> typing.Optional[float]:
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
 def _control(entity: _Entity) -> typing.Dict[str, typing.Any]:
     """One entity as the single widget it should be drawn as."""
     setting = _VALUE_SETTINGS.get(entity.domain)
@@ -691,6 +704,9 @@ def _control(entity: _Entity) -> typing.Dict[str, typing.Any]:
         # Guarded devices are shown and refused, so the UI can say why rather
         # than silently hiding the front door.
         "guarded": _is_guarded(entity),
+        # Setpoint and room reading — only ever set for climate/water_heater.
+        "target": _as_float(entity.target),
+        "current": _as_float(entity.current),
     }
 
 

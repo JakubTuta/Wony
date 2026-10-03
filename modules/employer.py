@@ -1,3 +1,4 @@
+import inspect
 import sys
 import threading
 import typing
@@ -12,13 +13,21 @@ from helpers.logger import logger
 from helpers.recognizer import Recognizer
 from helpers.registry import ServiceRegistry, register_job
 from helpers.turn import run_turn
-from modules.ai import AI
 
 
 # Say "one moment" if no narration has started by this point, so a slow tool
 # call doesn't leave the user in silence wondering if anything happened.
 # 0 disables the cue.
 _THINKING_CUE_SECONDS = 6.0
+
+
+def _default_args(func: typing.Callable) -> typing.Dict[str, typing.Any]:
+    """The arguments a job runs with when it is called with none."""
+    return {
+        name: param.default
+        for name, param in inspect.signature(func).parameters.items()
+        if param.default is not inspect.Parameter.empty
+    }
 
 
 class Employer:
@@ -28,7 +37,6 @@ class Employer:
 
     def __init__(self) -> None:
         self.service_instances = {}
-        self.ai_model = AI()
         self._last_paused_sentences: typing.List[str] = []
 
     @staticmethod
@@ -294,7 +302,7 @@ class Employer:
         Conversation.record_turn(user_input, result.text, calls=result.calls)
         return result.text
 
-    @register_job(module_name="employer", confirms={"stop", "cancel", "stop all"})
+    @register_job(module_name="employer", confirms={"stop"})
     @capture_response
     @staticmethod
     def background_jobs(action: typing.Literal["list", "stop"] = "list") -> str:
@@ -383,7 +391,9 @@ class Employer:
                 continue
             if func.__name__ == "exit" and not Cache.get_audio():
                 return func
-            if confirm._applies(confirms.get(func.__name__), {}):
+            # Called bare, a job runs with its defaults: a job whose default
+            # action is one that confirms must not slip through with no action.
+            if confirm._applies(confirms.get(func.__name__), _default_args(func)):
                 return None
             return func
         return None

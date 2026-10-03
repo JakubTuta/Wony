@@ -389,7 +389,7 @@ class Desktop:
             target.restore()
             return f"Focused window: '{target.title}'."
 
-    @method_job(confirms={"write", "set", "copy"})
+    @method_job(confirms={"write"})
     @capture_response
     def clipboard(self, action: typing.Literal["read", "write"] = "read", text: str = "") -> str:
         """

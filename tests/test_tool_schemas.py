@@ -141,7 +141,8 @@ class TestToolSchemas(unittest.TestCase):
     def test_literal_params_produce_enum(self) -> None:
         """A `Literal[...]` type hint must surface as a JSON-schema `enum` so the
         web UI can render a select instead of a free-text box, and the default
-        value must be one of the declared choices."""
+        value must be one of the declared choices. "" is the not-provided
+        sentinel and is left out of the enum (Gemini rejects it there)."""
         import typing
 
         from helpers.tools import _parse_signature
@@ -160,7 +161,7 @@ class TestToolSchemas(unittest.TestCase):
                     choices = list(hint.__args__)
                     entry = properties.get(param, {})
                     self.assertEqual(
-                        entry.get("enum"), choices,
+                        entry.get("enum"), [c for c in choices if c != ""],
                         f"{name}({param}) is Literal but schema enum is {entry.get('enum')!r}",
                     )
                     default = signature[param].default
@@ -169,6 +170,45 @@ class TestToolSchemas(unittest.TestCase):
                             default, choices,
                             f"{name}({param}) default {default!r} is not in {choices!r}",
                         )
+
+    def test_the_empty_sentinel_is_valid_only_where_declared(self) -> None:
+        """"" is how an optional Literal says "not provided". It stays out of the
+        schema enum, but validate_args must still accept it where the type
+        declares it, and must not accept it for a required choice."""
+        from helpers.tools import validate_args
+        from modules.spotify import Spotify
+
+        self.assertIsNone(validate_args(Spotify.set_volume, {"direction": ""}))
+        self.assertIsNone(validate_args(Spotify.play_songs, {"content_type": ""}))
+        self.assertIsNotNone(validate_args(self.jobs["power"], {"action": ""}))
+        self.assertIsNotNone(validate_args(Spotify.set_volume, {"direction": "sideways"}))
+
+    def test_confirm_words_are_choices_of_a_validated_action(self) -> None:
+        """`confirms={...}` matches the text of the job's `action` argument. That
+        only holds when `action` is a Literal, because validate_args then
+        rejects every other spelling: with a plain str the model can pass a
+        synonym the job understands and the gate does not list."""
+        import typing
+
+        from helpers.registry import ServiceRegistry
+        from helpers.tools import _literal_values
+
+        for name, declared in ServiceRegistry.get_job_confirms().items():
+            if not isinstance(declared, (set, frozenset, list, tuple)):
+                continue
+            func = self.jobs.get(name)
+            if func is None:
+                continue
+            with self.subTest(job=name):
+                allowed = _literal_values(typing.get_type_hints(func).get("action"))
+                self.assertIsNotNone(
+                    allowed, f"{name} confirms on action words but action is not a Literal"
+                )
+                self.assertLessEqual(
+                    {str(word).lower() for word in declared},
+                    {str(value).lower() for value in allowed},
+                    f"{name} confirms on a word that is not one of its actions",
+                )
 
     def test_schema_builds_for_every_provider(self) -> None:
         from helpers.tools import (

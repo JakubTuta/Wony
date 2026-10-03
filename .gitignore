@@ -6,13 +6,10 @@ venv/
 config.yaml
 config.yaml.bak
 .wony_setup
+.wony_lock
 screenshots/
 logs/
 .vscode/
-frontend/node_modules/
-frontend/.vscode/
-frontend/bun.lock
-frontend/package-lock.json
 *.db
 *.onnx
 *.tflite

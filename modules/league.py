@@ -66,7 +66,7 @@ def _drives() -> typing.List[str]:
     module_name="league",
     requires=_LEAGUE_REQ,
     summary="Launch, close or auto-accept LoL",
-    confirms={"close", "quit", "exit"},
+    confirms={"close"},
 )
 @capture_response
 def league(action: typing.Literal["launch", "close", "auto_accept"] = "launch") -> str:

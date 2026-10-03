@@ -227,7 +227,7 @@ function JobRow({ job }: { job: Job }) {
   const sig = `${job.name}(${paramNames.join(', ')})`;
   const pinned = (pins ?? []).some((p) => p.job === job.name);
   const covered = isWidgetCovered(job.name);
-  const label = confirmLabel(job.confirms);
+  const label = confirmLabel(job);
 
   const set = (key: string, value: unknown) => setArgs((prev) => ({ ...prev, [key]: value }));
 

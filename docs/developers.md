@@ -9,7 +9,7 @@ file is for someone changing it. Engineering rules live in
 | Path                   | What lives there                                                      |
 | ---------------------- | --------------------------------------------------------------------- |
 | `wony.py`              | Entry point: `tray`, `text`, `voice`, `web`, `doctor`, `autostart`    |
-| `tray_app.py`          | Tray icon host; owns restart and the single-instance lock             |
+| `tray_app.py`          | Tray icon host; owns restart                                          |
 | `setup.py`             | Installer and `configure`. Stdlib only until it has installed packages |
 | `helpers/`             | Shared machinery: agent loop, registry, confirm gate, config, web API |
 | `modules/`             | One file per switchable feature; each registers jobs                  |
@@ -33,6 +33,11 @@ python setup.py configure           # add a key or sign in again, no install
 `wony.py` and `setup.py configure` relaunch themselves under the interpreter
 recorded in `.wony_setup`, so these work from the system Python too.
 
+Only one Wony runs per checkout. `tray`, `web`, `voice` and `text` claim
+`helpers/instance.py` (an OS file lock on `.wony_lock`, released by the OS if
+Wony dies) before they start anything, and a second copy says so and exits. A
+new entry point that starts the assistant must claim it too.
+
 Build or hot-reload the UI:
 
 ```powershell
@@ -44,6 +49,30 @@ npm run lint
 
 The dev server rewrites the `Origin` of proxied requests (`web/vite.config.ts`)
 because the API only accepts same-origin requests.
+
+## The API
+
+The same routes, with the same bodies, are served by the PC build and the wall
+panel (`raspberry-pi` branch), and `tests/test_api_contract.py` and
+`tests/test_local_only.py` are the same files on both. A change to one of these
+is a change to both branches.
+
+| Route                                  | What it is                                                             |
+| -------------------------------------- | ---------------------------------------------------------------------- |
+| `GET /api/config`                      | Name, plus the settings the UI itself needs (platform-specific keys)   |
+| `GET /api/health`                      | Module status and diagnostics (platform-specific extras)               |
+| `GET /api/jobs`                        | Every job: `confirms` (is it gated) and `confirm_words` (which `action` values ask; null = every call) |
+| `POST /api/invoke`                     | Run a job from a button; skips the confirm gate, the UI already asked  |
+| `POST /api/chat`, `GET /api/chat/history`, `POST /api/chat/clear`, `WS /api/ws` | A sentence in, a turn out; the socket streams it |
+| `GET /api/panels`, `GET /api/panel/{key}` | Structured data for a screen, read-only                             |
+| `POST /api/devices/control`            | One Home Assistant device by exact id                                  |
+| `GET /api/notifications`, `POST /api/notifications/{id}/ack`, `POST /api/notifications/ack-all` | The bell |
+| `GET/POST /api/settings`, `POST /api/data/wipe` | Settings the UI may show and write; wiping the data           |
+
+Everything else belongs to one branch: `/api/restart`, `/api/capabilities`, `/api/pins`, `/api/ack` and `/api/stt`. Requests are
+checked by `helpers/local_only.py` (Host, Origin and Sec-Fetch-Site), which both
+branches call with their own list of served host names (`_allowed_hosts` in
+`helpers/web_app.py`).
 
 ## Settings and config
 
@@ -117,14 +146,18 @@ Four layers, in order of how much they are trusted:
    predicate for "ask only once this turn read untrusted text".
 3. **Argument validation.** `helpers/tools.validate_args` rejects any `Literal`
    argument outside its enum before the gate and before the job, so jobs can
-   trust their `action` values. `add_reminder` validates the action it schedules.
+   trust their `action` values. This is also what makes a set of gate words
+   complete: a job whose `action` is a plain `str` can be called with a synonym
+   the gate does not list ("reboot"), so every job with a set-valued `confirms`
+   types `action` as a `Literal` (`tests/test_tool_schemas.py` checks it).
+   `add_reminder` validates the action it schedules.
 4. **Switches.** The `allow_*` settings above.
 
 Scheduled actions run with no model in the loop, so `add_reminder` confirms
 whenever it is given an `action_job`.
 
 The web API listens on loopback only, checks `Host`, `Origin` and
-`Sec-Fetch-Site`, serves no OpenAPI schema, and `/api/invoke` skips the confirm
+`Sec-Fetch-Site` (`helpers/local_only.py`), serves no OpenAPI schema, and `/api/invoke` skips the confirm
 gate because the UI dialog already confirmed.
 
 ## Adding a job
