@@ -31,7 +31,6 @@ class AssistantSettings(BaseModel):
     name: str = "Wony"
     owner_name: str = "User"
     personality: str = "Friendly and concise."
-    language: str = "en"
     # Where the device is, for local weather. Without it the internet
     # connection decides, which is good to roughly the city.
     home_address: str = ""

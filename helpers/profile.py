@@ -23,9 +23,6 @@ def _seed_from_config() -> None:
         name = Config.get("assistant.owner_name")
         if name and name != "User":
             data["owner_name"] = name
-        language = Config.get("assistant.language")
-        if language and language != "en":
-            data["language"] = language
         if data:
             import_facts_from_dict(data)
     except Exception:

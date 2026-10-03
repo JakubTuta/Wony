@@ -17,10 +17,10 @@ export function Header({
   onOpenNotifications: () => void
   onOpenSystem: () => void
 }) {
-  const { config, connected, unreadCount } = useWony()
+  const { connected, unreadCount } = useWony()
   const { weather, agenda } = useLive()
   const now = useClock()
-  const locale = config?.assistant.language || 'en'
+  const locale = 'en'
 
   const summary: string[] = []
   const w = weather.data

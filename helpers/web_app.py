@@ -216,7 +216,6 @@ def build_app() -> FastAPI:
         return {
             "assistant": {
                 "name": Config.get("assistant.name", "Wony"),
-                "language": Config.get("assistant.language", "en"),
             },
             "kiosk": {
                 "idle_minutes": Config.get("kiosk.idle_minutes", 15),

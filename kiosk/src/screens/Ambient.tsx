@@ -15,10 +15,10 @@ const REFRESH_MS = 10 * 60 * 1000
  *  dismisses it, and that touch does not fall through to what was underneath.
  */
 export function Ambient({ onWake }: { onWake: () => void }) {
-  const { notifications, config } = useWony()
+  const { notifications } = useWony()
   const now = useClock()
   const [cards, setCards] = useState<AmbientCard[]>([])
-  const locale = config?.assistant.language || 'en'
+  const locale = 'en'
 
   useEffect(() => {
     const load = () => {

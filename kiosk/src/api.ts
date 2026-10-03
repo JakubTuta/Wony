@@ -255,7 +255,7 @@ export interface SettingsResponse {
 }
 
 export interface AppConfig {
-  assistant: { name: string; language: string }
+  assistant: { name: string }
   kiosk: { idle_minutes: number; home_columns: number; confirm_all_devices: boolean }
 }
 

@@ -300,13 +300,6 @@ def _wind_unit() -> str:
     return "mph" if units() == "imperial" else "m/s"
 
 
-def _language() -> str:
-    """Descriptions ("light rain") in the language Wony answers in."""
-    from helpers.config import Config
-
-    return str(Config.get("assistant.language", "en") or "en").lower().replace("-", "_")
-
-
 def _get_coordinates_for_city_name(
     city_name: str, api_key: str
 ) -> typing.Tuple[typing.Optional[float], typing.Optional[float]]:
@@ -347,7 +340,6 @@ def _get_weather_for_coordinates(
                 "lon": lon,
                 "appid": api_key,
                 "units": units(),
-                "lang": _language(),
             },
         )
         response.raise_for_status()
@@ -372,7 +364,6 @@ def _get_forecast_for_coordinates(
                 "lon": lon,
                 "appid": api_key,
                 "units": units(),
-                "lang": _language(),
             },
         )
         response.raise_for_status()
