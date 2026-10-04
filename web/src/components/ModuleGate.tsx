@@ -22,18 +22,27 @@ export function Gated({
   fullRow?: boolean;
   children: ReactNode;
 }) {
-  if (!blocked) return <>{children}</>;
-
+  // One tree shape whether blocked or not: swapping wrappers would unmount
+  // the widget, and every widget fetches its panel on mount. `contents` keeps
+  // the unblocked layout identical to having no wrapper at all.
   return (
-    <div className="relative" style={fullRow ? { gridColumn: '1 / -1', minWidth: 0 } : undefined}>
-      <div className="pointer-events-none select-none opacity-40 blur-[2px]" aria-hidden="true">
+    <div
+      className={blocked ? 'relative' : 'contents'}
+      style={blocked && fullRow ? { gridColumn: '1 / -1', minWidth: 0 } : undefined}
+    >
+      <div
+        className={blocked ? 'pointer-events-none select-none opacity-40 blur-[2px]' : 'contents'}
+        aria-hidden={blocked || undefined}
+      >
         {children}
       </div>
-      <div className="absolute inset-0 flex items-center justify-center p-4">
-        <div className={`${CARD} px-4 py-3 text-center max-w-[85%] shadow-sm`}>
-          <span className="text-sm font-medium">{message}</span>
+      {blocked && (
+        <div className="absolute inset-0 flex items-center justify-center p-4">
+          <div className={`${CARD} px-4 py-3 text-center max-w-[85%] shadow-sm`}>
+            <span className="text-sm font-medium">{message}</span>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
@@ -54,8 +63,10 @@ export function ModuleGate({
   const { health, settings } = useWony();
   const state = moduleHealthState(moduleKey, health);
 
+  // Until health arrives every module reads "off"; blocking on that would
+  // flash "Turn on X in Features" over a working widget on every page load.
   return (
-    <Gated blocked={state !== 'ok'} message={moduleMessage(moduleKey, health, settings?.modules, label)} fullRow={fullRow}>
+    <Gated blocked={health !== null && state !== 'ok'} message={moduleMessage(moduleKey, health, settings?.modules, label)} fullRow={fullRow}>
       {children}
     </Gated>
   );

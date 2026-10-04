@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Search, X } from 'lucide-react';
+import { Loader2, Search, X } from 'lucide-react';
 import { fetchPanel } from '../../api';
 import { useWony } from '../../lib/wonyContext';
 import { humanize, isWidgetCovered } from '../../lib/jobs';
@@ -104,7 +104,13 @@ function PinCard({
 
   const isOn = toggledOn ?? isToggleOn(pin, health?.triggers);
 
-  const broken = moduleHealthState(pin.module, health) !== 'ok';
+  // Not broken until health says so; before it arrives every module reads "off".
+  const broken = health !== null && moduleHealthState(pin.module, health) !== 'ok';
+
+  // Disabling the button is the whole guard: React flushes the re-render before
+  // the next click, and the server runs jobs one at a time, so extra clicks
+  // would just queue up as repeat runs.
+  const [running, setRunning] = useState(false);
 
   const run = () => {
     // A routine only hands back its steps for the model to carry out, and the
@@ -119,9 +125,14 @@ function PinCard({
       onNote('Asked in the chat');
       return;
     }
-    runJob(pin.job, pin.args, { from: 'Dashboard' }).then((res) => {
-      onNote(res.error ? `Failed: ${res.error}` : `Ran at ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`);
-    });
+    setRunning(true);
+    onNote('Running…');
+    runJob(pin.job, pin.args, { from: 'Dashboard' })
+      .then((res) => {
+        if (res.cancelled) onNote('Cancelled');
+        else onNote(res.error ? `Failed: ${res.error}` : `Ran at ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`);
+      })
+      .finally(() => setRunning(false));
   };
 
   return (
@@ -156,8 +167,13 @@ function PinCard({
       {broken ? null : (
       <div className="mt-auto flex gap-1.5 flex-wrap items-center">
         {pin.kind === 'run' && (
-          <button onClick={run} className="border-0 bg-accent text-on-accent rounded-[9px] px-3.5 py-2 text-sm font-semibold">
-            Run
+          <button
+            onClick={run}
+            disabled={running}
+            className="border-0 bg-accent text-on-accent rounded-[9px] px-3.5 py-2 text-sm font-semibold flex items-center gap-1.5 disabled:opacity-70"
+          >
+            {running && <Loader2 size={14} className="animate-spin" />}
+            {running ? 'Running…' : 'Run'}
           </button>
         )}
         {pin.kind === 'presets' &&

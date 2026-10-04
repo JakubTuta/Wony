@@ -29,12 +29,15 @@ export interface ConfirmRequest {
   title: string;
   sig: string;
   onConfirm: () => void;
+  onCancel?: () => void;
 }
 
 export interface RunResult {
   ok: boolean;
   result: string;
   error?: string;
+  /** The user declined the confirm dialog; nothing ran. */
+  cancelled?: boolean;
 }
 
 export interface WonyContextValue {

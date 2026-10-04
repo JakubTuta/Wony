@@ -158,7 +158,10 @@ export function WonyProvider({ children }: { children: ReactNode }) {
   // ---------------------------------------------------------------- confirm modal (outside chat)
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
   const requestConfirm = useCallback((req: ConfirmRequest) => setConfirmRequest(req), []);
-  const cancelConfirm = useCallback(() => setConfirmRequest(null), []);
+  const cancelConfirm = useCallback(() => {
+    confirmRequest?.onCancel?.();
+    setConfirmRequest(null);
+  }, [confirmRequest]);
 
   // ---------------------------------------------------------------- chat
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -411,6 +414,7 @@ export function WonyProvider({ children }: { children: ReactNode }) {
               setConfirmRequest(null);
               execute().then(resolve);
             },
+            onCancel: () => resolve({ ok: false, result: '', cancelled: true }),
           });
         });
       }

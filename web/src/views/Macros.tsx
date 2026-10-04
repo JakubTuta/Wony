@@ -64,7 +64,7 @@ export function Macros() {
       { action: 'add', name: name.toLowerCase(), steps },
       { from: 'Routines', title: `Create routine "${name}"?` },
     ).then((res) => {
-      if (!res.ok && res.error) return;
+      if (!res.ok) return;
       if (schedule) {
         invokeJob('add_reminder', { when: schedule, action_job: 'routine', action_args: { name: name.toLowerCase() } });
       }

@@ -55,3 +55,10 @@ a:hover {
 button {
   font-family: inherit;
 }
+/* Tailwind 4 resets buttons to the default arrow; every button here is clickable. */
+button:not(:disabled) {
+  cursor: pointer;
+}
+button:disabled {
+  cursor: not-allowed;
+}
