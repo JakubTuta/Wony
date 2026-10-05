@@ -7,9 +7,10 @@ reply is in persona and the model can offer to do something about it ("battery's
 at 12% — want me to close Chrome?").
 
 All of it is off until asked for. The everyday checks follow
-`assistant.proactive.enabled`; the inbox and calendar watchers stay off until
-the user turns them on ("watch my inbox"). Either way, an on/off the user says
-out loud is remembered across restarts.
+`assistant.proactive.enabled`; the calendar watcher stays off until the user
+turns it on ("watch my calendar"). The inbox watcher mentions only important
+mail until they say "watch my inbox", which means all of it. Either way, an
+on/off the user says out loud is remembered across restarts.
 """
 
 import json
@@ -47,6 +48,51 @@ _PREP_MAIL_DAYS = 14
 _PREP_MAIL_HITS = 2
 
 
+class _Watermark:
+    """Ids a watcher has already told the user about, kept in kv so a restart
+    does not announce the same mail again.
+
+    The first poll after a watcher is switched on only records what is already
+    there: turning on "watch my inbox" means from now on, not a read-out of
+    yesterday's backlog.
+    """
+
+    _KEEP = 500
+
+    def __init__(self, name: str) -> None:
+        self._key = f"trigger.{name}.seen"
+        self._pending: typing.List[str] = []
+
+    def seen(self) -> typing.Optional[typing.Set[str]]:
+        from helpers.memory_db import get_kv
+
+        raw = get_kv(self._key, "")
+        return set(json.loads(raw)) if raw else None
+
+    def record(self, ids: typing.Iterable[str]) -> None:
+        from helpers.memory_db import get_kv, set_kv
+
+        raw = get_kv(self._key, "")
+        known = json.loads(raw) if raw else []
+        known += [i for i in ids if i not in known]
+        set_kv(self._key, json.dumps(known[-self._KEEP:]))
+
+    def hold(self, ids: typing.List[str]) -> None:
+        self._pending = ids
+
+    def commit(self) -> None:
+        if self._pending:
+            self.record(self._pending)
+            self._pending = []
+
+    def forget(self) -> None:
+        """Next poll starts from now again."""
+        from helpers.memory_db import set_kv
+
+        set_kv(self._key, "")
+        self._pending = []
+
+
 class Trigger(typing.NamedTuple):
     name: str
     watches: str  # one line for `manage_triggers list`
@@ -59,9 +105,9 @@ class Trigger(typing.NamedTuple):
     trusted: bool = True
     # False: off until the user turns it on, whatever the proactive switch says.
     default_on: bool = True
-    # Called once the fact has actually been announced, so a watcher marks mail
-    # as seen only when the user was told about it.
-    announced: typing.Optional[typing.Callable[[], None]] = None
+    # Committed once the fact has actually been announced, so a watcher marks
+    # mail as seen only when the user was told about it.
+    watermark: typing.Optional[_Watermark] = None
 
 
 _last_polled: typing.Dict[str, float] = {}
@@ -86,11 +132,16 @@ def _by_name(name: str) -> typing.Optional[Trigger]:
     return next((t for t in all_triggers() if t.name == name), None)
 
 
-def is_on(name: str) -> bool:
-    """What the user last said about this trigger, else its default."""
+def _said(name: str) -> str:
+    """"on", "off", or "" when the user never said."""
     from helpers.memory_db import get_kv
 
-    said = get_kv(_STATE_KV.format(name=name), "")
+    return get_kv(_STATE_KV.format(name=name), "")
+
+
+def is_on(name: str) -> bool:
+    """What the user last said about this trigger, else its default."""
+    said = _said(name)
     if said:
         return said == "on"
     trigger = _by_name(name)
@@ -100,6 +151,13 @@ def is_on(name: str) -> bool:
 def set_enabled(name: str, on: bool) -> None:
     """Turn one trigger on or off, remembered across restarts."""
     from helpers.memory_db import set_kv
+
+    trigger = _by_name(name)
+    if on and _said(name) != "on" and trigger and trigger.watermark:
+        # Mail that arrived while it was off, or that a narrower default
+        # skipped, is not news the moment it is switched on.
+        trigger.watermark.forget()
+        _last_polled.pop(name, None)
 
     set_kv(_STATE_KV.format(name=name), "on" if on else "off")
     if any(is_on(t.name) for t in all_triggers()):
@@ -195,8 +253,8 @@ def _fire(trigger: Trigger, fact: str) -> None:
     # say any of it, and a history full of trigger prompts would have the model
     # answering questions nobody asked.
     notify(result.text or fact, kind="alert", source=f"trigger:{trigger.name}")
-    if trigger.announced is not None:
-        trigger.announced()
+    if trigger.watermark is not None:
+        trigger.watermark.commit()
 
 
 # ------------------------------------------------------------------ the checks
@@ -344,74 +402,6 @@ def _notes_mentioning(title: str) -> str:
     return "On your lists: " + ", ".join(hits[:3]) + "."
 
 
-def _important_email() -> typing.Optional[str]:
-    if not _module_on("gmail"):
-        return None
-    from helpers.registry import ServiceRegistry
-
-    gmail = ServiceRegistry.get_service_instance("gmail")
-    if gmail is None:
-        return None
-
-    # Gmail's own importance markers, not a guess made here. find_emails would
-    # answer in prose (and its overview counts the whole inbox); this needs the
-    # subjects to tell one batch of mail from the next.
-    # newer_than, or the first tick on a machine with a year of unread mail
-    # announces a backlog nobody wanted to hear about.
-    messages = gmail.search_messages(
-        "is:unread is:important newer_than:1d", max_results=_EMAIL_SCAN
-    )
-    if not messages:
-        return None
-
-    subjects = [m.subject.strip() or "(no subject)" for m in messages]
-    if len(subjects) == 1:
-        return f"There is unread mail marked important: '{subjects[0]}'."
-    return (
-        f"There are {len(subjects)} unread emails marked important: "
-        + ", ".join(f"'{s}'" for s in subjects)
-        + "."
-    )
-
-
-class _Watermark:
-    """Ids a watcher has already told the user about, kept in kv so a restart
-    does not announce the same mail again.
-
-    The first poll after a watcher is switched on only records what is already
-    there: turning on "watch my inbox" means from now on, not a read-out of
-    yesterday's backlog.
-    """
-
-    _KEEP = 500
-
-    def __init__(self, name: str) -> None:
-        self._key = f"trigger.{name}.seen"
-        self._pending: typing.List[str] = []
-
-    def seen(self) -> typing.Optional[typing.Set[str]]:
-        from helpers.memory_db import get_kv
-
-        raw = get_kv(self._key, "")
-        return set(json.loads(raw)) if raw else None
-
-    def record(self, ids: typing.Iterable[str]) -> None:
-        from helpers.memory_db import get_kv, set_kv
-
-        raw = get_kv(self._key, "")
-        known = json.loads(raw) if raw else []
-        known += [i for i in ids if i not in known]
-        set_kv(self._key, json.dumps(known[-self._KEEP:]))
-
-    def hold(self, ids: typing.List[str]) -> None:
-        self._pending = ids
-
-    def commit(self) -> None:
-        if self._pending:
-            self.record(self._pending)
-            self._pending = []
-
-
 _mail_seen = _Watermark("new_email")
 _events_seen = _Watermark("new_event")
 
@@ -425,8 +415,11 @@ def _new_email() -> typing.Optional[str]:
     if gmail is None:
         return None
 
+    # Said out loud, "watch my inbox" is all of it; left alone the watcher
+    # takes only what Gmail itself marks important. Each mail is announced
+    # once either way — it stays unread in Gmail, but is never read out again.
     seen = _mail_seen.seen()
-    messages = gmail.new_messages(seen or set())
+    messages = gmail.new_messages(seen or set(), important_only=_said("new_email") != "on")
     if seen is None:
         _mail_seen.record(m.id for m in messages)
         return None
@@ -488,24 +481,15 @@ _TRIGGERS: typing.List[Trigger] = [
         trusted=False,
     ),
     Trigger(
-        "important_email",
-        "Unread mail Gmail marked important.",
-        _important_email,
-        interval=300.0,
-        cooldown=900.0,
-        # The fact quotes subject lines, which anyone who can email the user
-        # gets to write.
-        trusted=False,
-    ),
-    Trigger(
         "new_email",
-        "New mail as it arrives (off until you ask: 'watch my inbox').",
+        "New mail as it arrives: important mail only, or all of it after 'watch my inbox'.",
         _new_email,
         interval=300.0,
         cooldown=0.0,
+        # The fact quotes subject lines, which anyone who can email the user
+        # gets to write.
         trusted=False,
-        default_on=False,
-        announced=_mail_seen.commit,
+        watermark=_mail_seen,
     ),
     Trigger(
         "new_event",
@@ -515,6 +499,6 @@ _TRIGGERS: typing.List[Trigger] = [
         cooldown=0.0,
         trusted=False,
         default_on=False,
-        announced=_events_seen.commit,
+        watermark=_events_seen,
     ),
 ]

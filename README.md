@@ -132,10 +132,12 @@ These nine start **off**. Nothing else can turn them on. Change them in
 | Tell it what I'm looking at      | Sees nothing unless you ask             | Sends the front window's title every message |
 
 **Speak up on its own** lets Wony watch for a low battery, a drive nearly full,
-a meeting about to start and mail Gmail marked important — and say something in
-its own words. Ask _"what do you watch for"_ to see the list, or _"stop watching
-for important email"_ to switch one off. Two more watchers stay off until you ask:
-_"watch my inbox"_ and _"watch my calendar"_.
+a meeting about to start and new mail Gmail marked important — and say something
+in its own words. It mentions each email once; the email stays unread in Gmail.
+Ask _"what do you watch for"_ to see the list, or _"stop watching my inbox"_ to
+switch the mail watcher off. Say _"watch my inbox"_ to hear about all new mail,
+not only the important kind. One more watcher stays off until you ask:
+_"watch my calendar"_.
 
 **Learn about me on its own** lets Wony keep the things you mention in passing —
 the dog's name, that you cycle to work. With Gmail on it also reads your sent

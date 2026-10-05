@@ -81,6 +81,7 @@ function PinCard({
   const [shopDraft, setShopDraft] = useState('');
   const [volume, setVolume] = useState<number>(typeof pin.args.level === 'number' ? pin.args.level : 50);
   const [toggledOn, setToggledOn] = useState<boolean | null>(null);
+  const [switching, setSwitching] = useState(false);
 
   // A volume slider's "50" was never a live reading — it was the seed's
   // placeholder. For Spotify specifically, read the real level (and whether
@@ -151,10 +152,19 @@ function PinCard({
         {pin.kind === 'toggle' && !broken && (
           <Switch
             checked={isOn}
+            disabled={switching}
             onChange={() => {
+              // The switch moves only once the job has really run: a cancelled
+              // confirm or a failure leaves it where the server still has it.
               const next = !isOn;
-              setToggledOn(next);
-              runJob(pin.job, { ...pin.args, action: next ? 'on' : 'off' }, { from: 'Dashboard' });
+              setSwitching(true);
+              runJob(pin.job, { ...pin.args, action: next ? 'on' : 'off' }, { from: 'Dashboard' })
+                .then((res) => {
+                  if (res.ok && !res.error && !res.cancelled) setToggledOn(next);
+                  else if (res.error) onNote(`Failed: ${res.error}`);
+                })
+                .catch(() => onNote('Failed: could not reach Wony'))
+                .finally(() => setSwitching(false));
             }}
           />
         )}
