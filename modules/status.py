@@ -64,9 +64,10 @@ def _manage_triggers_needs_confirm(args: typing.Dict[str, typing.Any]) -> bool:
 def manage_triggers(action: typing.Literal["list", "off", "on"] = "list", name: str = "") -> str:
     """
     [SYSTEM INFORMATION JOB] Lists the things Wony watches for on its own — the device
-    running hot, a full disk, a meeting about to start, important mail, new mail, new
-    calendar events — and turns one on or off. "Watch my inbox" is turning on
-    new_email; "watch my calendar" is new_event. The choice is remembered.
+    running hot, a full disk, a meeting about to start, new mail, new calendar events
+    — and turns one on or off. New mail covers only important mail until "watch
+    my inbox", which turns on new_email for all of it; "stop watching my inbox"
+    silences it. "Watch my calendar" is new_event. The choice is remembered.
 
     Args:
         action (str): "list" (the default), "off" or "on".

@@ -195,11 +195,13 @@ on under **Settings → What Wony may do on its own**:
 | Learn about me on its own        | Keeping facts it works out from your own conversations, and how you write from your sent mail |
 
 **Speaking up on its own** says it in Wony's own words rather than a canned
-alert. Ask _"what do you watch for"_ to see the list, or _"stop watching for
-important email"_ to switch one off. A meeting about to start comes with who is
-coming, what you last wrote to them and anything on your lists with its name on
-it. _"Watch my inbox"_ and _"watch my calendar"_ add new mail and new events to
-the list, whatever that switch says. What you turn on or off is remembered.
+alert. It mentions each email once; the email stays unread in Gmail. Ask _"what
+do you watch for"_ to see the list, or _"stop watching my inbox"_ to switch the
+mail watcher off. A meeting about to start comes with who is coming, what you
+last wrote to them and anything on your lists with its name on it. _"Watch my
+inbox"_ widens the mail watcher from important mail to all new mail, and _"watch
+my calendar"_ adds new events to the list, whatever that switch says. What you
+turn on or off is remembered.
 
 Temperatures follow the device's region; say _"remember I prefer Fahrenheit"_ to
 change that. Claude and Gemini always use their fastest model.

@@ -484,10 +484,13 @@ class Gmail:
             out.extend(msgs)
         return self._sort_desc(out)
 
-    def new_messages(self, seen: typing.Set[str]) -> typing.List[Msg]:
+    def new_messages(
+        self, seen: typing.Set[str], important_only: bool = False
+    ) -> typing.List[Msg]:
         """Unread inbox mail from the last day whose ids are not in `seen`, across
-        every account — for the new_email trigger."""
-        scoped = self._scope("is:unread newer_than:1d")
+        every account — for the new_email trigger. `important_only` keeps to
+        what Gmail itself marks important."""
+        scoped = self._scope("is:unread newer_than:1d" + (" is:important" if important_only else ""))
         return [m for m in self._fetch(scoped, _POLL_SCAN_LIMIT, "") if m.id not in seen]
 
     def search_messages(
