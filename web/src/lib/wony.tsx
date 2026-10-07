@@ -267,6 +267,9 @@ export function WonyProvider({ children }: { children: ReactNode }) {
         ...prev,
         { role: 'assistant', text: n.text, tag: `Spoke up · ${n.source.slice('trigger:'.length)}` },
       ]);
+    } else if (n.source === 'contacts') {
+      // Phone numbers come straight from this PC, never through the AI's reply.
+      setMessages((prev) => [...prev, { role: 'assistant', text: n.text, tag: 'Not sent to the AI' }]);
     }
   }, []);
 

@@ -116,6 +116,7 @@ _RETIRED_PIN_JOBS: typing.Dict[str, typing.Dict[str, typing.Any]] = {
     "click_text": {"job": "click", "args": {}},
     "close_computer": {"job": "power", "args": {"action": "shutdown"}},
     "fetch_url": {"job": "browse", "args": {}},
+    "find_contact": {"job": "contact", "args": {"action": "find"}},
 }
 
 
@@ -494,7 +495,8 @@ def build_app() -> FastAPI:
                 status_code=422, detail=f"Argument coercion failed: {e}"
             )
 
-        if ServiceRegistry.job_confirms(req.name):
+        gated = ServiceRegistry.job_confirms(req.name)
+        if gated:
             # Deliberately not routed through helpers/confirm.py: the button
             # already passed the UI's confirm dialog and the user is watching
             # the result. Logged separately so the audit trail says which of
@@ -505,18 +507,25 @@ def build_app() -> FastAPI:
         try:
             # Same lock every agent turn takes — a button press reaches the same
             # jobs and the same Conversation state as a typed sentence.
+            from helpers import confirm
+            from helpers.conversation import Conversation
             from helpers.decorators import agent_lock, set_agent_active
             from helpers.turn_context import user_request
 
             # A button press is the user asking, so a Sign in again button may open
             # Google's consent page.
             with agent_lock, user_request():
+                if gated:
+                    # The model may have armed this same call; the click spends it.
+                    confirm.disarm(req.name, coerced)
                 set_agent_active(True)
                 try:
                     result = func(**coerced)
                 finally:
                     set_agent_active(False)
-            result_str = str(result) if result is not None else ""
+                result_str = str(result) if result is not None else ""
+                if gated:
+                    Conversation.record_confirmed(req.name, coerced, result_str)
             logger.log_function_response(req.name, result_str[:200], "[web]")
             return {"ok": True, "result": result_str}
         except Exception as e:
@@ -533,7 +542,7 @@ def build_app() -> FastAPI:
         if not req.message or not req.message.strip():
             raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
-        result = run_turn(req.message)
+        result = run_turn(req.message, think=True)
         if result.error is not None:
             logger.log_error(result.error, "web_chat")
             raise HTTPException(status_code=503, detail=result.error)
@@ -568,8 +577,9 @@ def build_app() -> FastAPI:
             raise HTTPException(status_code=500, detail=str(e))
 
     @app.post("/api/ack")
-    async def play_ack() -> typing.Dict[str, bool]:
-        """Play the 'Yes?' acknowledgement chime through PC speakers."""
+    def play_ack() -> typing.Dict[str, bool]:
+        """Play the 'Yes?' acknowledgement chime through PC speakers.
+        A plain def: playback blocks, and FastAPI runs these on a worker thread."""
         try:
             from helpers.audio import Audio
             Audio.play_cached("Yes?")
@@ -584,9 +594,12 @@ def build_app() -> FastAPI:
         if not data:
             raise HTTPException(status_code=400, detail="No audio data received.")
         try:
+            from starlette.concurrency import run_in_threadpool
+
             from helpers.recognizer import transcribe_audio_bytes
 
-            text, warning = transcribe_audio_bytes(data)
+            # Seconds of Whisper on the event loop would freeze every chat stream.
+            text, warning = await run_in_threadpool(transcribe_audio_bytes, data)
             if warning:
                 return {
                     "text": "",
@@ -649,7 +662,7 @@ def build_app() -> FastAPI:
             from helpers.turn import run_turn
 
             try:
-                result = run_turn(message, on_text=lambda c: q.put(("delta", c)))
+                result = run_turn(message, on_text=lambda c: q.put(("delta", c)), think=True)
                 if result.error:
                     logger.log_error(result.error, "ws_chat")
                     q.put(("error", result.error))

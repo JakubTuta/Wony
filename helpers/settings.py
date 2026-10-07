@@ -46,7 +46,8 @@ MODULES: typing.List[typing.Tuple[str, str, str, str]] = [
     ("gmail", "Gmail", "Read, search and watch your inbox.", "Any important email?"),
     ("calendar", "Google Calendar", "Events, availability and free slots.", "What's on today?"),
     ("drive", "Google Drive", "Find and read your Drive files; create and edit Docs and Sheets.", "What changed in my Drive lately?"),
-    ("contacts", "Google Contacts", "Look people up, and email or invite them by name.", "What's Anna's email?"),
+    ("contacts", "Google Contacts", "Look people up, save their phone numbers, and email or invite them by name.", "What's Anna's email?"),
+    ("phone", "Phone calls", "Say who to call: Phone Link opens with their number and you press Call. Needs Google Contacts and Phone Link with your phone connected.", "Call Tom"),
     ("google_accounts", "Google accounts", "Use more than one Google account.", "Add a Google account"),
     ("home_assistant", "Home Assistant", "Lights, blinds, thermostats, vacuums, scenes.", "Turn off the lights"),
     ("desktop", "Desktop control", "Open apps and windows, clipboard, read and write files.", "Open Notepad"),
@@ -214,6 +215,11 @@ _FIELDS: typing.List[typing.Tuple[str, typing.List[Field]]] = [
               "Create Google Docs, add to Docs and Sheets, and upload files. "
               "Off: it can find and read your files only. Turning it on asks Google once more.",
               module="drive"),
+        Field("modules.contacts.allow_write", "Change my contacts", "toggle",
+              "Add phone numbers to your Google Contacts when you ask. "
+              "Off: it can look people up and call them, but not change anyone. "
+              "Turning it on asks Google once more.",
+              module="contacts"),
         Field("modules.home_assistant.allow_locks", "Unlock doors and open the garage", "toggle",
               "Off: lights and blinds still work, locks and alarms do not.",
               module="home_assistant"),

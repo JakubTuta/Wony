@@ -31,7 +31,8 @@ _MODULE_SCOPES: typing.Dict[str, typing.Tuple[typing.List[str], typing.List[str]
     "drive": ([_API + "drive.readonly"],
               [_API + "documents", _API + "spreadsheets", _API + "drive.file"],
               "modules.drive.allow_write"),
-    "contacts": ([_API + "contacts.readonly", _API + "contacts.other.readonly"], [], ""),
+    "contacts": ([_API + "contacts.readonly", _API + "contacts.other.readonly"], [_API + "contacts"],
+                 "modules.contacts.allow_write"),
 }
 GOOGLE_MODULES = tuple(_MODULE_SCOPES)
 _WRITE_SCOPES = {scope for _, extra, _ in _MODULE_SCOPES.values() for scope in extra}

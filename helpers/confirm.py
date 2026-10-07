@@ -30,8 +30,17 @@ import typing
 _ARM_TTL_SECONDS = 300.0
 
 _lock = threading.Lock()
-# fingerprint -> (armed_at_turn, armed_at_time)
-_armed: typing.Dict[str, typing.Tuple[int, float]] = {}
+
+
+class _Armed(typing.NamedTuple):
+    turn: int
+    at: float
+    job: str
+    args: typing.Dict[str, typing.Any]
+
+
+# fingerprint -> the armed call
+_armed: typing.Dict[str, _Armed] = {}
 _turn_counter = 0
 
 
@@ -43,10 +52,36 @@ def begin_turn() -> int:
         return _turn_counter
 
 
+def normalize(job_name: str, args: typing.Dict[str, typing.Any]) -> typing.Dict[str, typing.Any]:
+    """The call as it will actually run: blanks and values equal to the job's
+    defaults dropped, strings trimmed. The "yes" turn re-sends the call, and a
+    model that adds cc="" or a trailing space must not get asked all over again."""
+    import inspect
+
+    from helpers.registry import ServiceRegistry
+
+    func = ServiceRegistry.get_all_jobs().get(job_name)
+    try:
+        params = inspect.signature(func).parameters if func else {}
+    except (TypeError, ValueError):
+        params = {}
+    out: typing.Dict[str, typing.Any] = {}
+    for key, value in args.items():
+        if isinstance(value, str):
+            value = value.strip()
+        if value is None or value == "":
+            continue
+        param = params.get(key)
+        if param is not None and param.default is not inspect.Parameter.empty and value == param.default:
+            continue
+        out[key] = value
+    return out
+
+
 def _fingerprint(job_name: str, args: typing.Dict[str, typing.Any]) -> str:
     # The arguments are part of the identity: confirming "delete mail from Anna"
     # must not also confirm "delete everything".
-    payload = json.dumps({"job": job_name, "args": args}, sort_keys=True, default=str)
+    payload = json.dumps({"job": job_name, "args": normalize(job_name, args)}, sort_keys=True, default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -93,17 +128,14 @@ def check(job_name: str, args: typing.Dict[str, typing.Any]) -> typing.Optional[
     with _lock:
         current_turn = _turn_counter
         armed = _armed.get(key)
-        for stale_key, (_turn, stamp) in list(_armed.items()):
-            if now - stamp > _ARM_TTL_SECONDS:
-                _armed.pop(stale_key, None)
+        _drop_stale(now)
 
         if armed is not None:
-            armed_turn, armed_at = armed
-            if now - armed_at <= _ARM_TTL_SECONDS and current_turn > armed_turn:
+            if now - armed.at <= _ARM_TTL_SECONDS and current_turn > armed.turn:
                 _armed.pop(key, None)
                 return None
 
-        _armed[key] = (current_turn, now)
+        _armed[key] = _Armed(current_turn, now, job_name, normalize(job_name, args))
 
     return (
         f"NOT DONE — {job_name} needs the user's go-ahead first. "
@@ -120,6 +152,34 @@ def after_untrusted(args: typing.Dict[str, typing.Any]) -> bool:
     from helpers import turn_context
 
     return turn_context.untrusted_read()
+
+
+def _drop_stale(now: float) -> None:
+    for stale_key, armed in list(_armed.items()):
+        if now - armed.at > _ARM_TTL_SECONDS:
+            _armed.pop(stale_key, None)
+
+
+def armed_jobs() -> typing.List[str]:
+    with _lock:
+        return [armed.job for armed in _armed.values()]
+
+
+def take_previous_turn() -> typing.List[_Armed]:
+    """Every call armed in the turn just before this one, in the order armed —
+    what a bare "yes" or "no" is answering. Removed either way."""
+    with _lock:
+        _drop_stale(time.monotonic())
+        keys = [key for key, armed in _armed.items() if armed.turn == _turn_counter - 1]
+        return [_armed.pop(key) for key in keys]
+
+
+def disarm(job_name: str, args: typing.Dict[str, typing.Any]) -> bool:
+    """Spend the armed confirmation for this call, if there is one. The web
+    page's Confirm button runs the call itself — a "yes" typed afterwards must
+    not run it a second time."""
+    with _lock:
+        return _armed.pop(_fingerprint(job_name, args), None) is not None
 
 
 def reset() -> None:

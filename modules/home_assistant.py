@@ -491,7 +491,25 @@ def list_home_devices(query: str = "", area: str = "", domain: str = "") -> str:
     return _describe(_with_siblings(found, entities, query))
 
 
-@register_job(module_name="home_assistant", requires=_requirement(), confirms=True)
+def _control_needs_confirm(args: typing.Dict[str, typing.Any]) -> bool:
+    """Locks, alarms and garage doors ask first; lights and blinds just happen.
+    With locks switched off they are refused anyway, so there is nothing to ask."""
+    if not _locks_allowed():
+        return False
+    try:
+        entities = _fetch_index()
+    except (requests.exceptions.RequestException, ValueError):
+        return True  # cannot tell what it would touch
+    matched = _filtered(
+        entities,
+        str(args.get("target") or ""),
+        str(args.get("area") or ""),
+        str(args.get("domain") or ""),
+    )
+    return any(_is_guarded(entity) for entity in matched)
+
+
+@register_job(module_name="home_assistant", requires=_requirement(), confirms=_control_needs_confirm)
 @capture_response
 def control_home_device(
     target: str = "",
@@ -546,10 +564,36 @@ def control_home_device(
         return _no_target_message(target, area, domain, wanted, change, matched)
 
     scoped = bool(area or domain)
-    _, text = _apply(
+    changed, text = _apply(
         actionable, wanted, change, _MAX_SCOPED_TARGETS if scoped else _MAX_VAGUE_TARGETS
     )
+    if changed:
+        _offer_undo(actionable, change)
     return text
+
+
+# What "undo" can put back: switched on or off, opened or closed. A dimmed light
+# or a new temperature is not reverted, and nothing guarded is touched.
+_UNDOABLE_DOMAINS = {"light", "switch", "fan", "input_boolean", "cover"}
+
+
+def _offer_undo(entities: typing.List[_Entity], change: _Change) -> None:
+    from helpers import undo
+
+    if change.wanted():
+        return
+    if any(e.domain not in _UNDOABLE_DOMAINS or _is_guarded(e) for e in entities):
+        return
+
+    # The index was read before the change, so these are the states to go back to.
+    was_on = [e for e in entities if e.state.lower() not in _OFF_STATES]
+    was_off = [e for e in entities if e.state.lower() in _OFF_STATES]
+
+    def revert() -> str:
+        said = [_apply(group, back, _Change())[1] for group, back in ((was_on, "on"), (was_off, "off")) if group]
+        return " ".join(said)
+
+    undo.push(f"the change to {', '.join(e.label() for e in entities)}", revert)
 
 
 def _apply(

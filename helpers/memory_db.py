@@ -411,6 +411,14 @@ def remove_note(list_name: str, text: str) -> typing.Optional[str]:
         return row["text"]
 
 
+def delete_note(note_id: int) -> bool:
+    conn = _get_conn()
+    with _lock:
+        cur = conn.execute("DELETE FROM notes WHERE id = ?", (note_id,))
+        conn.commit()
+        return cur.rowcount > 0
+
+
 def clear_notes(list_name: str) -> int:
     conn = _get_conn()
     with _lock:

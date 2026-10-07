@@ -90,6 +90,7 @@ enabled_modules:
   # - calendar       # your Google Calendar
   # - drive          # find and read your Google Drive files, edit Docs and Sheets
   # - contacts       # look people up; email and invite them by name
+  # - phone          # call people on your own phone, through Phone Link
   # - google_accounts  # use more than one Google account
   # - league         # League of Legends: launch the game, accept queue pop-ups
   # - shazam         # name the song that is playing
@@ -120,6 +121,10 @@ modules:
   drive:
     # Let Wony create Google Docs, add to Docs and Sheets, and upload files.
     # While off it can find and read your files, and tells you what it would write.
+    allow_write: false
+  contacts:
+    # Let Wony add phone numbers to your Google Contacts ("add Ann's phone as …").
+    # While off it can look people up and call them, but not change anyone.
     allow_write: false
   desktop:
     # Let Wony type, click, write to the clipboard and change files. While off

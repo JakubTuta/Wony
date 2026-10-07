@@ -111,6 +111,25 @@ def current_model_name(provider: str) -> typing.Optional[str]:
     return None
 
 
+def _provider_of(client: typing.Any) -> str:
+    if isinstance(client, anthropic.Anthropic):
+        return "anthropic"
+    if isinstance(client, genai.Client):
+        return "gemini"
+    if isinstance(client, ollama.Client):
+        return "ollama"
+    raise Exception("Invalid client type. Expected genai.Client, anthropic.Anthropic or ollama.Client.")
+
+
+def _tool_schemas(
+    client: typing.Any, available_tools: typing.Optional[typing.List[typing.Callable]]
+) -> typing.Optional[typing.List[dict]]:
+    if not available_tools:
+        return None
+    provider = _provider_of(client)
+    return [helpers_tools.function_to_schema(func, provider) for func in available_tools]
+
+
 def _system_blocks(system: SystemInstructions) -> typing.List[str]:
     if not system:
         return []
@@ -163,22 +182,22 @@ def _cached_tools(parsed_tools: typing.Optional[typing.List[dict]]) -> typing.An
     return tools
 
 
-# Model families that reject thinking={"type": "adaptive"} — sending it costs a
-# failed round-trip before the retry below drops it.
-_NO_ADAPTIVE_THINKING = ("claude-3", "haiku-4-5", "sonnet-4-5", "opus-4-5", "opus-4-1")
+# Claude families from before adaptive thinking (4.6). They take a fixed budget
+# instead; claude-3 models other than 3.7 take neither, and the retry drops it.
+_BUDGET_THINKING = ("claude-3", "haiku-4-5", "sonnet-4-5", "opus-4-5", "opus-4-1")
+# Enough to plan a few tool calls; it must stay under _MAX_TOKENS.
+_THINKING_BUDGET_TOKENS = 2048
 
 
-def _should_think(has_tools: bool) -> bool:
+def _should_think(has_tools: bool, think: bool = False) -> bool:
     """Whether the model should think (reason) for this call.
 
-    Only on pure-generation calls (no tools: describing a screenshot). Every
-    conversational turn runs the tool loop, and that never thinks:
-      1. It is the voice critical path — thinking delays the first spoken word.
-      2. Anthropic requires thinking blocks to be echoed back unchanged in a
-         multi-turn tool loop; the provider-neutral message list doesn't carry
-         them, so thinking + tools would corrupt the next request.
+    Always on pure-generation calls (describing a screenshot). In the tool loop
+    only when the caller asks: a spoken turn never does, because thinking delays
+    the first word. Claude's thinking blocks travel back with the tool calls
+    (`_anthropic_content`), as Anthropic requires.
     """
-    return not has_tools
+    return think or not has_tools
 
 
 def _gemini_can_disable_thinking(model: str) -> bool:
@@ -193,6 +212,7 @@ def _gemini_config(
     system_instructions: SystemInstructions,
     parsed_tools: typing.Optional[typing.List[dict]],
     model: str,
+    think: bool = False,
 ) -> typing.Optional["genai_types.GenerateContentConfig"]:
     kwargs: typing.Dict[str, typing.Any] = {}
     system_text = _system_text(system_instructions)
@@ -206,25 +226,24 @@ def _gemini_config(
                 ]
             )
         ]
-    # Disable thinking for tool-dispatch steps (and globally when off); leave the
-    # provider default (thinking on) for pure-generation calls.
-    if not _should_think(bool(parsed_tools)) and _gemini_can_disable_thinking(model):
+    # Thinking off unless asked for (see _should_think); the provider default
+    # (on) otherwise. Gemini's thought signatures ride in _gemini_content.
+    if not _should_think(bool(parsed_tools), think) and _gemini_can_disable_thinking(model):
         kwargs["thinking_config"] = genai_types.ThinkingConfig(thinking_budget=0)
     return genai_types.GenerateContentConfig(**kwargs) if kwargs else None
 
 
-def _anthropic_thinking(has_tools: bool, model: str) -> typing.Any:
+def _anthropic_thinking(has_tools: bool, model: str, think: bool = False) -> typing.Any:
     """Return the Anthropic `thinking` arg, or NOT_GIVEN.
 
-    Adaptive thinking (4.6+) only. Off for tool calls (see _should_think) — also
-    avoids the thinking-block echo requirement that our neutral message list
-    can't satisfy.
+    Adaptive on 4.6+; a fixed budget on the families before it (Haiku 4.5 is
+    the one Wony picks today).
     """
-    if not _should_think(has_tools):
+    if not _should_think(has_tools, think):
         return anthropic.NOT_GIVEN
     lowered = model.lower()
-    if any(family in lowered for family in _NO_ADAPTIVE_THINKING):
-        return anthropic.NOT_GIVEN
+    if any(family in lowered for family in _BUDGET_THINKING):
+        return {"type": "enabled", "budget_tokens": _THINKING_BUDGET_TOKENS}
     return {"type": "adaptive"}
 
 
@@ -318,11 +337,7 @@ def send_message(
             "Anthropic or Google Gemini, or pick Ollama to run fully on this PC."
         )
 
-    parsed_tools = None
-    if available_tools:
-        parsed_tools = [
-            helpers_tools.function_to_schema(func) for func in available_tools
-        ]
+    parsed_tools = _tool_schemas(client, available_tools)
 
     base64_image: typing.Optional[str] = None
     if image is not None:
@@ -493,6 +508,7 @@ def _to_anthropic_messages(
             anthropic_messages.append({"role": "assistant", "content": str(msg["content"])})
         elif role == "tool_call":
             # Collect consecutive tool_calls + their tool_results into one assistant/user pair
+            raw = msg.get("_anthropic_content")
             tool_uses = []
             while i < len(messages) and messages[i]["role"] == "tool_call":
                 tc = messages[i]
@@ -503,7 +519,9 @@ def _to_anthropic_messages(
                     "input": tc.get("args", {}),
                 })
                 i += 1
-            anthropic_messages.append({"role": "assistant", "content": tool_uses})
+            # Claude's own blocks, unchanged: thinking has to come back exactly
+            # as it was sent, and so does any text said beside the calls.
+            anthropic_messages.append({"role": "assistant", "content": raw if raw is not None else tool_uses})
 
             # Corresponding tool_results
             tool_results = []
@@ -566,6 +584,7 @@ def send_agent_messages(
     messages: typing.List[typing.Dict[str, typing.Any]],
     system_instructions: SystemInstructions = None,
     available_tools: typing.Optional[typing.List[typing.Callable]] = None,
+    think: bool = False,
 ) -> typing.Union[
     genai_types.GenerateContentResponse, anthropic.types.Message, ollama.ChatResponse
 ]:
@@ -577,25 +596,22 @@ def send_agent_messages(
       {"role": "tool_call", "id": str, "name": str, "args": dict}
 
     This function converts that neutral list to the provider's native format.
+    think: reason before calling tools (see _should_think).
     """
     if client is None:
         raise Exception("AI client not initialized.")
 
-    parsed_tools = None
-    if available_tools:
-        parsed_tools = [
-            helpers_tools.function_to_schema(func) for func in available_tools
-        ]
+    parsed_tools = _tool_schemas(client, available_tools)
 
     if isinstance(client, genai.Client):
         model = _get_gemini_model(client)
-        config = _gemini_config(system_instructions, parsed_tools, model)
+        config = _gemini_config(system_instructions, parsed_tools, model, think)
         return _gemini_generate(client, model, _to_gemini_contents(messages), config)
 
     elif isinstance(client, anthropic.Anthropic):
 
         model = _get_anthropic_model(client)
-        thinking = _anthropic_thinking(bool(parsed_tools), model)
+        thinking = _anthropic_thinking(bool(parsed_tools), model, think)
 
         def _create(think: typing.Any) -> typing.Any:
             return client.messages.create(
@@ -625,6 +641,22 @@ def send_agent_messages(
     raise Exception("Invalid client type.")
 
 
+def _anthropic_tool_calls(message: "anthropic.types.Message") -> typing.List[typing.Dict[str, typing.Any]]:
+    """The tool calls in a Claude reply, the first carrying the whole reply."""
+    calls: typing.List[typing.Dict[str, typing.Any]] = [
+        {
+            "id": getattr(block, "id", str(uuid.uuid4())[:16]),
+            "name": block.name.strip(),
+            "args": dict(block.input) if block.input else {},
+        }
+        for block in message.content
+        if getattr(block, "type", None) == "tool_use"
+    ]
+    if calls:
+        calls[0]["_anthropic_content"] = list(message.content)
+    return calls
+
+
 def stream_agent_step(
     client: typing.Optional[
         typing.Union[genai.Client, anthropic.Anthropic, ollama.Client]
@@ -633,59 +665,59 @@ def stream_agent_step(
     system_instructions: SystemInstructions = None,
     available_tools: typing.Optional[typing.List[typing.Callable]] = None,
     on_text: typing.Optional[typing.Callable[[str], None]] = None,
+    think: bool = False,
 ) -> typing.Tuple[str, typing.List[typing.Dict[str, typing.Any]]]:
     """Run one agent step with streaming: text deltas are emitted through
     on_text the moment they arrive, so TTS can start before the model finishes.
 
     Returns (text, tool_calls). tool_calls entries have the same shape as
-    helpers.agent._extract_all_tool_calls: {"id", "name", "args"} plus
-    "_gemini_content" on the first entry for faithful Gemini history replay
-    (preserves thought signatures, which Gemini 3 requires).
+    helpers.agent._extract_all_tool_calls: {"id", "name", "args"} plus, on the
+    first entry, the provider's raw reply for faithful history replay —
+    "_gemini_content" (thought signatures, which Gemini 3 requires) or
+    "_anthropic_content" (thinking blocks, which Claude requires back unchanged).
+    think: reason before calling tools (see _should_think).
     """
     if client is None:
         raise Exception("AI client not initialized.")
 
     emit = on_text if on_text is not None else (lambda _chunk: None)
 
-    parsed_tools = None
-    if available_tools:
-        parsed_tools = [
-            helpers_tools.function_to_schema(func) for func in available_tools
-        ]
+    parsed_tools = _tool_schemas(client, available_tools)
 
     if isinstance(client, anthropic.Anthropic):
 
         model = _get_anthropic_model(client)
-        text_parts: typing.List[str] = []
-        with client.messages.stream(
-            model=model,
-            max_tokens=_MAX_TOKENS,
-            messages=_to_anthropic_messages(messages),
-            system=_anthropic_system(system_instructions),
-            tools=_cached_tools(parsed_tools),  # type: ignore
-            thinking=_anthropic_thinking(bool(parsed_tools), model),
-        ) as stream:
-            for chunk in stream.text_stream:
-                if chunk:
-                    text_parts.append(chunk)
-                    emit(chunk)
-            final = stream.get_final_message()
+        thinking = _anthropic_thinking(bool(parsed_tools), model, think)
+        for attempt in range(2):
+            text_parts: typing.List[str] = []
+            try:
+                with client.messages.stream(
+                    model=model,
+                    max_tokens=_MAX_TOKENS,
+                    messages=_to_anthropic_messages(messages),
+                    system=_anthropic_system(system_instructions),
+                    tools=_cached_tools(parsed_tools),  # type: ignore
+                    thinking=thinking,
+                ) as stream:
+                    for chunk in stream.text_stream:
+                        if chunk:
+                            text_parts.append(chunk)
+                            emit(chunk)
+                    final = stream.get_final_message()
+                break
+            except Exception:
+                # The model rejected thinking: retry once without, but only if
+                # nothing was said yet, so no text repeats.
+                if attempt or thinking is anthropic.NOT_GIVEN or text_parts:
+                    raise
+                thinking = anthropic.NOT_GIVEN
 
-        tool_calls = [
-            {
-                "id": getattr(block, "id", str(uuid.uuid4())[:16]),
-                "name": block.name.strip(),
-                "args": dict(block.input) if block.input else {},
-            }
-            for block in final.content
-            if getattr(block, "type", None) == "tool_use"
-        ]
-        return "".join(text_parts), tool_calls
+        return "".join(text_parts), _anthropic_tool_calls(final)
 
     elif isinstance(client, genai.Client):
         model = _get_gemini_model(client)
         contents = _to_gemini_contents(messages)
-        config = _gemini_config(system_instructions, parsed_tools, model)
+        config = _gemini_config(system_instructions, parsed_tools, model, think)
 
         for attempt in range(2):
             text_parts = []
@@ -778,6 +810,19 @@ def get_text_from_response(
 
     elif isinstance(response, ollama.ChatResponse):
         return response.message.content
+
+
+def ask_plain(prompt: str) -> str:
+    """One model call with no tools and no history, for background summarising.
+
+    Deliberately not run_turn(): this is not a turn. It must not take
+    agent_lock, must not touch the conversation, and must not be able to call a
+    tool — it is summarising text, and nothing it reads should be able to act.
+    """
+    from helpers.bootstrap import get_ai_client
+
+    response = send_message(client=get_ai_client(), message=prompt)
+    return get_text_from_response(response) or ""
 
 
 def describe_readiness() -> typing.Tuple[bool, str]:

@@ -230,6 +230,22 @@ class TestToolSchemas(unittest.TestCase):
                 ollama_schema = function_to_schema_ollama(func)
                 self.assertEqual(ollama_schema["function"]["name"], func.__name__)
 
+    def test_schema_follows_the_live_client_not_the_config(self) -> None:
+        """Switching provider in Settings reloads the config at once, but the
+        client stays until a restart — and a Gemini-shaped tool list sent to
+        Claude failed every turn in between."""
+        from unittest import mock
+
+        import anthropic
+
+        from helpers import model
+
+        func = next(iter(self.jobs.values()))
+        with mock.patch.dict(os.environ, {"GEMINI_API_KEY": "x"}), \
+                mock.patch("helpers.config.Config.get", side_effect=lambda key, default=None: "gemini" if key == "ai.provider" else default):
+            schema = model._tool_schemas(anthropic.Anthropic(api_key="test"), [func])[0]
+        self.assertIn("input_schema", schema)
+
 
 if __name__ == "__main__":
     sys.exit(0 if unittest.main(exit=False).result.wasSuccessful() else 1)

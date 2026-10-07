@@ -344,8 +344,10 @@ def _prep_for(event: typing.Dict[str, typing.Any]) -> str:
         if person
     ][:_PREP_ATTENDEES]
     if people:
+        from helpers.people import recent_mail
+
         parts.append("With " + ", ".join(people) + ".")
-        recent = _recent_mail_with(people)
+        recent = recent_mail(people, days=_PREP_MAIL_DAYS, limit=_PREP_MAIL_HITS)
         if recent:
             parts.append(recent)
 
@@ -357,32 +359,6 @@ def _prep_for(event: typing.Dict[str, typing.Any]) -> str:
         parts.append(related)
 
     return " ".join(parts)
-
-
-def _recent_mail_with(people: typing.List[str]) -> str:
-    if not _module_on("gmail"):
-        return ""
-    from helpers.registry import ServiceRegistry
-
-    gmail = ServiceRegistry.get_service_instance("gmail")
-    if gmail is None:
-        return ""
-
-    # Gmail's own OR syntax in one query: one round trip for the whole meeting
-    # rather than one per attendee.
-    addresses = " OR ".join(f"from:{person} OR to:{person}" for person in people)
-    try:
-        messages = gmail.search_messages(
-            f"({addresses}) newer_than:{_PREP_MAIL_DAYS}d",
-            max_results=_PREP_MAIL_HITS,
-            folder="anywhere",
-        )
-    except Exception:
-        return ""
-    if not messages:
-        return ""
-    subjects = ", ".join(f"'{m.subject.strip() or '(no subject)'}'" for m in messages)
-    return f"Recent mail with them: {subjects}."
 
 
 def _notes_mentioning(title: str) -> str:

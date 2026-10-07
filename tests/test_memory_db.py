@@ -104,6 +104,44 @@ class TestMemoryDb(unittest.TestCase):
         self.assertTrue(self.db.remove_fact("preferred_units"))
         self.assertFalse(self.db.remove_fact("preferred_units"))
 
+    def test_prompt_keeps_stated_and_newest_facts_not_the_first_letters(self) -> None:
+        """The prompt used to take the first 40 facts by name, so the learner's
+        'writing_style' and anything else late in the alphabet silently fell out."""
+        from helpers import profile
+
+        conn = self.db._get_conn()
+        for i in range(45):
+            self.db.set_fact(f"a_{i:02d}", "old guess", source="auto")
+        self.db.set_fact("writing_style", "short and friendly", source="auto")
+        self.db.set_fact("zoo_pass", "the user has a zoo pass")
+        conn.execute("UPDATE facts SET ts = '2026-01-01T00:00:00' WHERE key LIKE 'a_%'")
+        conn.execute("UPDATE facts SET ts = '2026-10-01T00:00:00' WHERE key = 'writing_style'")
+        conn.execute("UPDATE facts SET ts = '2025-01-01T00:00:00' WHERE key = 'zoo_pass'")
+        conn.commit()
+
+        text = profile.Profile.as_text()
+        self.assertIn("zoo pass", text)
+        self.assertIn("writing style", text)
+        self.assertEqual(text.count("old guess"), profile._MAX_PROMPT_FACTS - 2)
+
+    def test_a_fact_left_out_of_the_prompt_comes_back_when_asked_about(self) -> None:
+        from unittest import mock
+
+        from helpers import profile
+
+        for i in range(profile._MAX_PROMPT_FACTS):
+            self.db.set_fact(f"pref_{i:02d}", "likes tea")
+        self.db.set_fact("dentist", "the dentist is Dr Nowak on Main Street", source="auto")
+        conn = self.db._get_conn()
+        conn.execute("UPDATE facts SET ts = '2020-01-01T00:00:00' WHERE key = 'dentist'")
+        conn.commit()
+
+        with mock.patch("helpers.semantic.ready", return_value=False), \
+                mock.patch("helpers.semantic.warm"):
+            self.assertNotIn("Nowak", profile.Profile.as_text())
+            self.assertIn("Nowak", profile.Profile.relevant("when is my dentist appointment"))
+            self.assertEqual(profile.Profile.relevant("play some jazz"), "")
+
     def test_wipe_clears_everything(self) -> None:
         self.db.insert_turn("a", "b")
         self.db.set_fact("k", "v")

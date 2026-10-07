@@ -111,9 +111,12 @@ def _needs_ok(args: typing.Dict[str, typing.Any]) -> bool:
         return True
     from helpers.conversation import Conversation
     from helpers.turn_context import user_text
+    from helpers.untrusted import without_fenced
 
     said = [user_text()] + [m["content"] for m in Conversation.get_messages() if m["role"] == "user"]
-    return not any(_host_named(host, str(text)) for text in said)
+    # A forwarded message is stored beside the user's words, fenced. A link in
+    # it is exactly the kind this check exists to ask about.
+    return not any(_host_named(host, without_fenced(str(text))) for text in said)
 
 
 @register_job(

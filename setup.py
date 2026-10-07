@@ -6,8 +6,9 @@ Wony setup — the required, single-file installer.
 
 Sets the whole app up and leaves it working: picks/creates the Python
 environment, installs only the dependencies for the features you choose,
-writes .env / config.yaml and the required folders, builds the web chat UI with
-npm, then asks for every API key, credentials file, permission and preference
+writes .env / config.yaml and the required folders, fetches the ready-made web
+chat UI (or builds it with npm), then asks for every API key, credentials file,
+permission and preference
 those features need — checking each key against the service and running the
 Spotify and Google sign-ins right here. The preferences are the same ones the
 web app's Settings page offers, asked in the page's own words.
@@ -26,6 +27,12 @@ and may use what it put there (the app's own config reader, the Spotify and
 Google sign-in paths). The feature menu is a scrollable arrow-key checklist
 (space to toggle, enter to confirm); on a non-interactive terminal it falls
 back to a numeric toggle prompt.
+
+    python setup.py update
+
+After new code is in place (the tray's Update now runs it): reinstalls the
+packages of the features already on, refreshes the web UI and drops settings
+the new version no longer reads. Asks nothing.
 
     python setup.py wakeword
 
@@ -122,7 +129,7 @@ FEATURES = [
         "module": None,
         "default": True,
         "desc": "Run Wony in the background with a tray icon and a browser chat UI.",
-        "needs": "Node.js 20.19+ — setup builds the web UI for you. "
+        "needs": "Nothing — setup downloads the web UI for you. "
         "Start with: python wony.py   (then open the web UI URL it prints).",
     },
     {
@@ -248,7 +255,17 @@ FEATURES = [
         "module": "contacts",
         "default": False,
         "desc": "Look people up, and email or invite them by name.",
-        "needs": "The same Google OAuth client file as Gmail. Read only.",
+        "needs": "The same Google OAuth client file as Gmail. Read only until you allow changes.",
+    },
+    {
+        "key": "phone",
+        "label": "Phone calls",
+        "reqs": [],
+        "module": "phone",
+        "default": False,
+        "desc": "Say 'call Tom': Phone Link opens with his number, you press Call.",
+        "needs": "A Google account with Contacts (where the numbers come from), and "
+        "Windows' Phone Link app with your phone connected. Numbers never go to the AI.",
     },
     {
         "key": "google_accounts",
@@ -609,6 +626,9 @@ def _finalize(selected):
     if "browser" in keys and "web" not in keys:
         print(c("\n  ! Web browsing needs Web search — adding it too.", "33"))
         keys.add("web")
+    if "phone" in keys and "contacts" not in keys:
+        print(c("\n  ! Phone calls look numbers up in Google Contacts — adding it too.", "33"))
+        keys.add("contacts")
     return [f for f in FEATURES if f["key"] in keys]
 
 
@@ -912,6 +932,8 @@ def configure(chosen):
         step_google(keys, pending)
     if "home_assistant" in keys:
         step_home_assistant(env, pending)
+    if "phone" in keys:
+        step_phone()
     if "desktop" in keys:
         step_desktop()
     if "telegram" in keys:
@@ -1275,6 +1297,11 @@ def step_google(keys, pending):
             "May Wony create and change files in your Google Drive? (off: read only)",
             "modules.drive.allow_write",
         )
+    if "contacts" in wants:
+        gate(
+            "May Wony add and change phone numbers in your Google Contacts? (off: read only)",
+            "modules.contacts.allow_write",
+        )
 
     for line in _GOOGLE_SIGN_IN_NOTES:
         note(line)
@@ -1414,6 +1441,16 @@ def step_telegram(env, pending):
         ask_setting("modules.telegram.forward_notifications")
     else:
         pending.append("Telegram: no bot token yet.")
+
+
+def step_phone():
+    section("Phone calls")
+    note("Calls need two things besides this feature:")
+    note("  1. Google Contacts (ticked above) — that is where the numbers come from.")
+    note("     An Android phone already keeps its contacts there.")
+    note("  2. Phone Link — open it from the Start menu and connect your phone, then")
+    note("     Windows Settings → Apps → Default apps → Phone Link → set TEL to Phone Link.")
+    note("Wony opens Phone Link with the number filled in; you press Call.")
 
 
 def step_working_day():
@@ -1684,34 +1721,45 @@ def _web_built() -> bool:
         return False
 
 
-def build_web(chosen):
-    """Build the web chat UI, and return what is still missing.
+def build_web(chosen, refresh=False):
+    """Put the web chat UI in place, and return what is still missing.
 
     This is the one gap the app cannot report itself: without web/dist the API
     still answers every request, so the browser gets a working server that has
     decided the page does not exist ({"detail":"Not found"}). web/dist is not
     in the repo, so a fresh clone never has one.
+
+    The ready-made page from GitHub comes first, so nobody needs Node.js; a
+    local build is for changes to the page itself, or when there is none.
+    refresh: replace an existing page without asking (setup.py update).
     """
     if not any(f["key"] == "tray" for f in chosen):
         return []
 
     section("The web chat UI")
     built = _web_built()
-    if built:
-        note("Already built (web/dist).")
-        note("Rebuild it after every 'git pull' — the UI is not in the repo.")
-        if not (interactive() and confirm("Rebuild it now?", default=False)):
+    if built and not refresh:
+        note("Already in place (web/dist).")
+        if not (interactive() and confirm("Fetch it again?", default=False)):
             return []
+
+    repo_on_path()
+    from helpers.updates import download_web_ui
+
+    problem = download_web_ui(os.path.join(WEB, "dist"))
+    if not problem and _web_built():
+        ok("downloaded the web chat page.")
+        return []
+    note(f"Building it here instead: {problem}.")
 
     npm = _npm()
     if not npm:
-        warn("Node.js is not installed — the web UI cannot be built here.")
-        note(f"Install {NODE_MIN} ({NODE_INSTALL}), then:  {BUILD_BY_HAND}")
-        return (
-            []
-            if built
-            else [f"Web UI: not built — install Node.js, then: {BUILD_BY_HAND}"]
-        )
+        if built:
+            note("Keeping the page that was already there.")
+            return []
+        warn("No ready-made page could be fetched, and Node.js is not installed to build one.")
+        note("Check the internet connection and run install.bat again.")
+        return ["Web UI: not in place — run install.bat again once you are online."]
 
     outdated = _node_too_old()
     if outdated:
@@ -1973,10 +2021,10 @@ def next_steps(chosen, use_venv, pending):
     section("Done")
     show_pending(pending)
     tray = any(f["key"] == "tray" for f in chosen)
-    # The web UI is a built artifact, and skipping the build is silent: the API
+    # The web UI is a built artifact, and a missing one is silent: the API
     # answers fine and the browser is told the page does not exist.
     if tray and not _web_built():
-        print(c("\n  Build the web UI: ", "1") + BUILD_BY_HAND)
+        print(c("\n  The web page is missing: ", "1") + "run install.bat again once you are online.")
 
     py = os.path.relpath(sys.executable, ROOT) if use_venv else "python"
     # Matches install.bat's own closing line — one way to start Wony, not two
@@ -2030,10 +2078,31 @@ def cmd_configure():
     # Nothing is installed here, so the UI is not built either — but it is
     # still the reason a finished-looking install shows nothing.
     if "tray" in detected and not _web_built():
-        pending.append(f"Web UI: not built — {BUILD_BY_HAND}")
+        pending.append("Web UI: not in place — run install.bat again once you are online.")
     section("Done")
     show_pending(pending)
     print()
+
+
+def cmd_update():
+    """Bring an installed Wony up to the code now on disk. Asks nothing: the
+    tray's Update now runs it with no one at a terminal."""
+    _relaunch_under_setup_python()
+    section("Updating Wony")
+    _, detected = detect()
+    chosen = [f for f in FEATURES if f["key"] in detected]
+    failed = []
+    # Every feature already on, not only new ones: the new code may need a
+    # package its feature did not before. pip skips what is already satisfied.
+    for rf in ["core.txt"] + list(dict.fromkeys(rf for f in chosen for rf in f["reqs"])):
+        if os.path.exists(os.path.join(REQ, rf)) and run_pip(["-r", os.path.join(REQ, rf)]) != 0:
+            failed.append(rf)
+    _ensure_gpu_onnxruntime(chosen, [])
+    prune_config()
+    pending = build_web(chosen, refresh=True)
+    show_pending(pending + [f"Packages: {rf} failed to install" for rf in failed])
+    if failed:
+        sys.exit(1)
 
 
 def main():
@@ -2042,6 +2111,9 @@ def main():
         return
     if len(sys.argv) > 1 and sys.argv[1] == "configure":
         cmd_configure()
+        return
+    if len(sys.argv) > 1 and sys.argv[1] == "update":
+        cmd_update()
         return
 
     print(c("\n  Wony setup", "1;36"))

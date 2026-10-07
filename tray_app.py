@@ -243,10 +243,30 @@ def run_tray() -> None:
                 message = f"Update check failed: {e}"
             try:
                 icon.notify(message[:250], title=f"{assistant_name} — updates")
+                icon.update_menu()  # shows Update now
             except Exception:
                 print(message)
 
         threading.Thread(target=_check, daemon=True, name="update-check").start()
+
+    def _update_visible(item) -> bool:
+        from helpers.updates import available
+
+        return available()
+
+    def _on_update(icon, item) -> None:
+        def _update() -> None:
+            from helpers.updates import apply
+
+            _toast("Updating — this can take a few minutes. Wony restarts when it is done.", "update")
+            worked, message = apply()
+            _toast(message, "update")
+            if worked:
+                _do_restart()
+            else:
+                icon.update_menu()
+
+        threading.Thread(target=_update, daemon=True, name="update").start()
 
     def _accounts_needing_sign_in() -> typing.List[str]:
         try:
@@ -353,6 +373,7 @@ def run_tray() -> None:
         pystray.MenuItem("Sign in to Google again", _on_google_sign_in, visible=_google_sign_in_visible),
         pystray.MenuItem("Settings", _on_settings),
         pystray.MenuItem("Check for updates", _on_check_updates),
+        pystray.MenuItem("Update now", _on_update, visible=_update_visible),
         pystray.MenuItem(_toggle_label, _on_toggle),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Restart", _on_restart),

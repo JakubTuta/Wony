@@ -130,6 +130,10 @@ class DriveSettings(BaseModel):
     allow_write: bool = False
 
 
+class ContactsSettings(BaseModel):
+    allow_write: bool = False
+
+
 class DesktopSettings(BaseModel):
     allow_actions: bool = False
     # Ships off: a window title names documents, browser tabs and who you are
@@ -163,6 +167,7 @@ class ModulesSettings(BaseModel):
     gmail: GmailSettings = Field(default_factory=GmailSettings)
     calendar: CalendarSettings = Field(default_factory=CalendarSettings)
     drive: DriveSettings = Field(default_factory=DriveSettings)
+    contacts: ContactsSettings = Field(default_factory=ContactsSettings)
     desktop: DesktopSettings = Field(default_factory=DesktopSettings)
     maps: MapsSettings = Field(default_factory=MapsSettings)
     mcp: McpSettings = Field(default_factory=McpSettings)

@@ -1,0 +1,45 @@
+name: Web UI build
+
+# Publishes the built chat page so nobody installing Wony needs Node.js.
+# helpers/updates.py downloads wony-web-<tree hash of web/>.zip for a git
+# checkout, and wony-web-latest.zip for a ZIP copy.
+
+on:
+  push:
+    branches: [main]
+    paths: ["web/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build
+        working-directory: web
+        run: |
+          npm ci
+          npm run lint
+          npm run build
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tree=$(git rev-parse HEAD:web)
+          (cd web/dist && zip -qr "$GITHUB_WORKSPACE/wony-web-$tree.zip" .)
+          cp "wony-web-$tree.zip" wony-web-latest.zip
+          gh release view web-ui >/dev/null 2>&1 || \
+            gh release create web-ui --prerelease --title "Web UI builds" \
+              --notes "Built chat pages, downloaded by setup.py. Not a Wony release."
+          gh release upload web-ui "wony-web-$tree.zip" wony-web-latest.zip --clobber

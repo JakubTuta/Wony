@@ -20,8 +20,9 @@ sys.path.insert(0, _REPO_ROOT)
 # 73 before the first audit, 52 after it, 47 once the watchers became triggers
 # and near-duplicates merged (ask_question, list_mcp_servers, click_at,
 # close_computer). +2 maps (find_places, directions), +2 Drive (find_files,
-# edit_file), +1 contacts (find_contact). Raise it on purpose, and say what for.
-_JOB_BUDGET = 52
+# edit_file), +1 contacts (now `contact`), +1 undo (reversible changes stopped
+# asking first), +1 phone (call_person). Raise it on purpose, and say what for.
+_JOB_BUDGET = 54
 
 
 def _is_job(obj) -> bool:
@@ -67,7 +68,7 @@ class TestJobBudget(unittest.TestCase):
     def test_retired_names_stay_gone(self) -> None:
         jobs = declared_jobs()
         for name in ("ask_question", "list_mcp_servers", "watch_inbox", "watch_calendar",
-                     "click_at", "click_text", "close_computer", "fetch_url"):
+                     "click_at", "click_text", "close_computer", "fetch_url", "find_contact"):
             self.assertNotIn(name, jobs)
 
 

@@ -8,7 +8,8 @@ timers, maps and the web — using whatever you switch on, and nothing you don't
 - **Everything is off by default.** It cannot send an email, change your
   calendar or unlock a door until you allow it.
 - **It asks before it acts.** Sending, deleting, cancelling or shutting down is
-  read back to you first, and only happens once you say yes.
+  read back to you first, and only happens once you say yes. Small changes —
+  a light, a list, a playlist, a timer — just happen; say _"undo"_ to take one back.
 - **Your data stays on your machine** — history, notes and reminders live in a
   file next to the app. Only what you ask goes to your AI provider.
 
@@ -17,8 +18,8 @@ timers, maps and the web — using whatever you switch on, and nothing you don't
 ## Install
 
 1. **Get the code.** Download this folder, or `git clone` it.
-2. **Double-click `install.bat`.** It checks for Python and Node.js (and offers to
-   install them), then asks which features you want (arrow keys to move, space to
+2. **Double-click `install.bat`.** It checks for Python (and offers to install
+   it), then asks which features you want (arrow keys to move, space to
    tick, Enter to confirm), then for the keys and sign-ins those features need
    and how you want Wony to behave (its personality, whether it may speak up on
    its own or learn about you, its voice). Press Enter to skip anything you do
@@ -33,6 +34,10 @@ handy. Setup also offers to start Wony when you log in.
 Want a feature you skipped? Double-click `install.bat` again: it keeps your keys
 and settings and only installs what is new. To redo just the keys and sign-ins,
 open a terminal in this folder and run `python setup.py configure`.
+
+**Updating:** right-click the tray icon → **Check for updates**. When there is
+one, **Update now** appears in the same menu: it downloads the new version,
+installs what it needs and restarts Wony. Your keys, settings and history stay.
 
 You need one AI service:
 
@@ -71,9 +76,11 @@ _"what's in the PDF Marta sent"_, _"email Anna the notes"_, _"what's on my
 calendar tomorrow"_, _"pharmacy near me"_, _"find the file about my lease"_,
 _"go to this page and tell me the battery size"_, _"play some jazz"_, _"turn off
 the kitchen light"_, _"remember I prefer Fahrenheit"_, _"what did we talk about on
-Monday"_. Ask _"what can you do"_ any time.
+Monday"_, _"what's going on with Anna"_. Ask _"what can you do"_ any time.
 
-Say _"thanks"_, _"stop"_ or _"that's all"_ to end a spoken conversation.
+Say _"thanks"_, _"stop"_ or _"that's all"_ to end a spoken conversation. When
+Wony asks _"should I send it?"_, a plain _"yes"_ or _"no"_ is enough. _"Undo"_
+takes back the last small change from the past 15 minutes.
 
 ### Asking Wony about itself
 
@@ -109,14 +116,15 @@ away — a timer that fired, new email it spotted.
 
 Right-click it for: **Open in web**, **Listen now**, **Stop speaking**, **Mute**,
 **Wake word on/off**, **Sign in to Google again** (only when Google has signed
-Wony out), **Settings**, **Check for updates**, **Pause assistant**, **Restart**,
+Wony out), **Settings**, **Check for updates**, **Update now** (once a check
+found one), **Pause assistant**, **Restart**,
 **Exit**.
 
 ---
 
 ## What Wony may do on its own
 
-These nine start **off**. Nothing else can turn them on. Change them in
+These ten start **off**. Nothing else can turn them on. Change them in
 **Settings → What Wony may do on its own**.
 
 | Switch                           | Off (the default)                       | On                                          |
@@ -124,6 +132,7 @@ These nine start **off**. Nothing else can turn them on. Change them in
 | Change my mailbox                | Writes a draft in Gmail for you to send | Sends, deletes and marks mail read          |
 | Change my calendar and send invitations | Tells you what to add            | Creates, edits and deletes events, and emails invitations |
 | Change my Drive files            | Finds and reads your files              | Creates Docs, adds to Docs and Sheets, uploads |
+| Change my contacts               | Looks people up and calls them          | Saves phone numbers to your Google Contacts |
 | Unlock doors and open the garage | Lights and blinds still work            | Locks, garage and alarms too                |
 | Type and click for me            | Can look at the screen                  | Can type, click, open and write files       |
 | Install MCP tool servers         | Tells you the command                   | Starts the program on this computer         |
@@ -157,8 +166,8 @@ instructions. On top of that it asks before it:
 - visits a page you did not name or search for;
 - reads a file outside your Desktop, Documents and Downloads that you did not
   name, or opens a program or script by path;
-- saves a fact, a note, a document or a watcher right after reading something it
-  did not get from you;
+- saves a fact, a document or a watcher after reading something it did not get
+  from you — in that request or the ones right after;
 - sets a timer that runs another command.
 
 It never reads or writes its own keys, settings, logs or database. The chat page
@@ -190,6 +199,7 @@ incomplete simply stays off — nothing crashes, and Features says what is missi
 | Google Calendar                              | the same OAuth file                                                            |
 | Google Drive, Docs & Sheets                  | the same OAuth file                                                            |
 | Google Contacts                              | the same OAuth file                                                            |
+| Phone calls — "call Tom"                     | a Google account with Contacts, and Phone Link with your phone connected (see below) |
 | Multiple Google accounts                     | needs a Google feature                                                         |
 | Home Assistant                               | a long-lived token from your Home Assistant profile                            |
 | Desktop control                              | none                                                                           |
@@ -232,6 +242,37 @@ terms. Wony tells you once when it happens, warns you the day before, and
 
 Want a second account? Say **"add google account work"** — the same consent —
 then ask for one by name ("what's in my work inbox") or let Wony search all.
+
+### Phone calls
+
+_"Call Tom"_ opens Windows' **Phone Link** app with Tom's number filled in. You
+press **Call**, and the call goes out from your own phone with the sound on your
+PC. Wony never presses Call for you.
+
+**What it needs — both of these:**
+
+1. **A Google account with Contacts.** Tick _Google Contacts_ in setup and sign
+   in. That is where Wony finds numbers. An Android phone already keeps its
+   contacts in your Google account; on an iPhone, turn on Google under Settings →
+   Contacts → Accounts so they sync there.
+2. **Phone Link with your phone connected.** Open Phone Link from the Start menu
+   and pair your phone. Then Windows Settings → Apps → **Default apps** → Phone
+   Link → set **TEL** to Phone Link.
+
+If either is missing, Wony says which. If someone has several numbers it asks
+which one: _"mobile or work?"_. Calls only work when you are at the PC, not from
+Telegram.
+
+**Saving a number:** _"add Ann's phone as 600 700 800"_ or _"save that as Tom's
+work number"_. It adds the number to Ann in your Google Contacts, or creates Ann
+if there is no one by that name. Turn on **Change my contacts** first (Settings →
+What Wony may do on its own); _"undo"_ takes it back.
+
+**Numbers stay on this computer.** Your AI provider never gets a phone number:
+it hears "Tom" and "his mobile", and a number you say reaches it as
+_[number 1]_ — the digits are put back on your PC before anything is saved or
+dialled. _"What's Tom's number"_ shows it on your screen (and in the bell)
+without it passing through the AI.
 
 ### Maps & places
 
@@ -353,7 +394,7 @@ small model; see [docs/developers.md](docs/developers.md).
 | ------------------------------------ | ---------------------------------------------------------- |
 | Nothing happens when I open Wony.bat | Double-click `install.bat` first                           |
 | Tray icon never appears              | Check the hidden icons arrow next to the clock             |
-| The chat page is blank               | Node.js was missing when you installed — install it, then run `install.bat` again |
+| The chat page is blank               | The page couldn't be downloaded during setup — run `install.bat` again while online |
 | "No AI service is set up yet"        | Settings → AI, paste a key or pick Ollama                  |
 | It answers but never speaks          | Check **Mute** in the tray menu, and that Voice is installed |
 | It mishears or cuts you off          | Raise **Pause before answering** in Settings               |
@@ -399,6 +440,8 @@ What leaves this computer, and only when a feature you switched on needs it:
 | Home Assistant                          | Device commands, to the address you configured, not the internet | A smart-home request      |
 | Shazam                                  | An audio fingerprint, not the recording itself     | Song recognition                            |
 | Telegram                                | Your messages and voice notes, Wony's replies, and reminders sent to your chat | Once you pair a chat |
+| GitHub                                  | Nothing but the download request                   | Installing, and when you check for or install an update |
+| Your phone, through Phone Link          | The number to call                                 | When you ask Wony to call someone          |
 
 No telemetry: nothing is sent back to whoever made Wony.
 

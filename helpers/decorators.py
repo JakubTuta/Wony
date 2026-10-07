@@ -29,8 +29,8 @@ def is_agent_active() -> bool:
 # this turn was a quiet-on-success job (mute=True) that actually succeeded,
 # the outcome is already audible/visible on its own (e.g. music started) and
 # narrating it too just wastes time under a duck. Only ever touched while
-# agent_lock is held (agent runs are serialized process-wide), so a plain
-# module-level list is safe without its own lock.
+# agent_lock is held (agent runs are serialized process-wide); the calls of one
+# step may run on worker threads, and list.append is atomic, so no own lock.
 _tool_outcomes: typing.List[typing.Tuple[str, bool, bool, bool]] = []  # (name, quiet, one_message, ok)
 
 
@@ -55,9 +55,9 @@ def turn_is_quiet_success() -> bool:
 
 # Set from inside a job when this particular call reports a value instead of
 # performing the action the job is normally muted for. Consumed (and cleared)
-# by capture_response. Only ever touched while agent_lock is held, like
-# _tool_outcomes above.
-_answering: bool = False
+# by capture_response. Per thread: independent calls of one step run side by
+# side (helpers/agent.py), and one call's answer is not another's.
+_answering = threading.local()
 
 
 def treat_as_answer() -> None:
@@ -67,8 +67,7 @@ def treat_as_answer() -> None:
     the voice session stays open even when the job is declared mute /
     one_message for its normal action.
     """
-    global _answering
-    _answering = True
+    _answering.value = True
 
 
 def turn_wants_one_message() -> bool:
@@ -101,8 +100,6 @@ def capture_response(
     def decorator(f: typing.Callable[..., typing.Any]) -> typing.Callable[..., typing.Optional[str]]:
         @functools.wraps(f)
         def wrapper(*args, **kwargs) -> typing.Optional[str]:
-            global _answering
-
             # Lazy imports to avoid circular dependencies
             try:
                 from helpers.audio import Audio
@@ -120,11 +117,11 @@ def capture_response(
                 else "Unknown"
             )
 
-            _answering = False
+            _answering.value = False
             try:
                 response = f(*args, **kwargs)
             except Exception as e:
-                _answering = False
+                _answering.value = False
                 error_msg = f"Error ({class_name}.{function_name}): {e}"
                 print(error_msg)
 
@@ -141,8 +138,8 @@ def capture_response(
 
             str_response = str(response) if response is not None else ""
 
-            answered = _answering
-            _answering = False
+            answered = getattr(_answering, "value", False)
+            _answering.value = False
             quiet = mute and not answered
             ends_session = one_message and not answered
 

@@ -7,12 +7,15 @@ config.yaml
 config.yaml.bak
 .wony_setup
 .wony_lock
+.wony_version
+.wony_files
 screenshots/
 logs/
 .vscode/
 *.db
 *.onnx
 *.tflite
+models/*.bin
 
 training/*
 !training/train_hey_wony.ipynb

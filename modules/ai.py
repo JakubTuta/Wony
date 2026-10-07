@@ -56,15 +56,17 @@ def _foreground_window() -> str:
         return ""
 
 
-def build_agent_system_prompt() -> typing.List[str]:
+def build_agent_system_prompt(request: str = "") -> typing.List[str]:
     """System prompt for the multi-step agent loop, as [stable, volatile] blocks.
 
     Split so the stable half can sit inside the provider's cached prefix: the
     clock ticks every minute and would otherwise invalidate the whole prompt —
-    and everything after it — on every single request.
+    and everything after it — on every single request. What depends on the
+    request (`request`: what the user just said) goes in the volatile half too.
     """
     import datetime
 
+    from helpers.profile import Profile
     from helpers.settings import capabilities
 
     working = {cap.key for cap in capabilities()["working"]}
@@ -73,6 +75,12 @@ def build_agent_system_prompt() -> typing.List[str]:
         f"Current local date and time: {now.strftime('%A, %B %d, %Y, %H:%M')} ({now.tzname()})."
         " Use this for any time, date, or scheduling reasoning — never guess the date."
     )
+    earlier = Conversation.summary()
+    if earlier:
+        volatile += f"\nEarlier in this conversation (your own notes): {earlier}"
+    relevant = Profile.relevant(request)
+    if relevant:
+        volatile += f"\n{relevant}"
     looking_at = _foreground_window()
     if looking_at:
         # What is in front of the user is what "this" and "that error" refer to.
@@ -185,6 +193,10 @@ def build_agent_system_prompt() -> typing.List[str]:
         " value, a menu name or a file to edit. Users change things on the Settings page,"
         " not by editing files, and paste keys there, never into this chat. You cannot"
         " change a setting yourself. If the lookup has no answer, say so."
+        "\n\n15. NUMBERS STAY PRIVATE: phone numbers the user says reach you as"
+        " placeholders like [number 1], and older ones as [a number]. Pass a"
+        " placeholder to a tool exactly as written; never ask for the digits or"
+        " guess them. Contacts' numbers are never shown to you — name the person."
         "\nReply in plain prose. No bullet points unless listing multiple items."
     )
     return [stable, volatile]
@@ -291,9 +303,21 @@ class AI:
                 return "Error: No fact provided to remember."
             # A model-supplied topic is what makes "I like tea" overwrite "I like
             # coffee" instead of accumulating a near-duplicate on every restatement.
-            key = re.sub(r"[^a-z0-9_]+", "_", (topic or fact).lower().strip())[:40].strip("_")
-            Profile.set(key or "note", fact)
-            return f"Remembered ({key or 'note'}): {fact}"
+            key = re.sub(r"[^a-z0-9_]+", "_", (topic or fact).lower().strip())[:40].strip("_") or "note"
+            before = Profile.get(key)
+            Profile.set(key, fact)
+
+            def revert() -> str:
+                if before is None:
+                    Profile.remove(key)
+                else:
+                    Profile.set(key, before)
+                return ""
+
+            from helpers import undo
+
+            undo.push(f"remembering '{fact}'", revert)
+            return f"Remembered ({key}): {fact}"
 
         if wanted in ("forget", "remove", "delete"):
             key = topic or fact
@@ -315,7 +339,7 @@ class AI:
     @staticmethod
     def recall(
         query: str = "",
-        scope: typing.Literal["all", "conversations", "facts", "documents"] = "all",
+        scope: typing.Literal["all", "conversations", "facts", "documents", "person"] = "all",
         date: str = "",
         limit: int = 5,
     ) -> str:
@@ -324,12 +348,15 @@ class AI:
         earlier sessions, saved facts about the user, and indexed documents — and
         returns what matches. Searches by meaning as well as by wording, so it answers
         "what did we say about the dentist", "what did we talk about on Tuesday",
-        "what do you know about me" and "what does my lease say" alike.
+        "what do you know about me" and "what does my lease say" alike. With scope
+        "person" it gathers everything on one person: their contact details, what the
+        user said about them, recent mail and meetings with them.
 
         Args:
-            query (str): What to look for. Leave empty to get the most recent exchanges.
-            scope (str): Where to look: "all" (the default), "conversations", "facts"
-                or "documents".
+            query (str): What to look for, or the person's name for scope "person".
+                Leave empty to get the most recent exchanges.
+            scope (str): Where to look: "all" (the default), "conversations", "facts",
+                "documents" or "person".
             date (str): Restrict to a single day, e.g. "yesterday", "last Monday", "2024-12-25".
             limit (int): How many results to return (default 5).
 
@@ -345,6 +372,10 @@ class AI:
             return AI._stored_facts(query)
         if where in ("documents", "docs", "document"):
             return AI._document_matches(query, count)
+        if where == "person":
+            from helpers import people
+
+            return people.about(query)
 
         if where == "all" and query and not date:
             # One query, every store: the user asking "what do you know about my
@@ -432,16 +463,20 @@ class AI:
         if not results:
             return ""
 
+        from helpers.private_numbers import hide
+
         lines = [f"Past exchanges about '{query}' ({len(results)} result(s)):"]
         for result in results:
             text = result["text"]
             preview = text[:300] + ("…" if len(text) > 300 else "")
             lines.append(f"\n[{result['source_type']}]")
             lines.append(f"  {preview}")
-        return "\n".join(lines)
+        return hide("\n".join(lines))
 
     @staticmethod
     def _render_turns(turns: typing.List[typing.Dict], header: str) -> str:
+        from helpers.private_numbers import hide
+
         lines = [f"{header} ({len(turns)} exchange(s)):"]
         for turn in turns:
             stamp = turn.get("ts", "")[:16].replace("T", " ")
@@ -451,7 +486,8 @@ class AI:
             if answer:
                 preview = answer[:200] + ("…" if len(answer) > 200 else "")
                 lines.append(f"  Assistant: {preview}")
-        return "\n".join(lines)
+        # Past turns keep the numbers the user said; the model never gets them.
+        return hide("\n".join(lines))
 
     @register_job(module_name="ai", confirms=_manage_documents_needs_confirm)
     @capture_response

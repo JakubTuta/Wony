@@ -370,7 +370,7 @@ class Telegram:
         except TelegramError:
             pass  # cosmetic
 
-        result = run_turn(request.text, at_machine=False, quoted=request.quoted)
+        result = run_turn(request.text, at_machine=False, quoted=request.quoted, think=True)
         reply = result.text.strip() or "Done."
         if request.heard:
             reply = f"Heard: \"{request.heard}\"\n\n{reply}"

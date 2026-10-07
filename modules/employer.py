@@ -272,7 +272,7 @@ class Employer:
             thinking_timer.start()
 
         try:
-            result = run_turn(user_input, on_text=on_text)
+            result = run_turn(user_input, on_text=on_text, think=not audio)
         finally:
             if thinking_timer is not None:
                 thinking_timer.cancel()
@@ -332,6 +332,22 @@ class Employer:
         if running:
             return f"Active background jobs: {', '.join(running)}."
         return "No background jobs are currently running."
+
+    @register_job(module_name="employer")
+    @capture_response
+    @staticmethod
+    def undo() -> str:
+        """
+        [SYSTEM CONTROL JOB] Takes back the last change made at the user's request in
+        the past 15 minutes: a light or device switched, an item put on or taken off a
+        list, a song added to or removed from a playlist, a timer set, a fact remembered.
+
+        Returns:
+            str: What was taken back, or that there is nothing to undo.
+        """
+        from helpers import undo
+
+        return undo.undo()
 
     @register_job(module_name="employer", confirms=True)
     @staticmethod

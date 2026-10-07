@@ -12,12 +12,7 @@ _local = threading.local()
 
 
 @contextlib.contextmanager
-def user_request(text: str = "", at_machine: bool = True) -> typing.Iterator[None]:
-    """Mark everything inside as started by the user, saying `text`.
-
-    at_machine=False for a request that arrived from a phone: the user is
-    there to answer questions, but nobody is sitting at the PC.
-    """
+def _scope(present: bool, at_machine: bool, text: str) -> typing.Iterator[None]:
     previous = (
         getattr(_local, "present", False),
         getattr(_local, "at_machine", False),
@@ -25,7 +20,7 @@ def user_request(text: str = "", at_machine: bool = True) -> typing.Iterator[Non
         getattr(_local, "untrusted", False),
         getattr(_local, "search_hrefs", None),
     )
-    _local.present, _local.at_machine = True, at_machine
+    _local.present, _local.at_machine = present, at_machine
     _local.text, _local.untrusted, _local.search_hrefs = text, False, set()
     try:
         yield
@@ -34,6 +29,54 @@ def user_request(text: str = "", at_machine: bool = True) -> typing.Iterator[Non
             _local.present, _local.at_machine, _local.text,
             _local.untrusted, _local.search_hrefs,
         ) = previous
+
+
+def user_request(text: str = "", at_machine: bool = True) -> typing.ContextManager[None]:
+    """Mark everything inside as started by the user, saying `text`.
+
+    at_machine=False for a request that arrived from a phone: the user is
+    there to answer questions, but nobody is sitting at the PC.
+    """
+    return _scope(True, at_machine, text)
+
+
+def unattended() -> typing.ContextManager[None]:
+    """A turn nobody asked for (a trigger, a timer). Nobody is present, and what
+    it reads does not stay marked on the thread for the next one."""
+    return _scope(False, False, "")
+
+
+def capture() -> typing.Tuple[typing.Any, ...]:
+    """This thread's turn state, to carry onto a worker thread (helpers/agent.py
+    runs independent tool calls side by side)."""
+    return (
+        getattr(_local, "present", False),
+        getattr(_local, "at_machine", False),
+        getattr(_local, "text", ""),
+        getattr(_local, "untrusted", False),
+        set(getattr(_local, "search_hrefs", None) or ()),
+    )
+
+
+@contextlib.contextmanager
+def carried(state: typing.Tuple[typing.Any, ...]) -> typing.Iterator[typing.Dict[str, typing.Any]]:
+    """Run on a worker thread as the turn that captured `state`. Yields a dict
+    that holds, afterwards, what the work marked — hand it to absorb() on the
+    turn's own thread, or an email read there would not count as read."""
+    seen: typing.Dict[str, typing.Any] = {}
+    with _scope(state[0], state[1], state[2]):
+        _local.untrusted, _local.search_hrefs = state[3], set(state[4])
+        try:
+            yield seen
+        finally:
+            seen["untrusted"], seen["search_hrefs"] = _local.untrusted, set(_local.search_hrefs)
+
+
+def absorb(seen: typing.Dict[str, typing.Any]) -> None:
+    if seen.get("untrusted"):
+        mark_untrusted_read()
+    if seen.get("search_hrefs"):
+        record_search_hrefs(seen["search_hrefs"])
 
 
 def user_present() -> bool:

@@ -169,6 +169,81 @@ class TestSanitizeCalls(unittest.TestCase):
         self.assertTrue(reloaded[0]["needs_confirm"])
 
 
+class TestConfirmButton(unittest.TestCase):
+    """The chat's Confirm button runs a call the model asked about. A "yes"
+    typed afterwards used to run it a second time, and the history still said
+    NOT DONE."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.client = _load_app()
+
+    def test_the_click_spends_the_armed_call_and_tells_the_history(self) -> None:
+        from unittest import mock
+
+        from helpers import confirm
+        from helpers.conversation import Conversation
+        from helpers.registry import ServiceRegistry
+        from helpers.turn_context import user_request
+
+        sent = []
+
+        def send_note(to: str, body: str = "", cc: str = "") -> str:
+            """Sends a note."""
+            sent.append(to)
+            return f"Sent to {to}."
+
+        args = {"to": "anna", "body": "hi"}
+        with mock.patch.dict(ServiceRegistry._jobs, {"send_note": send_note}), \
+                mock.patch.dict(ServiceRegistry._job_confirms, {"send_note": True}), \
+                mock.patch.object(Conversation, "_turns", []), \
+                mock.patch("helpers.conversation._try_persist", return_value=None):
+            confirm.begin_turn()
+            with user_request("send it"):
+                self.assertIsNotNone(confirm.check("send_note", args))
+            Conversation.record_turn(
+                "send anna a note", "Should I send it?", emit=False,
+                calls=[{"name": "send_note", "args": {**args, "cc": ""}, "result": "NOT DONE", "needs_confirm": True}],
+            )
+
+            resp = self.client.post("/api/invoke", json={"name": "send_note", "args": args})
+            self.assertTrue(resp.json()["ok"])
+            self.assertEqual(sent, ["anna"])
+
+            # A later "yes" re-sends the call: it must ask again, not run again.
+            confirm.begin_turn()
+            with user_request("yes"):
+                self.assertIsNotNone(confirm.check("send_note", args))
+
+            turn = Conversation._turns[-1]
+            self.assertIn("Sent to anna.", turn["assistant"])
+            self.assertNotIn("needs_confirm", turn["calls"][0])
+        confirm.reset()
+
+
+class TestConfirmNormalizesArgs(unittest.TestCase):
+    def test_a_blank_or_default_argument_does_not_make_it_ask_again(self) -> None:
+        from unittest import mock
+
+        from helpers import confirm
+        from helpers.registry import ServiceRegistry
+        from helpers.turn_context import user_request
+
+        def mail(to: str, cc: str = "", urgent: bool = False) -> str:
+            """Mails."""
+            return "ok"
+
+        with mock.patch.dict(ServiceRegistry._jobs, {"mail": mail}), \
+                mock.patch.dict(ServiceRegistry._job_confirms, {"mail": True}):
+            confirm.begin_turn()
+            with user_request("mail anna"):
+                self.assertIsNotNone(confirm.check("mail", {"to": "anna"}))
+            confirm.begin_turn()
+            with user_request("yes"):
+                self.assertIsNone(confirm.check("mail", {"to": "anna ", "cc": "", "urgent": False}))
+        confirm.reset()
+
+
 class TestPinsEndpoint(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
