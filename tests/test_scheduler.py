@@ -103,6 +103,9 @@ class TestReminders(unittest.TestCase):
             patcher = mock.patch(f"helpers.memory_db.{name}")
             patcher.start()
             self.addCleanup(patcher.stop)
+        notify_patch = mock.patch("modules.scheduler.notify")
+        self.notify = notify_patch.start()
+        self.addCleanup(notify_patch.stop)
         self.sched = _bare_scheduler()
 
     def tearDown(self) -> None:
@@ -183,6 +186,33 @@ class TestReminders(unittest.TestCase):
         while not _fired and time.time() < deadline:
             time.sleep(0.1)
         self.assertEqual(_fired, [("lamp", "on")])
+
+    def test_an_actions_result_reaches_the_bell(self) -> None:
+        """A timer that turns the lights off at night has to say so somewhere
+        other than a speaker nobody may be listening to."""
+        self.sched._run_action({"job": "_fake_device", "args": {"target": "lamp", "action": "off"}})
+        self.notify.assert_called_once()
+        self.assertIn("Turned off lamp", self.notify.call_args.args[0])
+
+    def test_a_scheduled_routine_runs_as_a_turn(self) -> None:
+        """Calling the routine job directly only returns its steps — the timer
+        used to read those instructions aloud instead of doing them."""
+        from helpers.registry import ServiceRegistry
+        from helpers.turn import TurnResult
+
+        job = mock.Mock(return_value="The user's saved 'briefing' routine says: weather")
+        done = TurnResult(text="Morning! 14 degrees, two meetings.", calls=[], timed_out=False, error=None)
+        with mock.patch.object(ServiceRegistry, "get_all_jobs", return_value={"routine": job}), \
+             mock.patch("modules.routines.instructions", return_value="The user's saved 'briefing' routine says: weather"), \
+             mock.patch("helpers.turn.run_turn", return_value=done) as turn:
+            self.sched._run_action({"job": "routine", "args": {"name": "briefing"}})
+
+        job.assert_not_called()
+        prompt = turn.call_args.args[0]
+        self.assertIn("weather", prompt)
+        self.assertFalse(turn.call_args.kwargs["from_user"])
+        self.notify.assert_called_once()
+        self.assertEqual(self.notify.call_args.args[0], done.text)
 
 
 class TestAddReminderConfirms(unittest.TestCase):

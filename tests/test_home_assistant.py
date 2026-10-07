@@ -270,6 +270,26 @@ class TestHomeAssistant(unittest.TestCase):
             self.ha._locks_allowed = original
         self.assertEqual(self.calls, [("lock", "unlock", ["lock.front_door"], {})])
 
+    def test_only_guarded_devices_ask_first(self) -> None:
+        """'Turn off the kitchen light' must just happen; a lock asks once it is allowed."""
+        from helpers import confirm
+
+        declared = self.ha.control_home_device._job_confirms
+        light = {"target": "kitchen lights", "action": "off"}
+        door = {"target": "front door", "action": "unlock"}
+        self.assertFalse(confirm._applies(declared, light))
+        # Switched off, locks are refused outright — there is nothing to ask.
+        self.assertFalse(confirm._applies(declared, door))
+
+        original = self.ha._locks_allowed
+        self.ha._locks_allowed = lambda: True
+        try:
+            self.assertFalse(confirm._applies(declared, light))
+            self.assertTrue(confirm._applies(declared, door))
+            self.assertTrue(confirm._applies(declared, {"target": "garage", "action": "open"}))
+        finally:
+            self.ha._locks_allowed = original
+
     def _bulbs(self, count: int) -> list:
         return [
             self.ha._Entity(f"light.bulb_{i}", f"Bulb {i}", "Hall", "off", "")

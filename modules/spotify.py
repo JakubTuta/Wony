@@ -621,7 +621,7 @@ class Spotify:
 
     @capture_response
     @retry_on_unauthorized("_refresh_access_token")
-    @method_job(confirms=True)
+    @method_job(confirms={"delete"})
     def manage_playlist(
         self,
         action: typing.Literal["add", "remove", "create", "delete"] = "add",
@@ -661,21 +661,26 @@ class Spotify:
         if isinstance(resolved, str):
             return resolved
         uris, track_label = resolved
+        adding = wanted == "add"
+        said = self._change_tracks(playlist, uris, track_label, adding)
 
-        if wanted == "add":
-            self._make_spotify_request(
-                "post",
-                f"https://api.spotify.com/v1/playlists/{playlist['id']}/tracks",
-                json={"uris": uris},
-            )
-            return f"Added {track_label} to {playlist['name']}."
+        from helpers import undo
 
-        self._make_spotify_request(
-            "delete",
-            f"https://api.spotify.com/v1/playlists/{playlist['id']}/tracks",
-            json={"tracks": [{"uri": uri} for uri in uris]},
+        undo.push(
+            f"{'adding' if adding else 'removing'} {track_label}",
+            lambda: self._change_tracks(playlist, uris, track_label, not adding),
         )
-        return f"Removed {track_label} from {playlist['name']}."
+        return said
+
+    def _change_tracks(
+        self, playlist: typing.Dict[str, str], uris: typing.List[str], label: str, add: bool
+    ) -> str:
+        url = f"https://api.spotify.com/v1/playlists/{playlist['id']}/tracks"
+        if add:
+            self._make_spotify_request("post", url, json={"uris": uris})
+            return f"Added {label} to {playlist['name']}."
+        self._make_spotify_request("delete", url, json={"tracks": [{"uri": uri} for uri in uris]})
+        return f"Removed {label} from {playlist['name']}."
 
     def _resolve_track(
         self, title: str, artist: str

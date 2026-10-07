@@ -12,18 +12,57 @@ _local = threading.local()
 
 
 @contextlib.contextmanager
-def user_request(text: str = "") -> typing.Iterator[None]:
-    """Mark everything inside as started by the user, saying `text`."""
+def _scope(present: bool, text: str) -> typing.Iterator[None]:
     previous = (
         getattr(_local, "present", False),
         getattr(_local, "text", ""),
         getattr(_local, "untrusted", False),
     )
-    _local.present, _local.text, _local.untrusted = True, text, False
+    _local.present, _local.text, _local.untrusted = present, text, False
     try:
         yield
     finally:
         _local.present, _local.text, _local.untrusted = previous
+
+
+def user_request(text: str = "") -> typing.ContextManager[None]:
+    """Mark everything inside as started by the user, saying `text`."""
+    return _scope(True, text)
+
+
+def unattended() -> typing.ContextManager[None]:
+    """A turn nobody asked for (a trigger, a timer). Nobody is present, and what
+    it reads does not stay marked on the thread for the next one."""
+    return _scope(False, "")
+
+
+def capture() -> typing.Tuple[typing.Any, ...]:
+    """This thread's turn state, to carry onto a worker thread (helpers/agent.py
+    runs independent tool calls side by side)."""
+    return (
+        getattr(_local, "present", False),
+        getattr(_local, "text", ""),
+        getattr(_local, "untrusted", False),
+    )
+
+
+@contextlib.contextmanager
+def carried(state: typing.Tuple[typing.Any, ...]) -> typing.Iterator[typing.Dict[str, typing.Any]]:
+    """Run on a worker thread as the turn that captured `state`. Yields a dict
+    that holds, afterwards, what the work marked — hand it to absorb() on the
+    turn's own thread, or an email read there would not count as read."""
+    seen: typing.Dict[str, typing.Any] = {}
+    with _scope(state[0], state[1]):
+        _local.untrusted = state[2]
+        try:
+            yield seen
+        finally:
+            seen["untrusted"] = _local.untrusted
+
+
+def absorb(seen: typing.Dict[str, typing.Any]) -> None:
+    if seen.get("untrusted"):
+        mark_untrusted_read()
 
 
 def user_present() -> bool:

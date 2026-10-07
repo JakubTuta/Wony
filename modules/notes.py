@@ -8,7 +8,7 @@ up.
 
 import typing
 
-from helpers import memory_db
+from helpers import memory_db, undo
 from helpers.decorators import capture_response
 from helpers.registry import register_job
 
@@ -27,23 +27,12 @@ def _normalize(list_name: str) -> str:
     return (list_name or _DEFAULT_LIST).strip().lower() or _DEFAULT_LIST
 
 
-def _note_needs_confirm(args: typing.Dict[str, typing.Any]) -> bool:
-    """Clearing a list always asks. Adding asks only after this turn has read
-    something someone other than the user wrote — a page that says "add this
-    link to your list" must not get to plant it silently."""
-    wanted = str(args.get("action", "add")).strip().lower()
-    if wanted == "clear":
-        return True
-    if wanted != "add":
-        return False
-    from helpers import confirm
-    return confirm.after_untrusted(args)
-
-
 @register_job(
     module_name="notes",
     summary="Keep shopping and todo lists",
-    confirms=_note_needs_confirm,
+    # Adding and ticking off are undone with "undo" instead (helpers/undo.py):
+    # a list item is shown to the user, never followed as an instruction.
+    confirms={"clear"},
 )
 @capture_response
 def note(
@@ -91,8 +80,14 @@ def _add(name: str, text: str) -> str:
     if not items:
         return "Error: What should I add?"
 
-    for item in items:
-        memory_db.add_note(name, item)
+    ids = [memory_db.add_note(name, item) for item in items]
+
+    def revert() -> str:
+        for note_id in ids:
+            memory_db.delete_note(note_id)
+        return f"Your {name} list is back as it was."
+
+    undo.push(f"added {', '.join(items)} to your {name} list", revert)
 
     if len(items) == 1:
         return f"Added '{items[0]}' to your {name} list."
@@ -114,6 +109,12 @@ def _remove(name: str, text: str) -> str:
     removed = memory_db.remove_note(name, text)
     if removed is None:
         return f"Nothing on your {name} list matches '{text}'."
+
+    def revert() -> str:
+        memory_db.add_note(name, removed)
+        return f"'{removed}' is back on your {name} list."
+
+    undo.push(f"took '{removed}' off your {name} list", revert)
     return f"Took '{removed}' off your {name} list."
 
 

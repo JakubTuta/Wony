@@ -211,13 +211,16 @@ that you cycle to work — instead of only what you say "remember that" about.
 With Gmail on it also reads your sent mail once a week to describe how you
 write, so a drafted reply sounds like you. Ask _"what do you know about me"_ to
 see everything it kept; the ones it worked out for itself say so, and _"forget
-that"_ throws one away.
+that"_ throws one away. _"What's going on with Anna"_ gathers what you told it
+about her, your recent mail and meetings with her, and past chats that name her.
 
 Separately from those switches, anything that changes something you care about —
 sending or deleting mail, changing your calendar, cancelling a timer, powering
 the device down — is read back to you first and only happens once you say yes.
 Tapping it on a screen gives you a confirm dialog; asking for it in words means
-Wony tells you what it is about to do and waits for an answer.
+Wony tells you what it is about to do and waits for an answer — a plain _"yes"_
+or _"no"_ is enough. Small changes — a light, a list, a playlist, a timer — just
+happen; _"undo"_ takes back the last one from the past 15 minutes.
 
 ## Connecting your services
 

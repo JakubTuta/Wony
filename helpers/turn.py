@@ -12,7 +12,6 @@ WebSocket path needs the turn id and needs to suppress the automatic broadcast
 so it can send one enriched with its session id.
 """
 
-import contextlib
 import threading
 import typing
 
@@ -44,20 +43,24 @@ def run_turn(
     user_input: str,
     on_text: typing.Optional[typing.Callable[[str], None]] = None,
     from_user: bool = True,
+    think: bool = False,
 ) -> TurnResult:
     """Run one agent turn. Never raises — failures come back in TurnResult.error.
+
+    think=True to let the model reason before it picks tools: slower to start,
+    better at requests that take several steps.
 
     from_user=False for turns nobody asked for (triggers): nothing in them may
     open a sign-in window or follow a link the user never mentioned.
     """
-    from helpers import confirm
+    from helpers import confirm, toolset
     from helpers.agent import _fallback_from_calls, run_agent
     from helpers.bootstrap import get_ai_client
     from helpers.conversation import Conversation
     from helpers.decorators import agent_lock, set_agent_active
     from helpers.events import clear_cancel, emit_state, session_cancel
-    from helpers.registry import ServiceRegistry
-    from helpers.turn_context import user_request
+    from helpers.turn_context import mark_untrusted_read, unattended, user_request
+    from helpers.untrusted import OPEN
     from modules.ai import build_agent_system_prompt
 
     timed_out = threading.Event()
@@ -73,7 +76,7 @@ def run_turn(
     agent_result = None
     agent_err: typing.Optional[Exception] = None
 
-    presence = user_request(user_input) if from_user else contextlib.nullcontext()
+    presence = user_request(user_input) if from_user else unattended()
     try:
         with agent_lock, presence:
             # Inside the lock: a cancel raised against a previous turn must not
@@ -86,16 +89,33 @@ def run_turn(
             confirm.begin_turn()
             timer.start()
             try:
-                agent_result = run_agent(
-                    client=get_ai_client(),
-                    user_input=user_input,
-                    available_jobs=ServiceRegistry.get_all_jobs(),
-                    system_instructions=build_agent_system_prompt(),
-                    history=Conversation.get_messages(),
-                    max_steps=MAX_AGENT_STEPS,
-                    on_text=on_text,
-                    cancel_event=_TurnCancel(),
-                )
+                history = Conversation.get_messages()
+                # Earlier turns' email bodies ride along in the history. Read
+                # again here, they count as read in this turn too.
+                if any(OPEN in str(m["content"]) for m in history):
+                    mark_untrusted_read()
+                quick = _answer_without_model(user_input) if from_user else None
+                if quick is not None:
+                    agent_result = quick
+                    if on_text is not None and quick.text:
+                        on_text(quick.text)
+                else:
+                    last_reply = history[-1]["content"] if history and history[-1]["role"] == "assistant" else ""
+                    agent_result = run_agent(
+                        client=get_ai_client(),
+                        user_input=user_input,
+                        available_jobs=toolset.pick(
+                            f"{user_input}\n{last_reply[:500]}",
+                            Conversation.recent_job_names() + confirm.armed_jobs(),
+                        ),
+                        system_instructions=build_agent_system_prompt(user_input),
+                        history=history,
+                        max_steps=MAX_AGENT_STEPS,
+                        on_text=on_text,
+                        cancel_event=_TurnCancel(),
+                        think=think,
+                        more_jobs=_more_jobs,
+                    )
             except Exception as exc:
                 agent_err = exc
             finally:
@@ -139,6 +159,74 @@ def run_turn(
         timed_out=False,
         error=None,
     )
+
+
+def _more_jobs(name: str, result: str) -> typing.Dict[str, typing.Callable]:
+    """Jobs to add mid-turn (helpers/agent.py): one the model named that was not
+    sent, or what the steps of a routine it just ran call for."""
+    from helpers import toolset
+    from helpers.agent import _resolve_job_name
+    from helpers.registry import ServiceRegistry
+
+    jobs = ServiceRegistry.get_all_jobs()
+    if name == "routine" and result:
+        # The routine's steps are the user's own words; only they widen the set.
+        return toolset.pick(result)
+    resolved = _resolve_job_name(name, jobs)
+    return {resolved: jobs[resolved]} if resolved else {}
+
+
+# Answers that need no model: the previous turn asked "should I…?", or the user
+# wants the last change back. Saying the call again through the model costs a
+# round trip, and a model that re-sends it slightly differently asks again.
+_YES = {
+    "yes", "yeah", "yep", "yes please", "sure", "ok", "okay", "do it", "go ahead",
+    "confirm", "confirmed", "yes do it", "please do", "go for it",
+}
+_NO = {"no", "nope", "no thanks", "cancel", "don't", "dont", "do not", "never mind", "nevermind"}
+_UNDO = {"undo", "undo that", "undo it", "take that back", "revert that"}
+
+
+def _answer_without_model(user_input: str) -> typing.Optional[typing.Any]:
+    """An AgentResult for a bare yes / no / undo, or None for the model."""
+    import re
+
+    from helpers import confirm, undo
+    from helpers.agent import AgentResult
+    from helpers.logger import logger
+    from helpers.registry import ServiceRegistry
+
+    said = " ".join(re.sub(r"[^\w' ]", " ", user_input.lower()).split())
+
+    if said in _UNDO:
+        result = undo.undo()
+        return AgentResult(text=result, calls=[{"name": "undo", "args": {}, "result": result}])
+
+    if said not in _YES and said not in _NO:
+        return None
+    armed = confirm.take_previous_turn()
+    if not armed:
+        return None
+    if said in _NO:
+        return AgentResult(text="Okay, I won't.", calls=[])
+
+    jobs = ServiceRegistry.get_all_jobs()
+    calls = []
+    for call in armed:
+        logger.log_function_call(call.job, user_input, call.args)
+        func = jobs.get(call.job)
+        if func is None:
+            result = f"{call.job} is no longer available."
+        else:
+            try:
+                result = str(func(**call.args) or "")
+            except Exception as e:
+                result = f"Error executing {call.job}: {e}"
+                logger.log_error(result, "turn.confirmed")
+        logger.log_function_response(call.job, result[:200], user_input)
+        calls.append({"name": call.job, "args": call.args, "result": result})
+    text = " ".join(c["result"] for c in calls if c["result"]) or "Done."
+    return AgentResult(text=text, calls=calls)
 
 
 def _describe_failure(exc: Exception) -> str:

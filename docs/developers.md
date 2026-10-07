@@ -137,9 +137,14 @@ Four layers, in order of how much they are trusted:
    `wrap` also marks the turn as having read untrusted text.
 2. **Confirm gate** (`helpers/confirm.py`). A job registered with `confirms=`
    does not run on the first call; the call is armed, the model asks the user,
-   and the identical call in a *later* turn runs. `confirms` is `True`, a set of
-   `action` values, or a callable of the arguments. Unattended turns (triggers)
-   can neither arm nor spend a confirmation.
+   and the same call in a *later* turn runs (blank and default arguments are
+   ignored when comparing, `confirm.normalize`). `confirms` is `True`, a set of
+   `action` values, or a callable of the arguments. Unattended turns (triggers,
+   scheduled routines) can neither arm nor spend a confirmation. A confirm
+   sheet's button runs the call through `/api/invoke`, which spends the armed
+   confirmation and tells the history it ran. `confirm.after_untrusted` is the
+   predicate for "ask only once this turn read untrusted text" — fenced text
+   replayed from earlier turns counts.
 3. **Argument validation.** `helpers/tools.validate_args` rejects any `Literal`
    argument outside its enum before the gate and before the job. This is what
    makes a set of gate words complete: a job whose `action` is a plain `str` can
@@ -147,6 +152,15 @@ Four layers, in order of how much they are trusted:
    a set-valued `confirms` types `action` as a `Literal`
    (`tests/test_tool_schemas.py` checks it).
 4. **Switches.** The `allow_*` settings above.
+
+Confirm what is hard to take back; make the rest undoable. A job whose change is
+cheap to reverse (a light, a list item, a playlist track, a timer, a fact)
+calls `helpers/undo.push(what, revert)` instead of declaring `confirms`, and
+"undo" reverses the latest one within 15 minutes. Only a user's request pushes.
+
+A bare "yes", "no" or "undo" never reaches the model (`turn._answer_without_model`):
+"yes" runs exactly what the previous turn armed (`confirm.take_previous_turn`),
+"no" drops it.
 
 The API listens on loopback unless `server.host` says otherwise (bootstrap puts a
 warning on the health page if it does). It checks `Host`, `Origin` and
@@ -157,6 +171,29 @@ Every path that reaches a job takes `agent_lock` (`kiosk._run_job` for a tile,
 `run_turn` for a sentence, `/api/invoke` for a button): they all share the same
 objects. The idle screen's poll takes it without waiting and gives up rather than
 queue behind a turn. A new entry point must take it too.
+
+## The agent turn
+
+- **Tools sent** (`helpers/toolset.py`): above 25 jobs, a turn gets the
+  always-needed features, the three the request is most about (by embedding once
+  the model is loaded, by words before), and whatever the last two turns used.
+  A job the model names that was not sent still runs, and a routine's steps
+  widen the set mid-turn (`run_agent(more_jobs=...)`).
+- **Calls in one step run together** (`agent._run_planned`): the checks (argument
+  validation, confirm gate) run first, in order, on the turn's thread; then one
+  lane per feature, lanes on worker threads. Calls to the same feature keep
+  their order. Workers carry the turn's state (`turn_context.capture/carried`)
+  and hand back what they marked (`absorb`), so an email read on a worker still
+  gates the rest of the turn.
+- **Thinking:** typed turns think (`run_turn(think=True)`); triggers and
+  scheduled routines do not. Claude's reply blocks travel back unchanged
+  (`_anthropic_content`, like Gemini's `_gemini_content`), which thinking needs.
+- **Memory in the prompt:** the stable block carries up to 40 facts (stated
+  before guessed, newest first); facts beyond that join the volatile block when
+  the request is about them (`Profile.relevant`). Turns trimmed from the window
+  are folded into a running summary (`Conversation._fold`), fenced text left out.
+  `recall(scope="person")` gathers one person from facts, mail, calendar and
+  past chats (`helpers/people.py`).
 
 ## The screen
 
@@ -193,8 +230,11 @@ See "Jobs are the model's API" in CLAUDE.md. Short version: one job with an
 `action` argument beats several near-identical ones; the first docstring
 paragraph and `Args:` are what the model sees; return a `str` and use
 `@capture_response`; type `action` as a `Literal`; declare `confirms=` for
-anything that changes something the user cares about; give the module a
-`Requirement` whose `setup_hint` tells a non-developer what to do.
+anything that changes something the user cares about and is hard to take back,
+`undo.push` for what is easy to; give the module a `Requirement` whose
+`setup_hint` tells a non-developer what to do; add the module to
+`helpers.settings.MODULES` with a description the tool picker can match
+requests against.
 
 ## Keeping in step with main
 

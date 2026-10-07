@@ -217,17 +217,9 @@ def learn_style() -> bool:
 
 
 def _ask(prompt: str) -> str:
-    """One model call with no tools and no history.
-
-    Deliberately not run_turn(): this is not a turn. It must not take
-    agent_lock, must not touch the conversation, and must not be able to call a
-    tool — it is summarising text, and nothing it reads should be able to act.
-    """
     import helpers.model as helpers_model
-    from helpers.bootstrap import get_ai_client
 
-    response = helpers_model.send_message(client=get_ai_client(), message=prompt)
-    return helpers_model.get_text_from_response(response) or ""
+    return helpers_model.ask_plain(prompt)
 
 
 def _parse_json_list(raw: str) -> typing.List[typing.Any]:

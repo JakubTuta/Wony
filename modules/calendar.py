@@ -173,6 +173,18 @@ class Calendar:
         """Upcoming events whose ids are not in `seen`, for the new_event trigger."""
         return [e for e in self._fetch_events_range() if e.get("id") and e["id"] not in seen]
 
+    def events_with(self, who: str, days: int = 30, limit: int = 5) -> typing.List[dict]:
+        """Events within `days` either side of today that mention `who` — a name
+        or an address, which Google matches against the guests. For
+        helpers/people.py; not a job."""
+        now = now_local()
+        return self._fetch_events_range(
+            q=who,
+            time_min=(now - timedelta(days=days)).isoformat(),
+            time_max=(now + timedelta(days=days)).isoformat(),
+            max_results=limit,
+        )
+
     def agenda_snapshot(self, days: int = 2) -> typing.Dict[str, typing.Any]:
         """Upcoming events as data, for the agenda panel.
 

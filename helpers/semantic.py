@@ -43,6 +43,29 @@ def _get_engine() -> typing.Any:
     return _engine
 
 
+_warming = threading.Lock()
+
+
+def ready() -> bool:
+    """Whether embedding now costs milliseconds rather than a model load."""
+    return _engine is not None
+
+
+def warm() -> None:
+    """Load the model in the background, once. Callers on the reply path use
+    ready() and fall back to words until it is loaded."""
+    if not is_available() or not _warming.acquire(blocking=False):
+        return
+
+    def load() -> None:
+        try:
+            _get_engine()
+        except Exception:
+            pass
+
+    threading.Thread(target=load, daemon=True, name="embed-warm").start()
+
+
 def embed(text: str) -> typing.List[float]:
     """Embed text → 384-dim vector. Lazy-loads the model on first call."""
     return next(iter(_get_engine().embed([text[:_CHUNK_CHARS]]))).tolist()

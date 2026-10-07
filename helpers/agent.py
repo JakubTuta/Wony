@@ -58,6 +58,8 @@ def run_agent(
     max_steps: int = 5,
     on_text: typing.Optional[typing.Callable[[str], None]] = None,
     cancel_event: typing.Optional[threading.Event] = None,
+    think: bool = False,
+    more_jobs: typing.Optional[typing.Callable[[str, str], typing.Dict[str, typing.Callable]]] = None,
 ) -> AgentResult:
     """Run the agent loop for one user turn.
 
@@ -72,8 +74,24 @@ def run_agent(
     cancel_event: checked before each step and before each tool execution; if
     set, the turn aborts immediately with empty text rather than continuing to
     call tools or narrate a result the user already walked away from.
+
+    think: let the model reason before it calls tools.
+
+    more_jobs(name, result): when only some tools were sent (helpers/toolset.py),
+    called with each tool name the model used and its result, and returns jobs
+    to add — the one it named but was not sent, or what a routine's steps need.
     """
+    available_jobs = dict(available_jobs)
     available_functions = list(available_jobs.values())
+
+    def _widen(name: str, result: str) -> None:
+        nonlocal available_functions
+        if more_jobs is None:
+            return
+        extra = {k: v for k, v in more_jobs(name, result).items() if k not in available_jobs}
+        if extra:
+            available_jobs.update(extra)
+            available_functions = list(available_jobs.values())
 
     # Build initial message list from history + current user input
     messages: typing.List[typing.Dict[str, typing.Any]] = []
@@ -96,17 +114,29 @@ def run_agent(
         streamed = False
 
         if on_text is not None:
+            heard: typing.List[str] = []
+
+            def _tracked(chunk: str) -> None:
+                heard.append(chunk)
+                on_text(chunk)
+
             try:
                 text, tool_calls = helpers_model.stream_agent_step(
                     client=client,
                     messages=messages,
                     system_instructions=system_instructions,
                     available_tools=available_functions,
-                    on_text=on_text,
+                    on_text=_tracked,
+                    think=think,
                 )
                 streamed = True
             except Exception as e:
-                logger.log_error(f"streaming step failed, retrying non-streaming: {e}", "agent_loop.stream")
+                logger.log_error(f"streaming step failed: {e}", "agent_loop.stream")
+                if heard:
+                    # Part of the answer is already out; a retry would say all of it again.
+                    tail = " — sorry, I lost the connection there."
+                    _emit(tail)
+                    return AgentResult(text="".join(heard) + tail, calls=calls_made)
 
         if not streamed:
             try:
@@ -115,6 +145,7 @@ def run_agent(
                     messages=messages,
                     system_instructions=system_instructions,
                     available_tools=available_functions,
+                    think=think,
                 )
             except Exception as e:
                 logger.log_error(str(e), "agent_loop.send")
@@ -142,65 +173,44 @@ def run_agent(
                 "name": tc["name"],
                 "args": tc["args"],
             }
-            if "_gemini_content" in tc:
-                msg["_gemini_content"] = tc["_gemini_content"]
+            for raw in ("_gemini_content", "_anthropic_content"):
+                if raw in tc:
+                    msg[raw] = tc[raw]
             messages.append(msg)
 
-        for tc in tool_calls:
-            if cancel_event is not None and cancel_event.is_set():
-                return AgentResult(text="", calls=calls_made)
+        if cancel_event is not None and cancel_event.is_set():
+            return AgentResult(text="", calls=calls_made)
 
-            name = tc["name"]
-            args = tc["args"]
-            tool_id = tc["id"]
+        # Checked one by one, in order: the confirm gate and the argument
+        # check decide per call, and neither may race another call.
+        planned = [_plan(tc, available_jobs, _widen, user_input) for tc in tool_calls]
 
-            logger.log_function_call(name, user_input, args)
+        # Run what passed. Calls the model made in the same step do not depend
+        # on each other's results, so different features run side by side; calls
+        # to one feature keep their order ("add milk", then "show the list").
+        _run_planned(planned, cancel_event)
+        if cancel_event is not None and cancel_event.is_set():
+            return AgentResult(text="", calls=calls_made)
 
-            exec_name = _resolve_job_name(name, available_jobs)
-            if exec_name is not None:
-                from helpers import confirm as _confirm
-                from helpers.tools import validate_args
-
-                invalid = validate_args(available_jobs[exec_name], args)
-                if invalid is not None:
-                    logger.log_function_response(name, invalid, user_input)
-                    calls_made.append({"name": name, "args": args, "result": invalid})
-                    messages.append(
-                        {"role": "tool_result", "id": tool_id, "name": name, "content": invalid}
-                    )
-                    continue
-
-                needs_ok = _confirm.check(exec_name, args)
-                if needs_ok is not None:
-                    logger.log_function_response(name, needs_ok, user_input)
-                    calls_made.append({"name": name, "args": args, "result": needs_ok})
-                    messages.append(
-                        {"role": "tool_result", "id": tool_id, "name": name, "content": needs_ok}
-                    )
-                    continue
-
-                func = available_jobs[exec_name]
-                try:
-                    result = func(**args)
-                    result_str = str(result) if result is not None else ""
-                except Exception as e:
-                    result_str = f"Error executing {exec_name}: {e}"
-                    logger.log_error(result_str, "agent_loop.execute")
-            else:
-                result_str = f"Unknown function: {name}"
-                logger.log_error(result_str, "agent_loop.execute")
-
-            logger.log_function_response(name, result_str[:200], user_input)
-            calls_made.append({"name": name, "args": args, "result": result_str})
-
+        for plan in planned:
+            tc, result_str = plan["tc"], plan["result"]
+            if plan["func"] is not None:
+                _widen(plan["exec_name"], result_str)
+            logger.log_function_response(tc["name"], result_str[:200], user_input)
+            call = {"name": tc["name"], "args": tc["args"], "result": result_str}
+            if plan["needs_confirm"]:
+                call["needs_confirm"] = True
+            calls_made.append(call)
             messages.append({
                 "role": "tool_result",
-                "id": tool_id,
-                "name": name,
+                "id": tc["id"],
+                "name": tc["name"],
                 "content": result_str,
             })
 
-    # Reached max_steps without a text response — ask model to summarize
+    # Reached max_steps without a text response — ask model to summarize.
+    # The tools still go along: the history holds tool calls, and Anthropic
+    # rejects those in a request that defines no tools. Any further call is ignored.
     try:
         messages.append({
             "role": "user",
@@ -211,23 +221,128 @@ def run_agent(
                 client=client,
                 messages=messages,
                 system_instructions=system_instructions,
+                available_tools=available_functions,
                 on_text=on_text,
+                think=think,
             )
-            if not text:
-                text = "Done."
-                _emit(text)
         else:
             final_response = helpers_model.send_agent_messages(
                 client=client,
                 messages=messages,
                 system_instructions=system_instructions,
+                available_tools=available_functions,
+                think=think,
             )
-            text = helpers_model.get_text_from_response(final_response) or "Done."
-    except Exception:
-        text = "Done. (max steps reached)"
+            text = helpers_model.get_text_from_response(final_response) or ""
+            _emit(text)
+    except Exception as e:
+        logger.log_error(str(e), "agent_loop.summary")
+        text = ""
+    if not text:
+        text = _fallback_from_calls(calls_made)
         _emit(text)
 
     return AgentResult(text=text, calls=calls_made)
+
+
+def _plan(
+    tc: typing.Dict[str, typing.Any],
+    available_jobs: typing.Dict[str, typing.Callable],
+    widen: typing.Callable[[str, str], None],
+    user_input: str,
+) -> typing.Dict[str, typing.Any]:
+    """What to do with one tool call: a job to run, or the answer already
+    decided for it (unknown name, bad arguments, needs the user's go-ahead)."""
+    from helpers import confirm
+    from helpers.tools import validate_args
+
+    name, args = tc["name"], tc["args"]
+    plan: typing.Dict[str, typing.Any] = {
+        "tc": tc, "args": args, "exec_name": None, "func": None, "result": "", "needs_confirm": False,
+    }
+    logger.log_function_call(name, user_input, args)
+
+    exec_name = _resolve_job_name(name, available_jobs)
+    if exec_name is None:
+        # A real job that was not sent this turn (it is named in the system
+        # prompt, or was used earlier) is still the user's to run.
+        widen(name.strip(), "")
+        exec_name = _resolve_job_name(name, available_jobs)
+    if exec_name is None:
+        plan["result"] = f"Unknown function: {name}"
+        logger.log_error(plan["result"], "agent_loop.execute")
+        return plan
+
+    plan["exec_name"] = exec_name
+    invalid = validate_args(available_jobs[exec_name], args)
+    if invalid is not None:
+        plan["result"] = invalid
+        return plan
+
+    needs_ok = confirm.check(exec_name, args)
+    if needs_ok is not None:
+        plan["result"], plan["needs_confirm"] = needs_ok, True
+        return plan
+
+    plan["func"] = available_jobs[exec_name]
+    return plan
+
+
+def _lane(plan: typing.Dict[str, typing.Any]) -> str:
+    from helpers.registry import ServiceRegistry
+
+    return ServiceRegistry.get_job_modules().get(plan["exec_name"]) or plan["exec_name"]
+
+
+def _run_planned(
+    planned: typing.List[typing.Dict[str, typing.Any]],
+    cancel_event: typing.Any,
+) -> None:
+    """Run every planned job, filling in its result. One lane per feature;
+    lanes run on their own threads when there is more than one."""
+    from helpers import turn_context
+
+    lanes: typing.Dict[str, typing.List[typing.Dict[str, typing.Any]]] = {}
+    for plan in planned:
+        if plan["func"] is not None:
+            lanes.setdefault(_lane(plan), []).append(plan)
+
+    def run_lane(queue: typing.List[typing.Dict[str, typing.Any]]) -> None:
+        for plan in queue:
+            if cancel_event is not None and cancel_event.is_set():
+                plan["result"] = "Stopped before it ran."
+                continue
+            plan["result"] = _execute(plan["exec_name"], plan["func"], plan["args"])
+
+    if len(lanes) <= 1:
+        for queue in lanes.values():
+            run_lane(queue)
+        return
+
+    import concurrent.futures
+
+    # The workers act as this turn: who is present, and what they read
+    # (an email opened on a worker still counts as read in this turn).
+    state = turn_context.capture()
+
+    def run_carried(queue: typing.List[typing.Dict[str, typing.Any]]) -> typing.Dict[str, typing.Any]:
+        with turn_context.carried(state) as seen:
+            run_lane(queue)
+        return seen
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(lanes), thread_name_prefix="tool") as pool:
+        for seen in pool.map(run_carried, lanes.values()):
+            turn_context.absorb(seen)
+
+
+def _execute(exec_name: str, func: typing.Callable, args: typing.Dict[str, typing.Any]) -> str:
+    try:
+        result = func(**args)
+        return str(result) if result is not None else ""
+    except Exception as e:
+        message = f"Error executing {exec_name}: {e}"
+        logger.log_error(message, "agent_loop.execute")
+        return message
 
 
 def _extract_all_tool_calls(
@@ -266,14 +381,7 @@ def _extract_all_tool_calls(
     try:
         import anthropic as _anthropic
         if isinstance(response, _anthropic.types.Message):
-            for block in response.content:
-                if getattr(block, "type", None) == "tool_use":
-                    results.append({
-                        "id": getattr(block, "id", str(uuid.uuid4())[:16]),
-                        "name": block.name.strip(),
-                        "args": dict(block.input) if block.input else {},
-                    })
-            return results
+            return helpers_model._anthropic_tool_calls(response)
     except ImportError:
         pass
 

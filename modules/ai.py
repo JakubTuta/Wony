@@ -32,15 +32,17 @@ def _persona() -> str:
     return base
 
 
-def build_agent_system_prompt() -> typing.List[str]:
+def build_agent_system_prompt(request: str = "") -> typing.List[str]:
     """System prompt for the multi-step agent loop, as [stable, volatile] blocks.
 
     Split so the stable half can sit inside the provider's cached prefix: the
     clock ticks every minute and would otherwise invalidate the whole prompt —
-    and everything after it — on every single request.
+    and everything after it — on every single request. What depends on the
+    request (`request`: what the user just said) goes in the volatile half too.
     """
     import datetime
 
+    from helpers.profile import Profile
     from helpers.settings import working_modules
 
     working = working_modules()
@@ -49,6 +51,12 @@ def build_agent_system_prompt() -> typing.List[str]:
         f"Current local date and time: {now.strftime('%A, %B %d, %Y, %H:%M')} ({now.tzname()})."
         " Use this for any time, date, or scheduling reasoning — never guess the date."
     )
+    earlier = Conversation.summary()
+    if earlier:
+        volatile += f"\nEarlier in this conversation (your own notes): {earlier}"
+    relevant = Profile.relevant(request)
+    if relevant:
+        volatile += f"\n{relevant}"
     stable = (
         _persona()
         + "\n\nYou are an intelligent agent with access to tools for music (Spotify),"
@@ -226,9 +234,21 @@ class AI:
                 return "Error: No fact provided to remember."
             # A model-supplied topic is what makes "I like tea" overwrite "I like
             # coffee" instead of accumulating a near-duplicate on every restatement.
-            key = re.sub(r"[^a-z0-9_]+", "_", (topic or fact).lower().strip())[:40].strip("_")
-            Profile.set(key or "note", fact)
-            return f"Remembered ({key or 'note'}): {fact}"
+            key = re.sub(r"[^a-z0-9_]+", "_", (topic or fact).lower().strip())[:40].strip("_") or "note"
+            before = Profile.get(key)
+            Profile.set(key, fact)
+
+            def revert() -> str:
+                if before is None:
+                    Profile.remove(key)
+                else:
+                    Profile.set(key, before)
+                return ""
+
+            from helpers import undo
+
+            undo.push(f"remembering '{fact}'", revert)
+            return f"Remembered ({key}): {fact}"
 
         if wanted in ("forget", "remove", "delete"):
             key = topic or fact
@@ -250,7 +270,7 @@ class AI:
     @staticmethod
     def recall(
         query: str = "",
-        scope: typing.Literal["all", "conversations", "facts"] = "all",
+        scope: typing.Literal["all", "conversations", "facts", "person"] = "all",
         date: str = "",
         limit: int = 5,
     ) -> str:
@@ -259,11 +279,14 @@ class AI:
         earlier sessions and saved facts about the user — and returns what matches.
         Searches by meaning as well as by wording, so it answers "what did we say about
         the dentist", "what did we talk about on Tuesday" and "what do you know about
-        me" alike.
+        me" alike. With scope "person" it gathers everything on one person: what the
+        user said about them, recent mail and meetings with them.
 
         Args:
-            query (str): What to look for. Leave empty to get the most recent exchanges.
-            scope (str): Where to look: "all" (the default), "conversations" or "facts".
+            query (str): What to look for, or the person's name for scope "person".
+                Leave empty to get the most recent exchanges.
+            scope (str): Where to look: "all" (the default), "conversations", "facts"
+                or "person".
             date (str): Restrict to a single day, e.g. "yesterday", "last Monday", "2024-12-25".
             limit (int): How many results to return (default 5).
 
@@ -277,6 +300,10 @@ class AI:
 
         if where in ("facts", "fact", "profile", "about_me"):
             return AI._stored_facts(query)
+        if where == "person":
+            from helpers import people
+
+            return people.about(query)
 
         if where == "all" and query and not date:
             # One query, every store: the user cannot be expected to know which

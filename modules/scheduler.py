@@ -279,6 +279,9 @@ class Scheduler:
             logger.log_error(str(e), "scheduler.add_reminder.db_save")
 
         kind = "Timer" if trigger_type == "date" else "Reminder"
+        from helpers import undo
+
+        undo.push(f"setting {_label(meta)}", lambda: self._cancel_reminder(reminder_id))
         return f"{kind} set: {_label(meta)} — {trigger_display} (id: {reminder_id})"
 
     @capture_response
@@ -539,15 +542,44 @@ class Scheduler:
             logger.log_error(err, "scheduler.run_action")
             notify(f"Could not run scheduled action: {err}.", kind="error", source="scheduler")
             return
+        args = action.get("args") or {}
+        if resolved == "routine" and args.get("action", "run") == "run":
+            self._run_routine(str(args.get("name") or ""))
+            return
+
+        from helpers.decorators import is_agent_active, set_agent_active
+
         # A timer firing mid-turn would otherwise write into the running agent's
         # tool-outcome ledger and be silenced by its _agent_active suppression.
         # Waiting for the turn to end costs a few seconds and keeps both honest.
         with agent_lock:
+            # Active, so the job does not speak for itself: notify() below says it
+            # once, and also reaches the bell and Telegram.
+            previous = is_agent_active()
+            set_agent_active(True)
             try:
-                jobs[resolved](**(action.get("args") or {}))
+                result = jobs[resolved](**args)
             except Exception as e:
                 logger.log_error(str(e), f"scheduler.run_action.{resolved}")
                 notify(f"Scheduled action failed: {e}", kind="error", source="scheduler")
+                return
+            finally:
+                set_agent_active(previous)
+        if result:
+            notify(str(result), kind="reminder", source="scheduler")
+
+    def _run_routine(self, name: str) -> None:
+        """A routine is steps for the model, not a job, so a timer runs it as a
+        turn of its own — nobody present, like a trigger."""
+        from modules import routines
+        from helpers.turn import run_turn
+
+        steps = routines.instructions(name)
+        if steps is None:
+            notify(f"Could not run the '{name}' routine: it no longer exists.", kind="error", source="scheduler")
+            return
+        result = run_turn(f"[Scheduled. Nobody asked just now.] {steps}", from_user=False)
+        notify(result.text or f"Ran the '{name}' routine.", kind="reminder", source="scheduler")
 
     def _load_and_restore(self) -> None:
         try:

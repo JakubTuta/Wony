@@ -6,6 +6,8 @@ instruction is an attempt at one, so it travels inside a fence the system
 prompt tells the model to treat as data (modules/ai.py).
 """
 
+import re
+
 OPEN = "<<<untrusted"
 CLOSE = ">>>"
 
@@ -20,6 +22,15 @@ def wrap(text: str, source: str) -> str:
     # A fence the content can close itself is no fence.
     body = text.replace(CLOSE, "> > >").replace(OPEN, "< < <untrusted")
     return f'{OPEN} source="{source}">>>\n{body}\n{CLOSE}'
+
+
+_FENCED = re.compile(re.escape(OPEN) + r' source="[^"]*">>>.*?(?:\n' + re.escape(CLOSE) + r"|\Z)", re.DOTALL)
+
+
+def without_fenced(text: str) -> str:
+    """`text` minus every fenced block — what the user wrote themselves, when a
+    forwarded message is stored next to their words."""
+    return _FENCED.sub(" ", text)
 
 
 def truncate(text: str, limit: int) -> str:

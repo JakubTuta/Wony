@@ -88,7 +88,7 @@ def routine(
     Returns:
         str: The steps to carry out, the list of routines, or confirmation of a change.
     """
-    from helpers.memory_db import delete_routine, get_routine
+    from helpers.memory_db import delete_routine
 
     _seed()
     wanted = (action or "run").strip().lower()
@@ -113,12 +113,21 @@ def routine(
     if not key:
         return f"Error: which routine should I run? {_names_hint()}"
 
-    found = get_routine(key)
-    if found is None:
-        found = _closest(key)
-    if found is None:
-        return f"There is no '{key}' routine. {_names_hint()}"
+    return instructions(key) or f"There is no '{key}' routine. {_names_hint()}"
 
+
+def instructions(name: str) -> typing.Optional[str]:
+    """The routine's steps as an instruction for the model, or None if there is
+    no such routine. A timer runs a routine by handing this to a turn of its own."""
+    from helpers.memory_db import get_routine
+
+    _seed()
+    key = _normalize(name)
+    if not key:
+        return None
+    found = get_routine(key) or _closest(key)
+    if found is None:
+        return None
     # Framed as the user's own standing instruction, because that is what it is
     # — and so a routine cannot be mistaken for a fresh request from elsewhere.
     return (

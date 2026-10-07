@@ -19,8 +19,9 @@ sys.path.insert(0, _REPO_ROOT)
 
 # The wall panel's own list, smaller than the PC's: 33 once the watchers became
 # triggers, the two power jobs merged, and web, MCP and document indexing were
-# removed. Raise it on purpose, and say what for.
-_JOB_BUDGET = 33
+# removed. +1 undo (reversible changes stopped asking first). Raise it on
+# purpose, and say what for.
+_JOB_BUDGET = 34
 
 
 def _is_job(obj) -> bool:

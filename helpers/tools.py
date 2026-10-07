@@ -2,8 +2,6 @@ import inspect
 import re
 import typing
 
-import helpers.model as helpers_model
-
 
 def validate_args(func: typing.Callable, args: typing.Dict[str, typing.Any]) -> typing.Optional[str]:
     """None if every Literal-typed argument is one of its declared values,
@@ -212,12 +210,9 @@ def _mcp_schema(func: typing.Callable) -> typing.Optional[typing.Dict]:
 _schema_cache: typing.Dict[typing.Tuple[str, typing.Callable], typing.Dict[str, typing.Any]] = {}
 
 
-def function_to_schema(func: typing.Callable) -> typing.Dict[str, typing.Any]:
-    model = helpers_model.get_model()
-    if model is None:
-        raise Exception("Model is not initialized.")
-
-    provider = model[0]
+def function_to_schema(func: typing.Callable, provider: str) -> typing.Dict[str, typing.Any]:
+    """`provider` is the one whose client will receive the schema — not the one
+    the config names, which a Settings change can move ahead of the live client."""
     key = (provider, func)
     if key in _schema_cache:
         return _schema_cache[key]
