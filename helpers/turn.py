@@ -70,7 +70,6 @@ def run_turn(
         set_agent_active,
     )
     from helpers.events import clear_cancel, session_cancel
-    from helpers.registry import ServiceRegistry
     from helpers.turn_context import mark_untrusted_read, unattended, user_request
     from helpers.untrusted import OPEN, wrap
     from modules.ai import build_agent_system_prompt

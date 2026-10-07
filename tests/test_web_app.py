@@ -77,14 +77,13 @@ class TestLocalOnly(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
 
     def test_no_docs_or_openapi_schema_is_served(self) -> None:
-        # Unregistering docs_url/redoc_url/openapi_url (not a 404: the SPA
-        # catch-all serves index.html for any unmatched path, same as it
-        # would for a typo'd URL) is what matters — no route here may return
-        # the OpenAPI schema or the Swagger/ReDoc UI.
+        # Not a status check: with a built web/dist the SPA catch-all serves
+        # index.html here, without one the 404 is JSON. Neither may be the
+        # OpenAPI schema or the Swagger/ReDoc UI.
         for path in ("/docs", "/redoc", "/openapi.json"):
             with self.subTest(path=path):
                 resp = self.client.get(path)
-                self.assertNotEqual(resp.headers.get("content-type", ""), "application/json")
+                self.assertNotIn('"openapi"', resp.text)
                 self.assertNotIn("swagger-ui", resp.text.lower())
                 self.assertNotIn("redoc", resp.text.lower())
 
