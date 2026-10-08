@@ -176,10 +176,6 @@ export function ChatPanel() {
           <MessageRow key={idx} msg={msg} index={idx} onResolve={resolveInlineConfirm} />
         ))}
 
-        {loading && !messages.some((m) => m.streamKey) && (
-          <span className="text-[13px] text-muted">Wony is thinking…</span>
-        )}
-
         <div ref={bottomRef} />
       </div>
 
@@ -278,6 +274,18 @@ function MessageRow({
     <div className="flex flex-col gap-1.5">
       {msg.tag && (
         <span className="text-[11px] font-semibold uppercase tracking-[0.06em] text-red">{msg.tag}</span>
+      )}
+      {msg.streamKey && !msg.text && (
+        <div
+          className="self-start rounded-[14px_14px_14px_4px] px-3.5 py-3.5 flex gap-1"
+          style={{ background: 'var(--color-page)' }}
+          role="status"
+          aria-label="Wony is thinking"
+        >
+          <span className="typing-dot" />
+          <span className="typing-dot" />
+          <span className="typing-dot" />
+        </div>
       )}
       {msg.text && (
         <div
