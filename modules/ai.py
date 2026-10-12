@@ -73,7 +73,11 @@ def build_agent_system_prompt(request: str = "") -> typing.List[str]:
     now = datetime.datetime.now().astimezone()
     volatile = (
         f"Current local date and time: {now.strftime('%A, %B %d, %Y, %H:%M')} ({now.tzname()})."
-        " Use this for any time, date, or scheduling reasoning — never guess the date."
+        " Use this for any time, date, or scheduling reasoning — never guess the date,"
+        " and never call a tool just to check it."
+        " Earlier messages start with [when they were said]; a date or time in them"
+        " was right back then. Never correct or apologise for one — only the current"
+        " request matters."
     )
     earlier = Conversation.summary()
     if earlier:

@@ -6,6 +6,7 @@ decorator-based job registration reads config gates at import time.
 """
 
 import atexit
+import datetime
 import os
 import signal
 import sys
@@ -233,6 +234,7 @@ def bootstrap(
                     {
                         "user": turn["user_text"],
                         "assistant": turn["assistant_text"],
+                        "at": datetime.datetime.fromisoformat(turn["ts"]),
                     }
                 )
         except Exception:
