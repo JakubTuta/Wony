@@ -1,6 +1,7 @@
 import json
 import threading
 import typing
+from datetime import datetime
 
 from helpers.untrusted import truncate, without_fenced
 
@@ -9,6 +10,12 @@ from helpers.untrusted import truncate, without_fenced
 _TOOL_RESULT_TURNS = 2
 # Per-result cap inside that block.
 _TOOL_RESULT_MAX_CHARS = 800
+# Results that are stale by the next turn. Offered as "reuse this", yesterday's
+# clock reading made the model correct itself against the prompt's live clock.
+_NEVER_REUSED = {"get_datetime"}
+# Each past message is stamped with when it was said, so a date or time in an
+# old reply reads as history rather than as a claim about now.
+_STAMP_FORMAT = "%a %b %d, %H:%M"
 
 # Turns trimmed off the window are folded into a short summary, a few at a time
 # (one model call per batch), so a long chat does not forget how it started.
@@ -74,6 +81,8 @@ def _format_calls(
     lines = ["\n\n[Data retrieved this turn — reuse instead of re-calling tools:]"]
     for c in calls:
         name = c.get("name", "?")
+        if name in _NEVER_REUSED:
+            continue
         args = c.get("args") or {}
         result = str(c.get("result") or "").strip()
         if not result:
@@ -109,7 +118,10 @@ class Conversation:
         turns = cls._turns
         results_start = max(0, len(turns) - _TOOL_RESULT_TURNS)
         for i, turn in enumerate(turns):
-            messages.append({"role": "user", "content": turn["user"]})
+            user_content = turn["user"]
+            if turn.get("at"):
+                user_content = f"[{turn['at'].strftime(_STAMP_FORMAT)}] {user_content}"
+            messages.append({"role": "user", "content": user_content})
             assistant_content = turn["assistant"]
             if i >= results_start:
                 calls = turn.get("calls") or []
@@ -130,10 +142,12 @@ class Conversation:
         if not user_text:
             return None
         max_turns = cls._max_turns()
+        said_at = datetime.now()
         cls._turns.append({
             "user": user_text,
             "assistant": assistant_text or "",
             "calls": calls or [],
+            "at": said_at,
         })
         if len(cls._turns) > max_turns:
             cls._dropped.extend(cls._turns[:-max_turns])
@@ -144,13 +158,12 @@ class Conversation:
         if emit:
             try:
                 from helpers.events import emit_turn
-                from datetime import datetime
                 emit_turn({
                     "id": turn_id,
                     "user": user_text,
                     "assistant": assistant_text or "",
                     "calls": calls or [],
-                    "ts": datetime.now().isoformat(timespec="seconds"),
+                    "ts": said_at.isoformat(timespec="seconds"),
                 })
             except Exception:
                 pass

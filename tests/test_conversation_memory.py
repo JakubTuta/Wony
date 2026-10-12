@@ -67,6 +67,38 @@ class TestRollingSummary(unittest.TestCase):
         self.assertNotIn("Oslo hotel", stable)
 
 
+class TestOldTurnsReadAsHistory(unittest.TestCase):
+    def setUp(self) -> None:
+        from helpers.conversation import Conversation
+
+        patcher = mock.patch("helpers.conversation._try_persist", return_value=None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        Conversation.clear()
+        self.addCleanup(Conversation.clear)
+
+    def test_yesterdays_briefing_is_stamped_and_its_clock_is_not_offered_for_reuse(self) -> None:
+        import datetime
+
+        from helpers.conversation import Conversation
+
+        yesterday = datetime.datetime(2026, 10, 11, 8, 2)
+        with mock.patch("helpers.conversation.datetime") as clock:
+            clock.now.return_value = yesterday
+            Conversation.record_turn(
+                "good morning", "Morning! It's 08:02 on Sunday, October 11.", emit=False,
+                calls=[
+                    {"name": "get_datetime", "args": {}, "result": "It's 08:02 on Sunday, October 11, 2026."},
+                    {"name": "get_weather", "args": {}, "result": "Sunny, 14 degrees."},
+                ],
+            )
+
+        user, assistant = Conversation.get_messages()
+        self.assertEqual(user["content"], "[Sun Oct 11, 08:02] good morning")
+        self.assertNotIn("get_datetime", assistant["content"])
+        self.assertIn("Sunny, 14 degrees.", assistant["content"])
+
+
 class _Inline:
     """threading.Thread that runs its target on start(), so the test sees the result."""
 
