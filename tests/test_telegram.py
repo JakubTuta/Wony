@@ -279,6 +279,8 @@ class TestPairing(BotCase):
         text = self.notify.call_args.args[0]
         self.assertIn("@wonybot", text)
         self.assertIn(self.bot._code, text)
+        # A credential: shown to the user, never put in the history the model reads.
+        self.assertTrue(self.notify.call_args.kwargs.get("private"))
 
     def test_the_right_code_pairs_the_chat(self):
         self.bot._offer_pairing()

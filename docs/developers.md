@@ -199,7 +199,7 @@ A bare "yes", "no" or "undo" never reaches the model (`turn._answer_without_mode
   (`conceal`) on the way back. History, recall and the summary go out with
   `[a number]` (`hide`). Contacts jobs pass names and kinds of number
   (`contacts.phone_labels`); digits the user asked to see go out through
-  `notify(source="contacts")`. A new path that sends the user's past words to
+  `notify(source="contacts", private=True)`. A new path that sends the user's past words to
   the model must `hide` them. Calls only fill the number into Phone Link
   (`tel:`); nothing reads the screen or presses Call.
 - **Thinking:** typed turns think (`run_turn(think=True)`); spoken ones do not,
@@ -211,6 +211,14 @@ A bare "yes", "no" or "undo" never reaches the model (`turn._answer_without_mode
   are folded into a running summary (`Conversation._fold`), fenced text left out.
   `recall(scope="person")` gathers one person from contacts, facts, mail,
   calendar and past chats (`helpers/people.py`).
+- **What Wony says unasked joins the conversation:** `notify` records it as a
+  turn with a `source` and no user words (`Conversation.record_notice`), so a
+  reply from the phone ("what time is that?") has something to refer to. Send
+  every proactive message through `notify`, never straight to Telegram or the
+  speaker. `private=True` keeps it from the model (a pairing code, phone
+  numbers); `untrusted=True` fences the history's copy when it retells someone
+  else's words. Readers of `turns` that mean "what the user said" skip rows with
+  a `source` (`learn.py`, `people.py`).
 
 Scheduled actions run with no model in the loop, so `add_reminder` confirms
 whenever it is given an `action_job`. Their result goes through `notify`. A
@@ -245,7 +253,7 @@ anything that merely imports `modules` (the tests, `doctor`) would otherwise
 start taking the real bot's messages.
 
 - **Who may talk:** one paired owner, stored in `modules.telegram.owner`. Pairing
-  is a code kept in kv until used, announced through `notify` and shown on the
+  is a code kept in kv until used, announced through `notify(private=True)` and shown on the
   Settings page by the service's `setting_note` (`settings._live_note`). It is a
   credential: never put it in anything the assistant reads (`settings.explain`,
   the README). Five wrong codes retire it; strangers get no reply.

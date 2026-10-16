@@ -11,10 +11,30 @@ agent_lock); jobs of that turn on worker threads read the same table.
 import re
 import typing
 
-# Seven to fifteen digits, optionally led by +, with the spaces, dashes, dots and
-# brackets people write numbers with. Dates are told apart below.
-_CANDIDATE = re.compile(r"(?<![\w+])\+?\(?\d[\d \-.()]{5,}\d(?!\w)")
-_DATE = re.compile(r"\d{4}[-./]\d{1,2}[-./]\d{1,2}|\d{1,2}[-./]\d{1,2}[-./]\d{2,4}")
+# Digits, optionally led by + or a bracket, with the spaces, dashes, dots and
+# brackets people write numbers with — the Unicode ones pasted text brings too.
+_SEPARATORS = r" \u00a0\u2009\u202f\-\u2010-\u2015.()"
+_CANDIDATE = re.compile(rf"(?<![\w+(])[(+]*\d[\d{_SEPARATORS}]{{5,}}\d(?!\w)")
+_MIN_DIGITS = 7
+# E.164's longest. Only for telling one phone number apart (number_in): hiding
+# has no upper bound, since two numbers side by side run past it.
+_MAX_PHONE_DIGITS = 15
+
+# Inside a run of digits these stay: anything with dots between digits (a dotted
+# date or time, an amount, an IP address \u2014 nobody writes a phone number that
+# way), and a date written with dashes that stands on its own: "2026-10-17",
+# but not the "12-03-45" of "12-03-45-67-89".
+_DAY = r"(?:0?[1-9]|[12]\d|3[01])"
+_MONTH = r"(?:0?[1-9]|1[0-2])"
+_DATE = rf"\d{{4}}-{_MONTH}-{_DAY}|{_DAY}-{_MONTH}-(?:\d{{4}}|\d{{2}})"
+_NOT_A_NUMBER = re.compile(rf"((?<![\d\-.])(?:{_DATE})(?![-.]?\d)|(?<![\d.])\d+(?:\.\d+)+)")
+_NUMBER = re.compile(r"[(+]*\d(?:.*\d)?", re.DOTALL)
+
+# Next to a currency it is an amount: "1 250 000 z\u0142", "$ 1 250 000", "1 250 000,50 PLN".
+_CURRENCY = r"z\u0142|[$\u20ac\u00a3\u00a5\u20b9\u20bd]|\b(?:pln|usd|eur|gbp|chf|czk|sek|nok|dkk|jpy|cad|aud)\b"
+_PRICE_AFTER = re.compile(rf"(?:,\d{{1,2}})?\s?(?:{_CURRENCY})", re.IGNORECASE)
+_PRICE_BEFORE = re.compile(rf"(?:{_CURRENCY})\s?$", re.IGNORECASE)
+
 _TOKEN = re.compile(r"\[number (\d+)\]")
 _HIDDEN = "[a number]"
 
@@ -25,8 +45,21 @@ def _digits(text: str) -> str:
     return re.sub(r"\D", "", text)
 
 
-def _is_number(candidate: str) -> bool:
-    return 7 <= len(_digits(candidate)) <= 15 and not _DATE.fullmatch(candidate.strip())
+def _each_number(text: str, replace: typing.Callable[[str], str]) -> str:
+    """`text` with replace(number) put in for every number in it."""
+    def run(match: "re.Match[str]") -> str:
+        before = match.string[max(0, match.start() - 5):match.start()]
+        if _PRICE_AFTER.match(match.string, match.end()) or _PRICE_BEFORE.search(before):
+            return match.group(0)
+        # split() keeps the dates and dotted parts at the odd indexes, untouched.
+        pieces = _NOT_A_NUMBER.split(match.group(0))
+        for i in range(0, len(pieces), 2):
+            found = _NUMBER.search(pieces[i])
+            if found and len(_digits(found.group(0))) >= _MIN_DIGITS:
+                pieces[i] = pieces[i][:found.start()] + replace(found.group(0)) + pieces[i][found.end():]
+        return "".join(pieces)
+
+    return _CANDIDATE.sub(run, text)
 
 
 def begin() -> None:
@@ -39,10 +72,7 @@ def end() -> None:
 
 def mask(text: str) -> str:
     """The user's words with each number swapped for this turn's placeholder."""
-    def swap(match: "re.Match[str]") -> str:
-        number = match.group(0).strip()
-        if not _is_number(number):
-            return match.group(0)
+    def swap(number: str) -> str:
         for token, known in _turn.items():
             if _digits(known) == _digits(number):
                 return token
@@ -50,12 +80,12 @@ def mask(text: str) -> str:
         _turn[token] = number
         return token
 
-    return _CANDIDATE.sub(swap, text)
+    return _each_number(text, swap)
 
 
 def hide(text: str) -> str:
     """Any number in an earlier turn's text, for history going back to the model."""
-    return _CANDIDATE.sub(lambda m: _HIDDEN if _is_number(m.group(0)) else m.group(0), text)
+    return _each_number(text, lambda _number: _HIDDEN)
 
 
 def reveal(value: typing.Any) -> typing.Any:
@@ -75,17 +105,18 @@ def conceal(text: str) -> str:
     if not _turn:
         return text
 
-    def swap(match: "re.Match[str]") -> str:
+    def swap(number: str) -> str:
         for token, known in _turn.items():
-            if _digits(known) == _digits(match.group(0)):
+            if _digits(known) == _digits(number):
                 return token
-        return match.group(0)
+        return number
 
-    return _CANDIDATE.sub(swap, text)
+    return _each_number(text, swap)
 
 
 def number_in(text: str) -> str:
     """`text` as a phone number when that is all it is, else ""."""
     text = text.strip()
-    match = _CANDIDATE.fullmatch(text)
-    return text if match and _is_number(text) else ""
+    if not _CANDIDATE.fullmatch(text) or _NOT_A_NUMBER.search(text):
+        return ""
+    return text if _MIN_DIGITS <= len(_digits(text)) <= _MAX_PHONE_DIGITS else ""

@@ -3,7 +3,7 @@ import threading
 import typing
 from datetime import datetime
 
-from helpers.untrusted import truncate, without_fenced
+from helpers.untrusted import truncate, unfence, without_fenced
 
 # How many of the most recent turns carry their tool results forward as context.
 # Deeper costs tokens on every request for data the model rarely revisits.
@@ -16,6 +16,9 @@ _NEVER_REUSED = {"get_datetime"}
 # Each past message is stamped with when it was said, so a date or time in an
 # old reply reads as history rather than as a claim about now.
 _STAMP_FORMAT = "%a %b %d, %H:%M"
+# Stands where the user's message would be, ahead of something Wony said on its
+# own, so the model reads what follows as its own words and not as an answer.
+_UNPROMPTED = "(Nobody asked. You said this on your own: {source}.)"
 
 # Turns trimmed off the window are folded into a short summary, a few at a time
 # (one model call per batch), so a long chat does not forget how it started.
@@ -58,10 +61,11 @@ def _try_persist(
     user_text: str,
     assistant_text: str,
     calls: typing.Optional[typing.List[typing.Dict[str, typing.Any]]] = None,
+    source: str = "",
 ) -> typing.Optional[int]:
     try:
         from helpers.memory_db import insert_turn
-        turn_id = insert_turn(user_text, assistant_text, calls=calls)
+        turn_id = insert_turn(user_text, assistant_text, calls=calls, source=source)
     except Exception:
         turn_id = None
 
@@ -106,6 +110,9 @@ class Conversation:
     # Bumped by clear(), so a summary still being written lands nowhere.
     _generation: int = 0
     _summarizing = threading.Lock()
+    # Not agent_lock: notify() records from any thread, including a job's
+    # mid-turn, where agent_lock is already held by that same thread.
+    _lock = threading.Lock()
 
     @classmethod
     def _max_turns(cls) -> int:
@@ -125,7 +132,10 @@ class Conversation:
         turns = cls._turns
         results_start = max(0, len(turns) - _TOOL_RESULT_TURNS)
         for i, turn in enumerate(turns):
-            user_content = hide(turn["user"])
+            if turn.get("source"):
+                user_content = _UNPROMPTED.format(source=turn["source"])
+            else:
+                user_content = hide(turn["user"])
             if turn.get("at"):
                 user_content = f"[{turn['at'].strftime(_STAMP_FORMAT)}] {user_content}"
             messages.append({"role": "user", "content": user_content})
@@ -148,28 +158,53 @@ class Conversation:
     ) -> typing.Optional[int]:
         if not user_text:
             return None
+        return cls._record(user_text, assistant_text or "", calls or [], "", emit)
+
+    @classmethod
+    def record_notice(cls, text: str, source: str) -> typing.Optional[int]:
+        """Something Wony said without being asked (helpers/notify.py), kept
+        in order with the turns so "what time is that?" has something to refer
+        to. `source` names who raised it ("scheduler", "trigger:new_event")."""
+        if not text:
+            return None
+        return cls._record("", text, [], source or "notification", emit=True)
+
+    @classmethod
+    def _record(
+        cls,
+        user_text: str,
+        assistant_text: str,
+        calls: typing.List[typing.Dict[str, typing.Any]],
+        source: str,
+        emit: bool,
+    ) -> typing.Optional[int]:
         max_turns = cls._max_turns()
         said_at = datetime.now()
-        cls._turns.append({
-            "user": user_text,
-            "assistant": assistant_text or "",
-            "calls": calls or [],
-            "at": said_at,
-        })
-        if len(cls._turns) > max_turns:
-            cls._dropped.extend(cls._turns[:-max_turns])
-            cls._turns = cls._turns[-max_turns:]
-            if len(cls._dropped) >= _SUMMARIZE_EVERY:
-                threading.Thread(target=cls._fold, daemon=True, name="conversation-summary").start()
-        turn_id = _try_persist(user_text, assistant_text or "", calls=calls)
+        with cls._lock:
+            cls._turns.append({
+                "user": user_text,
+                "assistant": assistant_text,
+                "calls": calls,
+                "source": source,
+                "at": said_at,
+            })
+            fold = False
+            if len(cls._turns) > max_turns:
+                cls._dropped.extend(cls._turns[:-max_turns])
+                cls._turns = cls._turns[-max_turns:]
+                fold = len(cls._dropped) >= _SUMMARIZE_EVERY
+        if fold:
+            threading.Thread(target=cls._fold, daemon=True, name="conversation-summary").start()
+        turn_id = _try_persist(user_text, assistant_text, calls=calls, source=source)
         if emit:
             try:
                 from helpers.events import emit_turn
                 emit_turn({
                     "id": turn_id,
-                    "user": user_text,
-                    "assistant": assistant_text or "",
-                    "calls": calls or [],
+                    "user": unfence(user_text),
+                    "assistant": unfence(assistant_text),
+                    "calls": calls,
+                    "source": source,
                     "ts": said_at.isoformat(timespec="seconds"),
                 })
             except Exception:
@@ -219,17 +254,21 @@ class Conversation:
             return  # the running fold picks these up next time
         try:
             generation = cls._generation
-            pending, cls._dropped = cls._dropped, []
+            with cls._lock:
+                pending, cls._dropped = cls._dropped, []
             if not pending:
                 return
             # Fenced text stays out: a summary is read as Wony's own notes, and
             # an email's instructions must not turn into those.
             from helpers.private_numbers import hide
 
-            turns = hide("\n".join(
-                f"User: {without_fenced(t['user'])}\nAssistant: {without_fenced(t['assistant'])[:600]}"
-                for t in pending
-            ))
+            def exchange(t: typing.Dict[str, typing.Any]) -> str:
+                said = without_fenced(t["assistant"])[:600]
+                if t.get("source"):
+                    return f"Assistant, unprompted ({t['source']}): {said}"
+                return f"User: {without_fenced(t['user'])}\nAssistant: {said}"
+
+            turns = hide("\n".join(exchange(t) for t in pending))
             from helpers.model import ask_plain
 
             folded = ask_plain(_SUMMARY_PROMPT.format(previous=cls._summary or "(nothing yet)", turns=turns)).strip()
@@ -244,7 +283,8 @@ class Conversation:
 
     @classmethod
     def clear(cls) -> None:
-        cls._turns = []
-        cls._dropped = []
+        with cls._lock:
+            cls._turns = []
+            cls._dropped = []
         cls._summary = ""
         cls._generation += 1

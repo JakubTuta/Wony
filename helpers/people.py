@@ -114,7 +114,8 @@ def _meetings(name: str, addresses: typing.List[str]) -> str:
 def _talks(name: str, _addresses: typing.List[str]) -> str:
     from helpers.memory_db import search_turns
 
-    turns = search_turns(name, days_back=365, limit=_TALK_HITS)
+    # "You said": not what Wony brought up on its own.
+    turns = [t for t in search_turns(name, days_back=365, limit=_TALK_HITS) if not t.get("source")]
     if not turns:
         return ""
     from helpers.private_numbers import hide

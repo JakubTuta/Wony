@@ -288,6 +288,8 @@ class Telegram:
             f"To connect Telegram, send /start {self._code} to @{self._username}.",
             kind="info",
             source="telegram",
+            # Whoever has the code controls Wony; the model must never hold it.
+            private=True,
         )
 
     def _retire_code(self) -> None:

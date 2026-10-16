@@ -170,8 +170,10 @@ def _start_task(url: str, task: str) -> str:
         return "I'm already working through a page. Ask me to stop background jobs to cancel it."
 
     def work(stop: typing.Any) -> None:
-        answer = _run_task(browser, url, task, stop)
-        _deliver(url, task, answer)
+        from helpers.notify import notify
+
+        # The answer retells the page, so the history keeps it fenced.
+        notify(_run_task(browser, url, task, stop), kind="info", source="browse", untrusted=True)
 
     BackgroundJobs.start(_BROWSE_JOB, work, pass_stop_event=True)
     return f"On it — I'll open {url} and tell you what I find."
@@ -204,18 +206,6 @@ def _run_task(browser: typing.Any, url: str, task: str, stop: typing.Any) -> str
     if timed_out.is_set():
         return f"I ran out of time on {url}. So far: {answer}"
     return answer
-
-
-def _deliver(url: str, task: str, answer: str) -> None:
-    """Say the result, and put it in the conversation so "what was it?" works."""
-    from helpers.conversation import Conversation
-    from helpers.decorators import agent_lock
-    from helpers.notify import notify
-
-    notify(answer, kind="info", source="browse")
-    # Under agent_lock: a turn in progress owns the conversation history.
-    with agent_lock:
-        Conversation.record_turn(f"(Wony browsed {url} for: {task})", wrap(answer, url))
 
 
 # ------------------------------------------------------------------ internals

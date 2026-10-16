@@ -522,6 +522,8 @@ export interface HistoryTurn {
   assistant: string;
   ts: string;
   calls?: ChatCall[];
+  /** Set when Wony said this on its own (a reminder, a watcher): who raised it. */
+  source?: string;
 }
 
 export async function fetchHistory(limit = 50): Promise<HistoryTurn[]> {

@@ -128,7 +128,7 @@ class Contacts:
         if shown:
             # Straight to the user — the bell, the speaker, Telegram — so the
             # numbers never pass through the AI provider.
-            notify(shown, kind="info", source="contacts")
+            notify(shown, kind="info", source="contacts", private=True)
         # Names and details in "Other contacts" come from mail other people sent.
         return f"Contacts matching '{name}':\n" + wrap("\n".join(lines), "contacts")
 

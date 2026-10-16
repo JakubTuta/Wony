@@ -47,6 +47,16 @@ interface PendingSession {
   streamKey: string;
 }
 
+// Something Wony said on its own: no question above it, and a tag saying so.
+function noticeMessage(turn: HistoryTurn): ChatMessage {
+  return {
+    role: 'assistant',
+    text: turn.assistant,
+    tag: `Spoke up · ${(turn.source ?? '').replace(/^trigger:/, '')}`,
+    turnId: turn.id,
+  };
+}
+
 export function WonyProvider({ children }: { children: ReactNode }) {
   // ---------------------------------------------------------------- catalog
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -196,6 +206,11 @@ export function WonyProvider({ children }: { children: ReactNode }) {
     if (turn.id != null && seenTurnIds.current.has(turn.id)) return;
     if (turn.id != null) seenTurnIds.current.add(turn.id);
 
+    if (turn.source) {
+      setMessages((prev) => [...prev, noticeMessage(turn)]);
+      return;
+    }
+
     setMessages((prev) => {
       const n = prev.length;
       const assistantMsg: ChatMessage = {
@@ -260,14 +275,8 @@ export function WonyProvider({ children }: { children: ReactNode }) {
 
   const handleNotification = useCallback((n: Notification) => {
     setNotifications((prev) => [n, ...prev]);
-    // A proactive message is also something Wony "said", so it belongs in the
-    // transcript, tagged as unprompted rather than a reply to something asked.
-    if (n.source?.startsWith('trigger:')) {
-      setMessages((prev) => [
-        ...prev,
-        { role: 'assistant', text: n.text, tag: `Spoke up · ${n.source.slice('trigger:'.length)}` },
-      ]);
-    } else if (n.source === 'contacts') {
+    // Everything else reaches the transcript as a turn of its own (handleTurn).
+    if (n.source === 'contacts') {
       // Phone numbers come straight from this PC, never through the AI's reply.
       setMessages((prev) => [...prev, { role: 'assistant', text: n.text, tag: 'Not sent to the AI' }]);
     }
@@ -278,6 +287,11 @@ export function WonyProvider({ children }: { children: ReactNode }) {
       .then((turns) => {
         const msgs: ChatMessage[] = [];
         for (const t of turns) {
+          if (t.id != null) seenTurnIds.current.add(t.id);
+          if (t.source) {
+            msgs.push({ ...noticeMessage(t), fromHistory: true });
+            continue;
+          }
           msgs.push({ role: 'user', text: t.user, fromHistory: true });
           if (t.assistant) {
             msgs.push({
@@ -288,7 +302,6 @@ export function WonyProvider({ children }: { children: ReactNode }) {
               fromHistory: true,
             });
           }
-          if (t.id != null) seenTurnIds.current.add(t.id);
         }
         setMessages(msgs);
       })

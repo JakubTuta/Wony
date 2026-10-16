@@ -33,6 +33,15 @@ def without_fenced(text: str) -> str:
     return _FENCED.sub(" ", text)
 
 
+_MARKERS = re.compile(re.escape(OPEN) + r' source="[^"]*">>>\n|\n' + re.escape(CLOSE) + r"(?=\n|$)")
+
+
+def unfence(text: str) -> str:
+    """`text` with the fence markers taken out but the words kept, for the chat
+    window: the fence is for the model, not for the person reading."""
+    return _MARKERS.sub("", text)
+
+
 def truncate(text: str, limit: int) -> str:
     """Cut `text` to `limit` characters, re-closing any fence the cut would
     otherwise leave open — history that drops the closing `>>>` lets

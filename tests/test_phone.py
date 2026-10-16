@@ -210,5 +210,117 @@ class TestDictatedNumbersStayLocal(unittest.TestCase):
         self.assertEqual(hide("set a timer for 25 minutes"), "set a timer for 25 minutes")
 
 
+class TestNumberMasking(unittest.TestCase):
+    """Numbers as people actually write them, and the dates and times that must
+    not be mistaken for one."""
+
+    HIDDEN = [
+        ("+48 600 700 800", "[a number]"),
+        ("600 700 800", "[a number]"),
+        ("600-700-800", "[a number]"),
+        ("600700800", "[a number]"),
+        ("+48600700800", "[a number]"),
+        ("0048 600 700 800", "[a number]"),
+        ("(+48) 600 700 800", "[a number]"),
+        ("+48 (22) 123 45 67", "[a number]"),
+        ("(22) 123-45-67", "[a number]"),
+        ("22 123 45 67", "[a number]"),
+        ("(212) 555-0123", "[a number]"),
+        ("1-800-555-0199", "[a number]"),
+        ("+44 20 7946 0958", "[a number]"),
+        ("07700 900123", "[a number]"),
+        ("+33 6 12 34 56 78", "[a number]"),
+        # Pasted text: a no-break space, an en dash.
+        ("600 700 800", "[a number]"),
+        ("600–700–800", "[a number]"),
+        ("Call me at +48 600 700 800, thanks.", "Call me at [a number], thanks."),
+        ("Tel. 600 700 800", "Tel. [a number]"),
+        ("600 700 800 or 601 701 801", "[a number] or [a number]"),
+        # Past fifteen digits these used to go out whole.
+        ("600 700 800 601 701 801", "[a number]"),
+        ("2026-10-17 600 700 800", "2026-10-17 [a number]"),
+        ("600 700 800 2026-10-17", "[a number] 2026-10-17"),
+        ("17.10.2026 600700800", "17.10.2026 [a number]"),
+        ("10.30 600 700 800", "10.30 [a number]"),
+        ("call +48 600-700-800 on 2026-10-08 at 10:30", "call [a number] on 2026-10-08 at 10:30"),
+        ("phone 600 700 800, price 1 250 000 zł", "phone [a number], price 1 250 000 zł"),
+        ("1 250 000 is the code", "[a number] is the code"),
+    ]
+
+    UNCHANGED = [
+        "Start: 2026-10-17 12:16",
+        "'Train' (2026-10-17 12:16)",
+        "17.10.2026 9:05",
+        "17.10.26 12:16",
+        "17/10/2026",
+        "from 2026-10-17 to 2026-10-20",
+        "2026-10-17 - 2026-10-20",
+        "Meeting 10.30-12.45",
+        "Open 8.00–16.00",
+        "set a timer for 25 minutes",
+        "room 1204, floor 12",
+        "at 12:16",
+        # Amounts: a currency on either side, with or without a space or decimals.
+        "1 250 000 zł",
+        "1 250 000 złotych",
+        "1 250 000,50 PLN",
+        "1 250 000 pln",
+        "$1 250 000",
+        "€ 1 250 000",
+        "1 250 000 €",
+        "£1 250 000.99",
+        "USD 12 500 000",
+        "12 500 000 CHF",
+        "1.250.000",
+        # Dots between digits: never a phone number.
+        "192.168.1.100",
+        "http://192.168.1.100:8123",
+        "212.555.0123",
+        "06.12.34.56.78",
+    ]
+
+    def test_numbers_are_hidden(self) -> None:
+        from helpers.private_numbers import hide
+
+        for said, expected in self.HIDDEN:
+            with self.subTest(said=said):
+                self.assertEqual(hide(said), expected)
+
+    def test_dates_and_times_survive(self) -> None:
+        from helpers.private_numbers import hide
+
+        for said in self.UNCHANGED:
+            with self.subTest(said=said):
+                self.assertEqual(hide(said), said)
+
+    def test_each_number_said_gets_its_own_placeholder(self) -> None:
+        from helpers import private_numbers
+
+        private_numbers.begin()
+        try:
+            said = private_numbers.mask(
+                "On 2026-10-17 12:00 text 600 700 800 and 601-701-801, then 600700800 again"
+            )
+            self.assertEqual(said, "On 2026-10-17 12:00 text [number 1] and [number 2], then [number 1] again")
+            self.assertEqual(private_numbers.reveal("[number 2]"), "601-701-801")
+            # A job repeating the number back, glued to a date, is masked again.
+            self.assertEqual(
+                private_numbers.conceal("Sent to 601 701 801 2026-10-17 12:00"),
+                "Sent to [number 2] 2026-10-17 12:00",
+            )
+        finally:
+            private_numbers.end()
+
+    def test_one_phone_number_is_told_apart(self) -> None:
+        from helpers.private_numbers import number_in
+
+        self.assertEqual(number_in(" +48 600 700 800 "), "+48 600 700 800")
+        self.assertEqual(number_in("(22) 123-45-67"), "(22) 123-45-67")
+        self.assertEqual(number_in("2026-10-17 12"), "")
+        self.assertEqual(number_in("600 700 800 601 701 801"), "")
+        self.assertEqual(number_in("12345"), "")
+        self.assertEqual(number_in("Tom"), "")
+
+
 if __name__ == "__main__":
     sys.exit(0 if unittest.main(exit=False).result.wasSuccessful() else 1)
