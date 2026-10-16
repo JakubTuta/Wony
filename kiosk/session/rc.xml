@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<!-- Wony's panel session: one app, no desktop, no shortcuts, no window frames.
+     The sign-in browser (helpers/browser.py) opens over it and fills the screen. -->
+<labwc_config>
+  <core>
+    <gap>0</gap>
+  </core>
+  <keyboard />
+  <mouse />
+  <windowRules>
+    <windowRule identifier="*" serverDecoration="no">
+      <action name="Maximize" />
+    </windowRule>
+  </windowRules>
+</labwc_config>

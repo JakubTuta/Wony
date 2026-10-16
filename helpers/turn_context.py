@@ -1,6 +1,6 @@
 """Whether the code running now was started by the user.
 
-A spoken or typed request, or a click on the web page, has someone watching.
+A spoken or typed request, or a tap on the panel, has someone watching.
 A trigger, a scheduled action or a background poll does not — and must not
 open a Google consent window or follow a link nobody asked for.
 """
@@ -12,28 +12,34 @@ _local = threading.local()
 
 
 @contextlib.contextmanager
-def _scope(present: bool, text: str) -> typing.Iterator[None]:
+def _scope(present: bool, at_machine: bool, text: str) -> typing.Iterator[None]:
     previous = (
         getattr(_local, "present", False),
+        getattr(_local, "at_machine", False),
         getattr(_local, "text", ""),
         getattr(_local, "untrusted", False),
     )
-    _local.present, _local.text, _local.untrusted = present, text, False
+    _local.present, _local.at_machine = present, at_machine
+    _local.text, _local.untrusted = text, False
     try:
         yield
     finally:
-        _local.present, _local.text, _local.untrusted = previous
+        _local.present, _local.at_machine, _local.text, _local.untrusted = previous
 
 
-def user_request(text: str = "") -> typing.ContextManager[None]:
-    """Mark everything inside as started by the user, saying `text`."""
-    return _scope(True, text)
+def user_request(text: str = "", at_machine: bool = True) -> typing.ContextManager[None]:
+    """Mark everything inside as started by the user, saying `text`.
+
+    at_machine=False for a request that arrived from a phone: the user is
+    there to answer questions, but nobody is standing at the screen.
+    """
+    return _scope(True, at_machine, text)
 
 
 def unattended() -> typing.ContextManager[None]:
     """A turn nobody asked for (a trigger, a timer). Nobody is present, and what
     it reads does not stay marked on the thread for the next one."""
-    return _scope(False, "")
+    return _scope(False, False, "")
 
 
 def capture() -> typing.Tuple[typing.Any, ...]:
@@ -41,6 +47,7 @@ def capture() -> typing.Tuple[typing.Any, ...]:
     runs independent tool calls side by side)."""
     return (
         getattr(_local, "present", False),
+        getattr(_local, "at_machine", False),
         getattr(_local, "text", ""),
         getattr(_local, "untrusted", False),
     )
@@ -52,8 +59,8 @@ def carried(state: typing.Tuple[typing.Any, ...]) -> typing.Iterator[typing.Dict
     that holds, afterwards, what the work marked — hand it to absorb() on the
     turn's own thread, or an email read there would not count as read."""
     seen: typing.Dict[str, typing.Any] = {}
-    with _scope(state[0], state[1]):
-        _local.untrusted = state[2]
+    with _scope(state[0], state[1], state[2]):
+        _local.untrusted = state[3]
         try:
             yield seen
         finally:
@@ -67,6 +74,12 @@ def absorb(seen: typing.Dict[str, typing.Any]) -> None:
 
 def user_present() -> bool:
     return getattr(_local, "present", False)
+
+
+def at_machine() -> bool:
+    """Whether the user is in front of this device — false for a remote chat.
+    A sign-in page opened here would land on an empty room."""
+    return user_present() and getattr(_local, "at_machine", False)
 
 
 def user_text() -> str:

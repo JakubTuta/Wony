@@ -43,47 +43,14 @@ import shutil
 import subprocess
 import typing
 
+from helpers.wayland import session_env
+
 # These commands return immediately or not at all; a hang here would block the
 # request that asked for sleep.
 _TIMEOUT_SECONDS = 5
 
 # Set by the backend that last succeeded, so on() is the mirror of off().
 _last_used: str = ""
-
-
-def _wayland_env() -> typing.Optional[typing.Dict[str, str]]:
-    """Environment for a Wayland client, or None if there is no session.
-
-    Wony runs under `systemctl --user`, which is the same user as the desktop
-    session but not the same environment: systemd hands a service neither
-    WAYLAND_DISPLAY nor XDG_RUNTIME_DIR. Both are recoverable — the runtime dir
-    from the uid, the display from whichever socket is sitting in it (labwc
-    tends to be wayland-0, wayfire wayland-1, so guessing either would be wrong
-    half the time).
-    """
-    env = dict(os.environ)
-
-    runtime = env.get("XDG_RUNTIME_DIR")
-    if not runtime or not os.path.isdir(runtime):
-        getuid = getattr(os, "getuid", None)
-        if getuid is None:
-            return None
-        runtime = f"/run/user/{getuid()}"
-        if not os.path.isdir(runtime):
-            return None
-        env["XDG_RUNTIME_DIR"] = runtime
-
-    if not env.get("WAYLAND_DISPLAY"):
-        sockets = sorted(
-            name
-            for name in os.listdir(runtime)
-            if name.startswith("wayland-") and not name.endswith(".lock")
-        )
-        if not sockets:
-            return None
-        env["WAYLAND_DISPLAY"] = sockets[0]
-
-    return env
 
 
 def _run(command: typing.List[str], env: typing.Optional[typing.Dict[str, str]] = None) -> bool:
@@ -104,11 +71,11 @@ def _run(command: typing.List[str], env: typing.Optional[typing.Dict[str, str]] 
 
 
 def _wlopm_available() -> bool:
-    return bool(shutil.which("wlopm")) and _wayland_env() is not None
+    return bool(shutil.which("wlopm")) and session_env() is not None
 
 
 def _wlopm(on: bool) -> bool:
-    env = _wayland_env()
+    env = session_env()
     if env is None:
         return False
     return _run(["wlopm", "--on" if on else "--off", "*"], env=env)
@@ -162,7 +129,7 @@ def _wlr_output() -> str:
     A kiosk has one screen. If it ever has two, both should go dark together
     anyway — and wlopm, which is tried well before this, does exactly that.
     """
-    env = _wayland_env()
+    env = session_env()
     if env is None:
         return ""
     try:
@@ -180,11 +147,11 @@ def _wlr_output() -> str:
 
 
 def _wlr_randr_available() -> bool:
-    return bool(shutil.which("wlr-randr")) and _wayland_env() is not None
+    return bool(shutil.which("wlr-randr")) and session_env() is not None
 
 
 def _wlr_randr(on: bool) -> bool:
-    env = _wayland_env()
+    env = session_env()
     output = _wlr_output()
     if env is None or not output:
         return False

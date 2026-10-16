@@ -30,6 +30,7 @@ MODULES: typing.List[typing.Tuple[str, str, str]] = [
     ("calendar", "Google Calendar", "Events, availability and free slots."),
     ("google_accounts", "Google accounts", "Use more than one Google account."),
     ("home_assistant", "Home Assistant", "Lights, blinds, thermostats, vacuums, scenes."),
+    ("telegram", "Telegram", "Message Wony from your phone, and get reminders there too."),
 ]
 
 
@@ -121,6 +122,16 @@ _FIELDS: typing.List[typing.Tuple[str, typing.List[Field]]] = [
               "me' to see and correct them.",
               restart=True),
     ]),
+    ("Telegram", [
+        Field("modules.telegram.owner", "Paired chat", "text",
+              "Filled in when you pair. Until then the code to send your bot is shown "
+              "here, and in the bell. Only the paired chat can talk to Wony. "
+              "Clear it to disconnect or pair another.",
+              module="telegram", private=True),
+        Field("modules.telegram.forward_notifications", "Send reminders to Telegram", "toggle",
+              "Timers, reminders and alerts also arrive in your Telegram chat.",
+              module="telegram"),
+    ]),
     ("This device", [
         Field("modules.home_assistant.base_url", "Home Assistant address", "text",
               "The same address you open in a browser.", module="home_assistant"),
@@ -136,8 +147,8 @@ _FIELDS: typing.List[typing.Tuple[str, typing.List[Field]]] = [
         Field("kiosk.confirm_all_devices", "Ask before every device", "toggle",
               "Off: tapping a light, blind, thermostat or vacuum on the panel "
               "runs it right away. On: every device asks first, same as a lock."),
-        Field("server.port", "Web page port", "number",
-              "Change only if something else already uses this port.",
+        Field("server.port", "Connection port", "number",
+              "The port the touch panel connects to. Change only if something else already uses it.",
               minimum=1024, maximum=65535, step=1, restart=True),
     ]),
 ]
@@ -291,13 +302,24 @@ def overview() -> str:
     return "\n".join(lines)
 
 
+def _live_note(field: Field) -> str:
+    """What a running module can add to a setting's help that no fixed text can,
+    like a pairing code. The screen gets it; the assistant never does (explain)."""
+    if not field.module:
+        return ""
+    from helpers.registry import ServiceRegistry
+
+    note = getattr(ServiceRegistry.get_service_instance(field.module), "setting_note", None)
+    return note(field.key) if note else ""
+
+
 def _describe_field(field: Field) -> typing.Dict[str, typing.Any]:
     value = _current(field)
     return {
         "key": field.key,
         "label": field.label,
         "kind": field.kind,
-        "help": field.help,
+        "help": " ".join(part for part in (field.help, _live_note(field)) if part),
         "choices": _choices_for(field, value),
         "min": field.minimum,
         "max": field.maximum,

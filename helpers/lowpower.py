@@ -5,7 +5,8 @@ ending the processes" has to be assembled out of the parts that do exist:
 
   the panel goes dark      helpers/display.py, whichever backend works here
   the pollers stop         BackgroundJobs.suspend_all(), restarted on wake
-  everything else stays    the agent, the web server, the reminder scheduler
+  everything else stays    the agent, the web server, the reminder scheduler,
+                           Telegram (started with suspendable=False)
 
 That last line is the point. A timer set for 6am still fires at 6am, the socket
 stays connected, and waking is a repaint rather than a boot — nothing has to be

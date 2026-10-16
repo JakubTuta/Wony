@@ -15,7 +15,7 @@ _NON_MODULE_CHECKS = [
     ),
 ]
 
-# Below this, the device is one browser tab away from the OOM killer.
+# Below this, the device is one heavy process away from the OOM killer.
 _MIN_FREE_RAM_MB = 250
 
 # Enough headroom for logs, the SQLite database, and a pip upgrade.
@@ -87,13 +87,28 @@ def run_doctor() -> str:
 
 
 def _screen_line() -> str:
-    """The touch UI is a built bundle, and forgetting to build it is silent —
-    the API answers fine and the screen shows a bare 404."""
-    if os.path.isfile(repo_path(os.path.join("kiosk", "dist", "index.html"))):
-        return "  ✓ Screen bundle built."
+    """The touch panel is a native app run by system packages, and a missing
+    package is silent: the assistant answers fine and the display has nothing
+    to show."""
+    from helpers import autostart, screen
+
+    missing = screen.missing_packages()
+    if screen.panel_command("") is None or missing:
+        if screen.debian_version() is None:
+            return (
+                "  ! Touch panel: not available on this machine. It runs on Raspberry Pi OS Trixie;\n"
+                "    to try it here: pip install -r requirements/dev-screen.txt"
+            )
+        return (
+            "  ✗ Touch panel: its system packages are missing — the assistant works but the display\n"
+            "    has nothing to show it on.\n"
+            f"    Fix: {screen.install_command(missing or screen.APT_PACKAGES)}"
+        )
+    if autostart.screen_enabled():
+        return "  ✓ Touch panel installed, and it starts at boot."
     return (
-        "  ✗ Screen bundle missing — the API works but the display will be blank.\n"
-        "    Fix: cd kiosk && npm install && npm run build"
+        "  ✓ Touch panel installed. Start it with ./wony.sh panel, or make it start at boot\n"
+        "    with ./wony.sh autostart install."
     )
 
 
@@ -112,10 +127,8 @@ def _sleep_line() -> str:
 
     return (
         "  ! Sleep: nothing here can switch the panel off, so sleeping will only\n"
-        "    black out the page. On Raspberry Pi OS Bookworm the screen runs on\n"
-        "    Wayland, where xset and vcgencmd do nothing.\n"
-        "    Fix: sudo apt install wlopm — and run Wony in the same session as "
-        "the desktop."
+        "    black out the page. The panel's Wayland session (labwc) needs wlopm.\n"
+        "    Fix: sudo apt install wlopm — and run Wony in the same session as the panel."
     )
 
 

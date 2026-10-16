@@ -1,0 +1,6 @@
+singleton Api 1.0 Api.qml
+singleton Wony 1.0 Wony.qml
+singleton Live 1.0 Live.qml
+singleton Ui 1.0 Ui.qml
+Panel 1.0 Panel.qml
+singleton Clock 1.0 Clock.qml

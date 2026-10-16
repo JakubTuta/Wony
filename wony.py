@@ -2,12 +2,13 @@
 Wony unified entry point.
 
 Usage:
-  ./wony.sh              # default: kiosk (web API + touch UI on the display)
+  ./wony.sh              # default: kiosk (the assistant and its API, no screen)
   ./wony.sh kiosk        # same, explicitly
+  ./wony.sh panel        # the touch panel; needs the assistant running
   ./wony.sh text         # console text REPL — the way to debug over SSH
   ./wony.sh doctor       # validate setup and exit
-  ./wony.sh autostart install    # start Wony + the browser at boot (systemd)
-  ./wony.sh autostart uninstall  # remove both units
+  ./wony.sh autostart install    # make this device a Wony panel at boot (systemd)
+  ./wony.sh autostart uninstall  # undo it and bring the desktop back
   ./wony.sh autostart status     # show unit status
 
 All subcommands that start the assistant brain load Config before importing
@@ -97,7 +98,8 @@ def _require_setup() -> None:
 
 
 def cmd_kiosk(args: argparse.Namespace) -> None:
-    """Serve the API and the touch UI. This is what runs on the device."""
+    """Run the assistant and serve its API. The touch panel (`panel`) is a
+    separate process that talks to it, so a crash on screen never stops timers."""
     from helpers.config import Config
 
     Config.load()
@@ -126,6 +128,33 @@ def cmd_kiosk(args: argparse.Namespace) -> None:
     # Only one Wony may hold the port. On the device systemd enforces that;
     # everywhere else uvicorn's own bind failure is the check.
     uvicorn.run(app, host=host, port=port)
+
+
+def cmd_panel(args: argparse.Namespace) -> None:
+    """Show the touch panel and stay until it closes."""
+    import os
+
+    from helpers import screen
+    from helpers.config import Config
+
+    Config.load()
+
+    host = str(Config.get("server.host", "127.0.0.1"))
+    port = int(Config.get("server.port", 8000))
+    # A server bound to every interface is still reachable on loopback.
+    if host in ("0.0.0.0", "::"):
+        host = "127.0.0.1"
+    command = screen.panel_command(f"http://{host}:{port}", windowed=args.windowed)
+    if command is None:
+        print(
+            "\nThe touch panel needs Qt's QML runtime, which is not installed.\n"
+            "Run './wony.sh setup' to install it, or by hand:\n\n"
+            f"    {screen.install_command(screen.APT_PACKAGES)}\n"
+        )
+        sys.exit(1)
+    # The panel replaces this process: under labwc's session command that makes
+    # the panel the session, so closing it ends the session and systemd restarts it.
+    os.execv(command[0], command)
 
 
 def cmd_text(args: argparse.Namespace) -> None:
@@ -180,13 +209,12 @@ def cmd_doctor(args: argparse.Namespace) -> None:
 def cmd_autostart(args: argparse.Namespace) -> None:
     from helpers.config import Config
 
-    # The browser unit embeds server.port in the URL it opens.
     Config.load()
 
     from helpers.autostart import install, status, uninstall
 
     if args.action == "install":
-        install(browser=not args.no_browser)
+        install(screen=not args.no_screen)
     elif args.action == "uninstall":
         uninstall()
     elif args.action == "status":
@@ -202,9 +230,10 @@ def main() -> None:
         description="Wony personal AI assistant",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
-            "Run with no subcommand to start the kiosk.\n"
+            "Run with no subcommand to start the assistant.\n"
             "Examples:\n"
-            "  ./wony.sh              # kiosk (default)\n"
+            "  ./wony.sh              # the assistant (default)\n"
+            "  ./wony.sh panel        # the touch panel\n"
             "  ./wony.sh text         # console text REPL\n"
             "  ./wony.sh autostart install"
         ),
@@ -212,8 +241,18 @@ def main() -> None:
 
     subparsers = parser.add_subparsers(dest="subcommand")
 
-    p_kiosk = subparsers.add_parser("kiosk", help="Serve the API and touch UI (default)")
+    p_kiosk = subparsers.add_parser("kiosk", help="Run the assistant and its API (default)")
     p_kiosk.set_defaults(func=cmd_kiosk)
+
+    p_panel = subparsers.add_parser(
+        "panel", help="Show the touch panel (the assistant must be running)"
+    )
+    p_panel.add_argument(
+        "--windowed",
+        action="store_true",
+        help="A 1280x800 window instead of fullscreen, for trying it on a desktop",
+    )
+    p_panel.set_defaults(func=cmd_panel)
 
     p_text = subparsers.add_parser("text", help="Console text REPL")
     p_text.set_defaults(func=cmd_text)
@@ -221,16 +260,16 @@ def main() -> None:
     p_doctor = subparsers.add_parser("doctor", help="Validate setup and exit")
     p_doctor.set_defaults(func=cmd_doctor)
 
-    p_auto = subparsers.add_parser("autostart", help="Start Wony at boot")
+    p_auto = subparsers.add_parser("autostart", help="Turn this device into a Wony panel at boot")
     p_auto.add_argument(
         "action",
         choices=["install", "uninstall", "status"],
-        help="install: enable the systemd user units; uninstall: remove them; status: show them",
+        help="install: start Wony and its screen at boot; uninstall: undo it; status: show it",
     )
     p_auto.add_argument(
-        "--no-browser",
+        "--no-screen",
         action="store_true",
-        help="Install only the API unit, not the fullscreen browser (headless device)",
+        help="Start only the assistant at boot, not the touch panel (headless device)",
     )
     p_auto.set_defaults(func=cmd_autostart)
 

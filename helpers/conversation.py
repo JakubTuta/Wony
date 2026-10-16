@@ -216,7 +216,7 @@ class Conversation:
 
     @classmethod
     def record_confirmed(cls, job_name: str, args: typing.Dict[str, typing.Any], result: str) -> bool:
-        """A call the model asked about was confirmed with the web page's button.
+        """A call the model asked about was confirmed with the panel's button.
         Without this the history still says "NOT DONE", and the next turn tries
         again or tells the user it never happened."""
         from helpers.confirm import normalize

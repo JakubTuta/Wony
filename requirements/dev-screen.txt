@@ -1,0 +1,4 @@
+# Only for trying or testing the touch panel on a machine without Qt's qml6 tool
+# (a dev PC, CI). The Pi uses apt packages instead; see helpers/screen.py.
+# Pinned to Qt 6.8 to match Raspberry Pi OS Trixie, so a newer-Qt API fails here.
+PySide6==6.8.*

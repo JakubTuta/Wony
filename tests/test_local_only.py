@@ -44,7 +44,7 @@ class TestLocalOnly(unittest.TestCase):
         self.assertFalse(self._allowed(_scope("localhost:8000", "https://localhost:8000")))
 
     def test_the_dev_server_origin_is_not_special(self) -> None:
-        """Vite rewrites its proxied requests' Origin to match (vite.config.ts)."""
+        """A page served from a dev server on another port is another site."""
         self.assertFalse(self._allowed(_scope("127.0.0.1:9000", "http://localhost:5173")))
 
     def test_a_rebound_host_name_is_refused(self) -> None:

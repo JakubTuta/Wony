@@ -1083,7 +1083,7 @@ class TestWatchers(unittest.TestCase):
 
 
 class TestFrontendJobNames(unittest.TestCase):
-    def test_every_job_the_web_ui_calls_still_exists(self) -> None:
+    def test_every_job_the_touch_panel_calls_still_exists(self) -> None:
         """The Tier 2 merges renamed jobs and swept the Python, the docs and the
         config — but not the front end. The screens went on calling
         cancel_reminder, set_like and four *_google_account jobs, and
@@ -1091,9 +1091,9 @@ class TestFrontendJobNames(unittest.TestCase):
         floor."""
         import re
 
-        ui = os.path.join(_REPO_ROOT, "kiosk", "src")
+        ui = os.path.join(_REPO_ROOT, "kiosk")
         if not os.path.isdir(ui):
-            self.skipTest("kiosk/src is not present")
+            self.skipTest("kiosk/ is not present")
 
         defined = set()
         modules_dir = os.path.join(_REPO_ROOT, "modules")
@@ -1103,13 +1103,18 @@ class TestFrontendJobNames(unittest.TestCase):
             with open(os.path.join(modules_dir, entry), encoding="utf-8") as handle:
                 defined.update(re.findall(r"^\s*def (\w+)\(", handle.read(), re.MULTILINE))
 
+        # Api.invokeJob("name", ...) runs a job; signature("name", ...) names one
+        # on the confirm sheet, which must not promise a job that is gone.
+        call = re.compile(r"(?:invokeJob|signature)\(\s*[\"'](\w+)[\"']")
         called = set()
         for folder, _dirs, files in os.walk(ui):
+            if os.sep + "tests" in folder:
+                continue
             for name in files:
-                if not name.endswith((".ts", ".tsx")):
+                if not name.endswith((".qml", ".mjs")):
                     continue
                 with open(os.path.join(folder, name), encoding="utf-8") as handle:
-                    called.update(re.findall(r"invokeJob\(\s*'([\w]+)'", handle.read()))
+                    called.update(call.findall(handle.read()))
 
         self.assertTrue(called, "no invokeJob call sites found — did the pattern change?")
         self.assertFalse(

@@ -1,10 +1,11 @@
 #!/bin/sh
 # Runs Wony with whichever Python this device has.
 #
-#   ./wony.sh                   start Wony (the screen and everything behind it)
+#   ./wony.sh                   start Wony (the assistant and everything behind the screen)
+#   ./wony.sh panel             show the touch panel (Wony must be running)
 #   ./wony.sh text              type to Wony in a terminal
 #   ./wony.sh doctor            check the setup and exit
-#   ./wony.sh autostart install start Wony at boot
+#   ./wony.sh autostart install start Wony and its touch panel at boot
 #   ./wony.sh setup             install, or add a feature
 #   ./wony.sh setup configure   add a key or sign in again
 

@@ -14,23 +14,27 @@ confirm gate and Google/Spotify/Home Assistant modules with the PC build on
 | Path                   | What lives there                                                          |
 | ---------------------- | ------------------------------------------------------------------------- |
 | `wony.sh`              | Launcher: finds `python` or `python3`, then runs `wony.py` (`setup` runs `setup.py`) |
-| `wony.py`              | Entry point: `kiosk` (default), `text`, `doctor`, `autostart`             |
+| `wony.py`              | Entry point: `kiosk` (default, the assistant and its API), `panel`, `text`, `doctor`, `autostart` |
 | `setup.py`             | Installer and `configure`. Stdlib only until it has installed packages    |
 | `helpers/`             | Shared machinery: agent loop, registry, confirm gate, config, web API     |
 | `helpers/kiosk.py`     | Home-screen tile layout and the idle screen's cards                       |
-| `helpers/lowpower.py`  | Sleep: panel dark, pollers stopped, everything else running               |
+| `helpers/lowpower.py`  | Sleep: panel dark, pollers stopped, everything else (Telegram too) running |
 | `helpers/display.py`   | Which command switches this panel off and on (wlopm, backlight, ...)      |
+| `helpers/wayland.py`   | Finds the Wayland session from a process that was not started inside it   |
 | `helpers/panels.py`    | Structured data for each screen, read through `/api/panel/{key}`          |
-| `helpers/autostart.py` | The two systemd user units: Wony and the fullscreen browser               |
+| `helpers/screen.py`    | What the panel needs from the OS: apt packages, the `qml6` tool, how to launch it |
+| `helpers/browser.py`   | The throwaway Chromium (plus keyboard) a Google or Spotify sign-in opens over the panel |
+| `helpers/autostart.py` | `wony.service` (user unit) and `wony-panel.service` (system unit, the display manager) |
 | `modules/`             | One file per switchable feature; each registers jobs                      |
-| `kiosk/`               | React + Vite touch UI, built to `kiosk/dist` (not in the repo)            |
-| `requirements/`        | One requirements file per feature                                         |
-| `tests/`               | `python -m unittest discover -s tests -t .`                               |
+| `kiosk/`               | The touch panel: Qt Quick (QML), run by `qml6`; see "The panel app" below |
+| `requirements/`        | One requirements file per feature (`dev-screen.txt` only for PCs and CI)  |
+| `tests/`               | `python -m unittest discover -s tests -t .`; `screen_fixture.py` fakes the API for the panel |
 
 ## Running it
 
 ```bash
-./wony.sh                      # API + touch UI on 127.0.0.1:8000 (`wony.py kiosk`, as systemd runs it)
+./wony.sh                      # the assistant and its API on 127.0.0.1:8000 (`wony.py kiosk`, as systemd runs it)
+./wony.sh panel [--windowed]   # the touch panel, a separate process talking to that API
 ./wony.sh text                 # plain text conversation in the terminal
 ./wony.sh doctor               # check the setup and exit
 ./wony.sh autostart install    # undo with: autostart uninstall
@@ -46,18 +50,22 @@ start anything, and a second copy says so and exits — a second one would resto
 every reminder from `wony.db` and fire it again. Stop the service before you use
 `text`. A new entry point that starts the assistant must claim the lock too.
 
-Build or hot-reload the screen:
+Working on the panel (there is nothing to build; QML is read as it is):
 
 ```bash
-cd kiosk
-npm install
-npm run build     # or: npm run dev   (proxies /api to the running backend)
-npm run lint
+pip install -r requirements/dev-screen.txt       # Qt 6.8 through PySide6, the version Trixie ships
+python tests/screen_fixture.py 8765               # a fake API with fixed data, no assistant needed
+python kiosk/tools/dev_panel.py --api http://127.0.0.1:8765 --windowed
+./wony.sh panel --windowed                        # or against the real assistant
+pyside6-qmllint -W 0 $(find kiosk -name '*.qml')  # what CI lints with (kiosk/.qmllint.ini)
+node --test kiosk/tests/*.test.mjs                # the panel's logic, in plain JS
+python -m unittest tests.test_screen              # the whole panel, offscreen, against the fixture
 ```
 
-The dev server rewrites the `Origin` of proxied requests (`kiosk/vite.config.ts`)
-because the API only accepts same-origin requests. After a rebuild the browser
-asks again for `index.html` (`Cache-Control: no-cache`), so a restart is enough.
+`panel` runs `qml6 kiosk/Main.qml -- --api URL`: Qt's own tool passes what follows
+`--` to the app as `Qt.application.arguments`. `pyside6-qml` rejects arguments for
+the app, hence `kiosk/tools/dev_panel.py` on a PC (`helpers/screen.panel_command`
+picks one).
 
 ## The API
 
@@ -81,7 +89,10 @@ is a change to both branches.
 Everything else belongs to one branch: `/api/kiosk/tiles`, `/api/ambient`, `/api/sleep`, `/api/wake` and `/api/updates`. Requests are
 checked by `helpers/local_only.py` (Host, Origin and Sec-Fetch-Site), which both
 branches call with their own list of served host names (`_allowed_hosts` in
-`helpers/web_app.py`).
+`helpers/web_app.py`). The API serves no pages: the panel is a client like any
+other. QML's `XMLHttpRequest` and `WebSocket` send no `Origin`, which the check
+accepts as a non-browser client; `tests/screen_fixture.py` enforces the same
+check, so a change that made the panel send one fails `tests/test_screen.py`.
 
 ## Settings and config
 
@@ -96,7 +107,8 @@ own is the wrong place to type one.
 the label, help text and limits from the `Field` and writes with `settings.apply`,
 so setup and the screen cannot describe a setting differently. A new `Field`
 therefore also needs an `ask_setting` call in the matching setup step;
-`tests/test_setup_questions.py` fails until it has one. A new option in
+`tests/test_setup_questions.py` fails until it has one. Only Telegram's `owner`
+is not asked, because pairing fills it in. A new option in
 `config.example.yaml` needs a `Field` too (`tests/test_settings.py` checks it).
 
 `helpers/settings.MODULES` is the one list of features. `working_modules()` says
@@ -168,7 +180,7 @@ warning on the health page if it does). It checks `Host`, `Origin` and
 gate because the screen's confirm sheet already asked.
 
 Every path that reaches a job takes `agent_lock` (`kiosk._run_job` for a tile,
-`run_turn` for a sentence, `/api/invoke` for a button): they all share the same
+`run_turn` for a sentence or a Telegram message, `/api/invoke` for a button): they all share the same
 objects. The idle screen's poll takes it without waiting and gives up rather than
 queue behind a turn. A new entry point must take it too.
 
@@ -197,9 +209,11 @@ queue behind a turn. A new entry point must take it too.
 - **What Wony says unasked joins the conversation:** `notify` records it as a
   turn with a `source` and no user words (`Conversation.record_notice`), so a
   question about it ("what time is that?") has something to refer to. Send
-  every proactive message through `notify`. `untrusted=True` fences the
-  history's copy when it retells someone else's words. Readers of `turns` that
-  mean "what the user said" skip rows with a `source` (`learn.py`, `people.py`).
+  every proactive message through `notify`, never straight to Telegram.
+  `private=True` keeps it from the model (a pairing code); `untrusted=True`
+  fences the history's copy when it retells someone else's words. Readers of
+  `turns` that mean "what the user said" skip rows with a `source` (`learn.py`,
+  `people.py`).
 
 ## The screen
 
@@ -209,20 +223,87 @@ queue behind a turn. A new entry point must take it too.
   validates against an explicit pattern; the endpoint never stores free text.
 - **Panels.** `helpers/panels.py` maps a key to a `snapshot()` on a module. Adding
   one is a snapshot function and a line in `_PANELS`.
-- **Idle screen.** After `kiosk.idle_minutes` the page shows a clock and
+- **Idle screen.** After `kiosk.idle_minutes` the panel shows a clock and
   `kiosk.ambient()` cards. Touching it anywhere returns to Home.
 - **Notifications.** `helpers.notify.notify` writes the database and the
   conversation first and pushes to connected screens second. Nothing wakes a
   sleeping panel.
 - **Sleep.** `helpers/lowpower.py` darkens the panel (`helpers/display.py` tries
   each backend until one works), stops the pollers and leaves the rest running.
+  A job started with `BackgroundJobs.start(suspendable=False)` is not a poller
+  and keeps running; that is Telegram, the way in while the panel is dark.
   A tap or the wake time ends it. A restart always turns the panel back on.
+
+### The panel app
+
+Why a native app: on a 2 GB Pi the desktop (~300 MB), Chromium (300-600 MB) and
+Home Assistant do not fit, the board swaps and the web UI ran at about 1 fps.
+`kiosk/` is Qt Quick (QML), run by the stock `qml6` tool from apt inside a bare
+labwc session: no desktop, no browser, no Python or Node in the process.
+
+```
+kiosk/Main.qml       the Window: scales one 1280x800 Frame to any screen, black backdrop
+kiosk/Shell.qml      header, one screen at a time (Loaders), nav bar, sheets, idle and sleep
+kiosk/state/         singletons: Api (XHR), Wony (config, socket, sleep), Live (polls), Ui, Clock
+kiosk/theme/         Theme.qml: palette, type, motion
+kiosk/lib/*.mjs      the logic, no Qt: devices, tiles, jobs, time, layout (node --test runs them)
+kiosk/components/    Pressable, Txt, Icon, Field, Keyboard, Scrim and the sheets
+kiosk/screens/       Home, Rooms, Music, Macros, System (Settings, Accounts), Ambient
+kiosk/icons/         Icons.mjs, generated by kiosk/tools/lucide_paths.py
+kiosk/fonts/         Figtree and IBM Plex Mono (SIL OFL)
+kiosk/session/       labwc's config: no frames, no shortcuts, kanshi for the display layout
+```
+
+- **One process, the same API.** Everything the panel does goes through `/api/*`
+  and `/api/ws`, so the agent lock, the confirm gate and `local_only.py` still
+  apply. A crash on screen cannot stop the timers behind it.
+- **Polling** is one `Panel` per live panel in `state/Live.qml` (same intervals as
+  before), stopped while asleep or idle and refreshed on wake. A poll whose JSON
+  did not change is dropped, so delegates are not rebuilt.
+- **Pure logic goes in `lib/*.mjs`** and takes plain data (`describeTile` returns
+  what a tile shows and which action a tap means; QML carries it out). That is
+  what `kiosk/tests/*.test.mjs` can check without Qt.
+- **Repaints only when something changes.** Clock on the minute, countdown labels
+  on a 1 s timer that exists only on Home and Music, the track bar is one animation.
+- **Icons** are lucide paths drawn by a `Shape` (`CurveRenderer`). To add one,
+  put its name in `ICONS` in `kiosk/tools/lucide_paths.py` and run it.
+- **Text fields use Wony's own keyboard** (`components/Field.qml`, `Keyboard.qml`):
+  a focused `Field` becomes `Ui.keyTarget`; `Scroller` keeps it above the keyboard.
+- **QML gotchas this code hit:** a property named `onSomething` is a signal
+  handler (`Theme.accentInk`, not `onAccent`); an `id` called `left` resolves to
+  nothing inside a delegate; declaring `property var data` on an `Item` swallows
+  its children; a derived sheet cannot redeclare `closed`.
 
 ### Starting at boot
 
-`./wony.sh autostart install` writes two systemd *user* units: `wony.service`
-(`wony.py kiosk`) and `wony-kiosk.service` (Chromium, fullscreen, pointed at
-`localhost:<server.port>`), and enables lingering so they start without a login.
+`./wony.sh autostart install` writes two units:
+
+- `wony.service`, a systemd *user* unit (`wony.py kiosk`), with lingering enabled
+  so it starts without a login.
+- `wony-panel.service`, a *system* unit installed with sudo, that runs
+  `labwc -C kiosk/session -S "<python> wony.py panel"` as the owner on tty1.
+  `-S` ends labwc when the panel exits, so `Restart=always` brings the whole
+  session back in about 3 s. It has `Alias=display-manager.service`, so it
+  replaces lightdm: install disables the current display manager, enables the
+  panel unit and records both in `.wony_autostart.json` (gitignored);
+  `autostart uninstall` restores them. Every sudo command is printed first, and a
+  failure after the desktop was switched off switches it back on.
+
+It is never started by `install` itself: it would fight the running desktop for
+the display, so it comes up at the next boot. `--no-screen` installs only the
+first unit. A legacy `wony-kiosk.service` (Chromium) is removed on install.
+
+### The sign-in browser
+
+Google refuses sign-in inside embedded webviews (`disallowed_useragent`) and its
+device-code flow does not allow Gmail or Calendar scopes, so consent needs a real
+browser. `helpers/browser.sign_in()` is a context manager around one sign-in: it
+registers a `webbrowser` browser that starts Chromium (`--app`, a throwaway
+profile, on the panel's Wayland socket) and `wvkbd-mobintl`, and closes both on
+the way out, however the sign-in ended. `google_auth._consent` passes its name to
+`run_local_server(browser=...)` and `spotify._get_auth_code` to `webbrowser.get`.
+With no Wayland session or no Chromium it opens the default browser instead.
+The OAuth app is published ("In production", unverified), so a sign-in lasts.
 
 ### Starting with no AI key
 
@@ -230,6 +311,38 @@ The device still comes up: timers, music and the smart home need no key. The AI
 service fails on its own and is left unregistered; `get_ai_client()` retries it
 (re-reading `.env`) on every turn and, until a key exists, a turn answers with
 `NO_AI_MESSAGE`. Startup also puts that message on the bell once.
+
+## Telegram
+
+`modules/telegram.py` is the panel's chat. It is a service that registers no
+jobs, polls outward (no open port, no public URL), checks who is talking, and
+calls `run_turn(text, at_machine=False)` — the same entry as everything else, so
+the agent lock, the confirm gate and the untrusted fence all apply.
+
+Its polling thread starts from `bootstrap._start_telegram`, not from `__init__`:
+anything that merely imports `modules` (the tests, `doctor`) would otherwise
+start taking the real bot's messages.
+
+- **Who may talk:** one paired owner, stored in `modules.telegram.owner`. Pairing
+  is a code kept in kv until used, announced through `notify(private=True)` and
+  shown on the Settings screen by the service's `setting_note`
+  (`settings._live_note`). It is a credential: never put it in anything the
+  assistant reads (`settings.explain`, the README). Five wrong codes retire it;
+  strangers get no reply.
+- **`at_machine` vs `user_present`:** a chat user is present (can confirm) but
+  not at the screen. `turn_context.at_machine()` gates anything that opens a
+  window here — Google consent in `google_auth.credentials` and
+  `google_accounts._authorize`. A new job that opens something on screen needs
+  the same check.
+- **Forwarded text** is someone else's words: pass it as `run_turn(quoted=...)`,
+  never inside `user_input`, so it is fenced and not counted as the user's.
+- **Stale messages:** Telegram queues for 24h. A message older than
+  `_STALE_SECONDS` gets "I was off" and is not run.
+- **Out:** the module listens on `helpers.events` and copies `notification`
+  events to the owner.
+- **Text only:** there is no speech recognition here, so a voice note gets a
+  reply saying so.
+- **Tests:** `tests/test_telegram.py` fakes the Bot API at `net.post`.
 
 ## Adding a job
 
@@ -246,6 +359,12 @@ requests against.
 ## Keeping in step with main
 
 Both branches carry the same agent loop, registry, confirm gate, `tools.py`,
-`turn.py`, Google auth and the Gmail/Calendar/Spotify/Home Assistant/Weather
-modules. A fix to any of them belongs on both: port it when you make it, and say
-so in the commit. What is deleted here is deleted, not switched off.
+`turn.py`, Google auth and the Gmail/Calendar/Spotify/Home Assistant/Weather/
+Telegram modules. A fix to any of them belongs on both: port it when you make
+it, and say so in the commit. `google_auth.py` and `spotify.py` call
+`helpers/browser.sign_in()`, so `main` needs a `helpers/browser.py` too (there it
+just opens the default browser), and the Google wording ("signed me out", no
+weekly or day-before warning) is the same on both. What is deleted here is
+deleted, not switched off.
+Telegram differs only where the device does: no voice notes, and it stays
+running through sleep.

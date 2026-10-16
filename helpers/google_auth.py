@@ -6,10 +6,10 @@ read-only until "Change my calendar" is on. Turning a switch on
 asks Google once more; turning it off gives the extra permission back the next
 time the user is around to sign in.
 
-The OAuth app stays in Google's Testing mode (publishing needs a public home
-page, privacy policy and terms), so Google ends every sign-in after 7 days.
-That is handled as a normal event: one notification, a "Sign in again" button,
-and a heads-up the day before.
+The OAuth app is published ("In production", unverified), so a sign-in lasts
+until the user revokes it or Google retires it. When one does end it is a
+normal event: one notification and a "Sign in again" button. The consent page
+opens in a throwaway browser over the touch panel (helpers/browser.py).
 """
 import datetime
 import os
@@ -35,9 +35,6 @@ _WRITE_SCOPES = {scope for _, extra, _ in _MODULE_SCOPES.values() for scope in e
 # Consent happens in a browser at human speed: long enough for a password and a
 # phone code, short enough that an abandoned sign-in does not hang forever.
 _CONSENT_TIMEOUT_SECONDS = 180
-# Testing-mode refresh tokens die 7 days after consent; warn a day early.
-_WARN_AFTER = datetime.timedelta(days=6)
-_WAKING_HOURS = range(9, 21)
 
 _locks: typing.Dict[str, threading.Lock] = {}
 _locks_guard = threading.Lock()
@@ -101,7 +98,7 @@ def credentials(account: str = "") -> typing.Any:
     Raises SignInNeeded when Google needs the user and nobody is there to ask —
     a trigger, a scheduled action or a background poll never opens a browser.
     """
-    from helpers.turn_context import user_present
+    from helpers.turn_context import at_machine, user_present
 
     name = GoogleAccounts.resolve(account or None)
     with _lock_for(name):
@@ -111,17 +108,20 @@ def credentials(account: str = "") -> typing.Any:
             granted = set(creds.scopes or [])
             missing = need - granted
             surplus_write = (granted - need) & _WRITE_SCOPES
-            if not missing and not (surplus_write and user_present()):
+            if not missing and not (surplus_write and at_machine()):
                 return _fresh(name, creds)
-            if surplus_write and user_present():
+            if surplus_write and at_machine():
                 # A write switch was turned off: give the permission back.
                 _revoke(creds)
-        if not user_present():
+        if not at_machine():
+            # A chat from a phone is the user, but the consent page would open
+            # on a screen nobody is standing at — so they are sent there instead.
+            hint = _sign_in_line(name)
+            if user_present():
+                hint = f"Do this at Wony's screen: {hint}"
             if creds is None:
-                raise SignInNeeded(f"Google account '{name}' isn't signed in. {_sign_in_line(name)}")
-            raise SignInNeeded(
-                f"Google needs your OK for something new on '{name}'. {_sign_in_line(name)}"
-            )
+                raise SignInNeeded(f"Google account '{name}' isn't signed in. {hint}")
+            raise SignInNeeded(f"Google needs your OK for something new on '{name}'. {hint}")
         return _consent(name, need)
 
 
@@ -138,10 +138,7 @@ def _fresh(name: str, creds: typing.Any) -> typing.Any:
         creds.refresh(Request())
     except RefreshError as exc:
         _mark_signed_out(name)
-        raise SignInNeeded(
-            f"Google signed me out of '{name}' — it does that every week for "
-            f"personal apps. {_sign_in_line(name)}"
-        ) from exc
+        raise SignInNeeded(f"Google signed me out of '{name}'. {_sign_in_line(name)}") from exc
     _save(name, creds)
     return creds
 
@@ -149,6 +146,8 @@ def _fresh(name: str, creds: typing.Any) -> typing.Any:
 def _consent(name: str, scopes: typing.Set[str]) -> typing.Any:
     """Open the browser for Google's consent screen and keep the result."""
     from google_auth_oauthlib.flow import InstalledAppFlow
+
+    from helpers import browser
 
     if not os.path.exists(CREDENTIALS_FILE):
         raise SignInNeeded(
@@ -160,14 +159,16 @@ def _consent(name: str, scopes: typing.Set[str]) -> typing.Any:
     os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
     flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, scopes=sorted(scopes))
     hint = GoogleAccounts.record(name).get("email") or None
-    creds = flow.run_local_server(
-        port=0,
-        timeout_seconds=_CONSENT_TIMEOUT_SECONDS,
-        # Ask again even when Google remembers an earlier grant, or no refresh
-        # token comes back and the sign-in dies within the hour.
-        prompt="consent",
-        login_hint=hint,
-    )
+    with browser.sign_in() as browser_name:
+        creds = flow.run_local_server(
+            port=0,
+            timeout_seconds=_CONSENT_TIMEOUT_SECONDS,
+            browser=browser_name,
+            # Ask again even when Google remembers an earlier grant, or no refresh
+            # token comes back and the sign-in dies within the hour.
+            prompt="consent",
+            login_hint=hint,
+        )
     _save(name, creds)
     forget(name)
     email = _email_for(creds) or hint or ""
@@ -176,7 +177,6 @@ def _consent(name: str, scopes: typing.Set[str]) -> typing.Any:
         email=email,
         signed_in_at=datetime.datetime.now().isoformat(timespec="seconds"),
         needs_sign_in=False,
-        warned_for="",
     )
     GoogleAccounts.drop_legacy_tokens(name)
     return creds
@@ -262,8 +262,7 @@ def _mark_signed_out(name: str) -> None:
     from helpers.notify import notify
 
     notify(
-        f"Google signed me out of '{name}' (it does that weekly for personal apps). "
-        f"{_sign_in_line(name)}",
+        f"Google signed me out of '{name}'. {_sign_in_line(name)}",
         kind="alert", source="google",
     )
 
@@ -283,30 +282,3 @@ def status(account: str) -> typing.Dict[str, typing.Any]:
         },
         "signed_in_at": record.get("signed_in_at", ""),
     }
-
-
-def warn_before_sign_out() -> None:
-    """A day before Google's weekly sign-out, say so at a waking hour, so the
-    morning briefing does not fail. Called from the health watcher."""
-    from helpers.notify import notify
-
-    now = datetime.datetime.now()
-    if now.hour not in _WAKING_HOURS:
-        return
-    for name in GoogleAccounts.list_accounts():
-        record = GoogleAccounts.record(name)
-        stamp = record.get("signed_in_at", "")
-        if not stamp or record.get("needs_sign_in") or record.get("warned_for") == stamp:
-            continue
-        try:
-            signed_in = datetime.datetime.fromisoformat(stamp)
-        except ValueError:
-            continue
-        if now - signed_in < _WARN_AFTER:
-            continue
-        GoogleAccounts.update(name, warned_for=stamp)
-        notify(
-            f"Google will sign me out of '{name}' tomorrow. Sign in again now to keep "
-            f"mail and calendar working: {_sign_in_line(name)}",
-            kind="alert", source="google",
-        )

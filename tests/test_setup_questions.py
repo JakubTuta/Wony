@@ -17,8 +17,9 @@ from unittest import mock
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _REPO_ROOT)
 
-# Only for a port clash; the default works, and nobody picks a free port by guessing.
-_NOT_ASKED = {"server.port"}
+# server.port: only for a port clash; the default works, and nobody picks a free
+# port by guessing. The Telegram owner is set by pairing, never typed in.
+_NOT_ASKED = {"server.port", "modules.telegram.owner"}
 
 
 def _load_setup():

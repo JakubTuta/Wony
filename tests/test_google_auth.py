@@ -104,6 +104,36 @@ class TestNoSurpriseBrowser(AccountsTestCase):
         flow.assert_not_called()
         self.assertIn("authorize work", str(raised.exception))
 
+    def test_a_chat_from_a_phone_never_opens_it_on_an_empty_room(self) -> None:
+        from helpers import google_auth
+        from helpers.accounts import GoogleAccounts
+        from helpers.turn_context import user_request
+
+        GoogleAccounts.add_account("work")
+        on, get = _config({"gmail"})
+        with on, get, user_request("check my mail", at_machine=False), \
+                mock.patch("google_auth_oauthlib.flow.InstalledAppFlow.from_client_secrets_file") as flow:
+            with self.assertRaises(google_auth.SignInNeeded) as raised:
+                google_auth.credentials("work")
+        flow.assert_not_called()
+        self.assertIn("at Wony's screen", str(raised.exception))
+
+    def test_authorizing_from_a_phone_is_sent_to_the_screen(self) -> None:
+        """The accounts job calls sign_in directly, past credentials()' check, and
+        would hold every other request while a browser waited on an empty room."""
+        from helpers import google_auth
+        from helpers.accounts import GoogleAccounts
+        from helpers.turn_context import user_request
+        from modules.google_accounts import GoogleAccountsService
+
+        GoogleAccounts.add_account("work")
+        on, get = _config({"gmail"})
+        with on, get, mock.patch.object(google_auth, "sign_in") as sign_in:
+            with user_request("sign in to work", at_machine=False):
+                text = GoogleAccountsService()._authorize("work")
+            sign_in.assert_not_called()
+            self.assertIn("Wony's screen", text)
+
     def test_a_user_request_may_open_it(self) -> None:
         from helpers import google_auth
         from helpers.accounts import GoogleAccounts

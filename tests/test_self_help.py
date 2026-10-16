@@ -379,6 +379,7 @@ class TestTheRealGuide(unittest.TestCase):
             ("how do I set up spotify", "developer.spotify.com"),
             ("how do I set up home assistant", "Long-lived access tokens"),
             ("how do I set up gmail", "OAuth"),
+            ("how do I set up telegram", "BotFather"),
         ):
             with self.subTest(question=question):
                 self.assertIn(answer, guide.search(lookup.keywords(question)))

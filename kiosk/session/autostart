@@ -1,0 +1,2 @@
+# Re-apply the layout and rotation chosen in Raspberry Pi Screen Configuration.
+command -v kanshi >/dev/null 2>&1 && kanshi &

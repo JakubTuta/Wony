@@ -27,6 +27,12 @@ class GoogleAccountsService:
         The flow runs on a worker thread because it blocks on a person, and the
         caller is an agent turn.
         """
+        from helpers.turn_context import at_machine, user_present
+
+        # From a phone the consent page would open on an empty room's screen
+        # and hold every other request until it timed out.
+        if user_present() and not at_machine():
+            return "Signing in opens Google's page on Wony's screen, so it has to be done there."
         if not any(Config.is_module_enabled(m) for m in google_auth.GOOGLE_MODULES):
             return "Neither Gmail nor Calendar is switched on, so there is nothing to sign in to."
         if not os.path.exists(CREDENTIALS_FILE):
@@ -91,8 +97,9 @@ class GoogleAccountsService:
     ) -> str:
         """
         [GOOGLE ACCOUNTS JOB] Lists, adds, signs in to, renames or removes the Google
-        accounts Wony uses for Gmail and Calendar, and picks which one is the default. "Authorize" signs an account in again — Google signs Wony out
-        every week. Adding and authorizing open a browser for consent.
+        accounts Wony uses for Gmail and Calendar, and picks which one is the default.
+        "Authorize" signs an account in again, for example after Google has signed it
+        out. Adding and authorizing open a browser for consent.
 
         Args:
             action (str): "list" (the default), "add", "authorize", "remove", "rename"

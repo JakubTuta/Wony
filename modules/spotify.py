@@ -10,7 +10,7 @@ import webbrowser
 
 import requests
 
-from helpers import net
+from helpers import browser, net
 from helpers.cache import Cache
 from helpers.decorators import capture_response, retry_on_unauthorized
 from helpers.logger import logger
@@ -947,16 +947,18 @@ class Spotify:
             }
         )
 
-        logger.log_system_event("spotify_auth", f"Opening browser for authorization.")
-        webbrowser.open(auth_url)
-
         httpd = socketserver.TCPServer(("127.0.0.1", self.PORT), AuthHandler)
         httpd.timeout = 1.0  # bounds each handle_request() call so the deadline loop below is enforced
-        logger.log_system_event("spotify_auth", f"Waiting for authorization at http://localhost:{self.PORT}")
+        logger.log_system_event("spotify_auth", f"Opening browser for authorization.")
         try:
-            deadline = time.monotonic() + self._AUTH_TIMEOUT_SECONDS
-            while auth_code is None and time.monotonic() < deadline:
-                httpd.handle_request()
+            # The sign-in browser (and its keyboard) shows over the panel and
+            # closes when this block ends.
+            with browser.sign_in() as browser_name:
+                webbrowser.get(browser_name).open(auth_url)
+                logger.log_system_event("spotify_auth", f"Waiting for authorization at http://localhost:{self.PORT}")
+                deadline = time.monotonic() + self._AUTH_TIMEOUT_SECONDS
+                while auth_code is None and time.monotonic() < deadline:
+                    httpd.handle_request()
         finally:
             httpd.server_close()
 

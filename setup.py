@@ -6,8 +6,8 @@ Wony setup — the required, single-file installer.
 
 Sets the whole app up and leaves it working: picks/creates the Python
 environment, installs only the dependencies for the features you choose,
-writes .env / config.yaml and the required folders, builds the touch screen UI
-with npm, then asks for every API key, credentials file, permission and
+writes .env / config.yaml and the required folders, installs the touch panel's
+system packages with apt, then asks for every API key, credentials file, permission and
 preference those features need — checking each key against the service and
 running the Spotify and Google sign-ins right here. The preferences are the
 same ones the Settings screen offers, asked in the screen's own words.
@@ -78,7 +78,6 @@ VENV_DIR = os.path.join(ROOT, "venv")
 CREDENTIALS = os.path.join(ROOT, "credentials")
 GOOGLE_CREDENTIALS = os.path.join(CREDENTIALS, "google_credentials.json")
 KIOSK = os.path.join(ROOT, "kiosk")
-KIOSK_INDEX = os.path.join(KIOSK, "dist", "index.html")
 
 # The modules setup always installs. "ai", "status" and "employer" are always-on
 # in the app itself (helpers/config.ALWAYS_ON) and are not written into
@@ -91,13 +90,13 @@ ALWAYS_ON = ["basics"]
 FEATURES = [
     {
         "key": "kiosk",
-        "label": "Kiosk — the touch screen UI and web API (recommended run mode)",
+        "label": "Kiosk — the touch panel and its API (recommended run mode)",
         "reqs": ["server.txt"],
         "module": None,
         "default": True,
         "desc": "Run Wony as a wall panel: tap tiles, devices and routines — touch only, no keyboard.",
-        "needs": "Node.js 20.19+ — setup builds the screen for you. "
-        "Start with: ./wony.sh   (then open the URL it prints).",
+        "needs": "Raspberry Pi OS Trixie — setup installs the screen's system packages with apt. "
+        "Start with: ./wony.sh, then ./wony.sh panel in a second terminal.",
     },
     {
         "key": "weather",
@@ -196,6 +195,17 @@ FEATURES = [
         "needs": "A long-lived access token from your Home Assistant profile → Security — "
         "setup asks for it and for the address. Locks and the garage stay off "
         "until you allow them.",
+    },
+    {
+        "key": "telegram",
+        "label": "Telegram (message Wony from your phone)",
+        "reqs": [],
+        "module": "telegram",
+        "default": False,
+        "desc": "Chat with Wony from Telegram, and get timers and reminders there too.",
+        "needs": "A bot token from @BotFather in Telegram — setup asks for it. Settings → "
+        "Telegram on the screen then shows a code to send your bot. Telegram can see "
+        "the conversation.",
     },
     {
         "key": "semantic",
@@ -774,6 +784,8 @@ def configure(chosen):
         step_google(keys, pending)
     if "home_assistant" in keys:
         step_home_assistant(env, pending)
+    if "telegram" in keys:
+        step_telegram(env, pending)
     step_device(keys)
     if "kiosk" in keys:
         step_autostart()
@@ -996,15 +1008,16 @@ def _spotify_sign_in(pending):
 
 _GOOGLE_SIGN_IN_NOTES = (
     "Google will say it 'hasn't verified this app'. It is your own app: click",
-    "Advanced, then continue. Because it stays in Testing, Google signs Wony out",
-    "every 7 days — the screen tells you, and signing in again is one tap.",
+    "Advanced, then continue. Once the app is published (step 3) you sign in once",
+    "per account; the browser opens on the panel with a keyboard and closes itself.",
 )
 
 _GOOGLE_STEPS = (
     "1. Open console.cloud.google.com and pick (or create) a project.",
     "2. APIs & Services → Library: enable 'Gmail API' and 'Google Calendar API'.",
-    "3. OAuth consent screen: choose 'External', leave it in Testing, and add your",
-    "   own Google address under Test users.",
+    "3. OAuth consent screen: choose 'External', then press 'Publish app' so it is",
+    "   In production. It stays unverified, which is fine for your own account —",
+    "   in Testing, Google would sign Wony out every 7 days.",
     "4. Credentials → Create credentials → OAuth client ID → Desktop app → Download JSON.",
 )
 
@@ -1149,6 +1162,27 @@ def step_home_assistant(env, pending):
     )
 
 
+def check_telegram(token):
+    return http_request(f"https://api.telegram.org/bot{token}/getMe")[0]
+
+
+def step_telegram(env, pending):
+    section("Telegram")
+    token = ask_key(
+        "TELEGRAM_BOT_TOKEN",
+        "the Telegram chat with @BotFather: send /newbot",
+        env.get("TELEGRAM_BOT_TOKEN", ""),
+        check_telegram,
+    )
+    if token:
+        env_set({"TELEGRAM_BOT_TOKEN": token})
+        note("Once Wony is running, Settings → Telegram on the screen shows a code. "
+             "Send it to your bot to connect.")
+        ask_setting("modules.telegram.forward_notifications")
+    else:
+        pending.append("Telegram: no bot token yet.")
+
+
 def step_working_day():
     section("Your working day")
     ask_setting("modules.calendar.work_start_hour")
@@ -1166,9 +1200,11 @@ def step_device(keys):
 
 def step_autostart():
     """A screen on a wall has nobody to start it — offer the systemd units that
-    bring Wony and the browser up at boot."""
+    bring Wony and its touch panel up at boot."""
     section("Starting at boot")
-    if not confirm("Start Wony and the screen automatically at boot?", default=False):
+    note("This turns the Pi into a dedicated Wony panel: the desktop stops starting,")
+    note("and './wony.sh autostart uninstall' brings it back.")
+    if not confirm("Make this device a Wony panel at boot?", default=False):
         return
     command = [sys.executable, os.path.join(ROOT, "wony.py"), "autostart", "install"]
     if subprocess.call(command) != 0:
@@ -1233,114 +1269,63 @@ def apply_enabled_modules(chosen):
     ok(f"enabled_modules = {', '.join(wanted)}")
 
 
-# ── The touch UI (a built artifact, not a Python package) ─────────────────────
-
-# Vite refuses to run below this, and the Node in Raspberry Pi OS is often older.
-NODE_MIN = "Node 20.19+ (or 22.12+)"
-NODE_INSTALL = (
-    "curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - "
-    "&& sudo apt install -y nodejs"
-)
-BUILD_BY_HAND = "cd kiosk && npm install && npm run build"
+# ── The touch panel (system packages, not Python ones) ────────────────────────
 
 
-def _npm():
-    """Path to npm, or "" when Node is not installed."""
+def _remove_old_build():
+    """The panel used to be a web page built with npm. Those folders are dead
+    weight now (the build alone was over 100 MB), so clear them out."""
     import shutil
 
-    return shutil.which("npm") or ""
+    for name in ("node_modules", "dist"):
+        path = os.path.join(KIOSK, name)
+        if os.path.isdir(path):
+            shutil.rmtree(path, ignore_errors=True)
+            note(f"Removed the old web build (kiosk/{name}) — the panel is a native app now.")
 
 
-def _node_too_old():
-    """The version string when node is present but too old to build with,
-    otherwise "" (which also covers "cannot tell")."""
-    try:
-        version = subprocess.check_output(
-            ["node", "--version"], text=True, stderr=subprocess.DEVNULL
-        ).strip()
-    except Exception:
-        return ""
-    match = re.match(r"v(\d+)\.(\d+)", version)
-    if not match:
-        return ""
-    major, minor = int(match.group(1)), int(match.group(2))
-    # Vite's own range: ^20.19 || >=22.12.
-    supported = major > 22 or (major == 22 and minor >= 12) or (major == 20 and minor >= 19)
-    return "" if supported else version
+def install_screen(chosen):
+    """Install the touch panel's apt packages, and return what is still missing.
 
-
-def _kiosk_built() -> bool:
-    """True when kiosk/dist/index.html exists *and* has content.
-
-    Existence alone is not enough: a build killed partway through (an OOM on a
-    Pi is the usual way) leaves a zero-byte index.html behind. That file passes
-    an isfile() check, so setup calls the build done and skips it forever after,
-    while the server happily serves `200 OK` with an empty body — a blank screen
-    and a curl that prints nothing, with no error anywhere to explain it.
-    """
-    try:
-        return os.path.getsize(KIOSK_INDEX) > 0
-    except OSError:
-        return False
-
-
-def build_kiosk(chosen):
-    """Build the touch UI, and return what is still missing.
-
-    This is the one gap the app cannot report itself: without kiosk/dist the
-    API still answers every request, so the screen looks like a working server
-    that has decided the home page does not exist ({"detail":"Not found"}).
+    The panel is a Qt Quick app run by the `qml6` tool inside a bare labwc
+    session; both come from Raspberry Pi OS Trixie's own repositories, so there
+    is nothing to build. This is the one gap the app cannot report itself: with
+    no QML runtime the assistant still answers every request, but the screen
+    has nothing to show it on.
     """
     if not any(f["key"] == "kiosk" for f in chosen):
         return []
 
-    section("The touch screen UI")
-    built = _kiosk_built()
-    if built:
-        note("Already built (kiosk/dist).")
-        note("Rebuild it after every 'git pull' — the screen is not in the repo.")
-        if not (interactive() and confirm("Rebuild it now?", default=False)):
-            return []
+    section("The touch panel")
+    _remove_old_build()
 
-    npm = _npm()
-    if not npm:
-        warn("Node.js is not installed — the screen cannot be built here.")
-        note(f"Install {NODE_MIN}, then:  {BUILD_BY_HAND}")
-        note(NODE_INSTALL)
-        return (
-            []
-            if built
-            else [f"Screen UI: not built — install Node.js, then: {BUILD_BY_HAND}"]
-        )
+    repo_on_path()
+    from helpers import screen
 
-    outdated = _node_too_old()
-    if outdated:
-        warn(f"Node {outdated} is older than the build needs ({NODE_MIN}).")
-        note(f"Upgrade with:  {NODE_INSTALL}")
-
-    note("This downloads the UI's packages — a few minutes on a Pi.")
-    for step in (["install"], ["run", "build"]):
-        print(c("    $ npm " + " ".join(step), "90"))
-        if subprocess.call([npm] + step, cwd=KIOSK) != 0:
-            warn(f"'npm {' '.join(step)}' failed — the screen will not load.")
-            note(
-                "A Pi with little RAM usually runs out of memory here: add swap, or "
-                "build on another machine and copy kiosk/dist across."
-            )
-            return [f"Screen UI: build failed — {BUILD_BY_HAND}"]
-
-    if _kiosk_built():
-        ok("built kiosk/dist — the screen has something to show.")
+    version = screen.debian_version()
+    if version is None:
+        note("The panel runs from system packages on Raspberry Pi OS — nothing to install here.")
+        note("To try it on this machine: pip install -r requirements/dev-screen.txt, then ./wony.sh panel --windowed.")
         return []
-    if os.path.isfile(KIOSK_INDEX):
-        warn("The build left kiosk/dist/index.html empty — the screen will be blank.")
-        note(
-            "That is what a build killed partway through looks like: add swap, or "
-            "build on another machine and copy kiosk/dist across."
-        )
-        return [f"Screen UI: kiosk/dist/index.html is empty — {BUILD_BY_HAND}"]
-    warn("The build finished but kiosk/dist/index.html is not there.")
-    return [f"Screen UI: build produced no kiosk/dist/index.html — {BUILD_BY_HAND}"]
+    if version < screen.MIN_DEBIAN_VERSION:
+        warn(f"This is Debian {version}; the panel needs Raspberry Pi OS Trixie (Debian 13), which ships Qt 6.8.")
+        note("Flash Raspberry Pi OS (64-bit) Trixie to the card, then run ./wony.sh setup again.")
+        return ["Touch panel: needs Raspberry Pi OS Trixie (Debian 13) — reflash, then re-run setup."]
+
+    missing = screen.missing_packages()
+    if not missing:
+        ok("The panel's system packages are installed.")
+        return []
+
+    command = screen.install_command(missing)
+    note("The panel needs these system packages (about 60 MB): " + ", ".join(missing))
+    if interactive() and confirm("Install them now with apt? It asks for your sudo password.", default=True):
+        print(c("    $ " + command, "90"))
+        if subprocess.call(["sudo", "apt-get", "install", "-y", *missing]) == 0:
+            ok("installed the panel's system packages.")
+            return []
+        warn("apt could not install them — the panel will not start.")
+    return [f"Touch panel: system packages missing — {command}"]
 
 
 # ── Install ─────────────────────────────────────────────────────────────────────
@@ -1446,13 +1431,11 @@ def next_steps(chosen, use_venv, pending):
     section("Done")
     show_pending(pending)
     kiosk = any(f["key"] == "kiosk" for f in chosen)
-    # The touch UI is a built artifact, and skipping the build is silent: the
-    # API answers fine and the display shows nothing at all.
-    if kiosk and not os.path.isfile(KIOSK_INDEX):
-        print(c("\n  Build the screen: ", "1") + BUILD_BY_HAND)
 
     py = os.path.relpath(sys.executable, ROOT) if use_venv else "python"
     print(c("\n  Start Wony:  ", "1") + (f"{py} wony.py" if kiosk else f"{py} wony.py text"))
+    if kiosk:
+        print(c("  Show the panel: ", "1") + f"{py} wony.py panel   (in a second terminal)")
     print(c("  Check setup: ", "1") + f"{py} wony.py doctor")
     print()
 
@@ -1497,10 +1480,15 @@ def cmd_configure():
     prune_config()
     _, detected = detect()
     pending = configure([f for f in FEATURES if f["key"] in detected])
-    # Nothing is installed here, so the screen is not built either — but it is
-    # still the reason a finished-looking install shows nothing.
-    if "kiosk" in detected and not os.path.isfile(KIOSK_INDEX):
-        pending.append(f"Screen UI: not built — {BUILD_BY_HAND}")
+    # Nothing is installed here, so the panel's packages are not either — but
+    # they are still the reason a finished-looking install shows nothing.
+    if "kiosk" in detected:
+        repo_on_path()
+        from helpers import screen
+
+        missing = screen.missing_packages()
+        if missing:
+            pending.append(f"Touch panel: system packages missing — {screen.install_command(missing)}")
     section("Done")
     show_pending(pending)
     print()
@@ -1558,7 +1546,7 @@ def main():
     prune_config()
     apply_enabled_modules(chosen)
     verify_install(chosen)
-    pending = build_kiosk(chosen)
+    pending = install_screen(chosen)
     # Before the questions: the marker unlocks wony.py, which the boot-units
     # step runs, and the sign-in steps import what was just installed.
     write_marker(use_venv)

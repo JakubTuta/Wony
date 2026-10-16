@@ -1,25 +1,20 @@
 """
 FastAPI app factory. Call build_app() after bootstrap() has run.
-Serves the JSON API, the WebSocket the screen listens on, and — once
-`kiosk/dist` has been built — the touch UI itself.
+Serves the JSON API and the WebSocket the touch panel (kiosk/, a separate
+process) listens on. It serves no pages.
 """
 
 import asyncio
 import json
-import os
 import typing
 
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from helpers import local_only
 from helpers.config import Config
 from helpers.registry import ServiceRegistry
-
-# The built touch UI (not in the repo). A constant so a test can point it elsewhere.
-_DIST_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "kiosk", "dist")
 
 
 def _coerce_args(
@@ -644,32 +639,5 @@ def build_app() -> FastAPI:
             pass
         finally:
             _ws_clients.discard(ws)
-
-    _dist = _DIST_DIR
-
-    if os.path.isdir(_dist):
-        _assets = os.path.join(_dist, "assets")
-        if os.path.isdir(_assets):
-            app.mount("/assets", StaticFiles(directory=_assets), name="assets")
-
-        @app.exception_handler(404)
-        async def spa_fallback(
-            request: Request, exc: HTTPException
-        ) -> FileResponse | JSONResponse:
-            if request.url.path.startswith("/api"):
-                return JSONResponse({"detail": "Not found"}, status_code=404)
-            index = os.path.join(_dist, "index.html")
-            if os.path.isfile(index):
-                # no-cache means "revalidate every time", not "never store".
-                # Without it the browser only has ETag and Last-Modified, so it
-                # falls back to heuristic freshness and may serve this shell
-                # from disk without asking — which pins the screen to whichever
-                # hashed bundle it named when it was cached. Rebuilding and
-                # restarting the service would then change nothing visible,
-                # because the stale shell is the thing choosing the bundle.
-                # The bundles themselves are content-hashed, so they are safe
-                # to cache; only this file must never go stale.
-                return FileResponse(index, headers={"Cache-Control": "no-cache"})
-            return JSONResponse({"detail": "Not found"}, status_code=404)
 
     return app

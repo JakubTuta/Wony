@@ -20,6 +20,7 @@ class BackgroundJobs:
         target: typing.Callable,
         interval: typing.Optional[float] = None,
         pass_stop_event: bool = False,
+        suspendable: bool = True,
     ) -> bool:
         """
         Start a named background job.
@@ -30,6 +31,8 @@ class BackgroundJobs:
         only argument — use this for jobs that sleep for a long time (e.g. timers) so
         stop_all()/stop() can wake and cancel them instead of leaving them asleep
         until the delay elapses on its own.
+        suspendable=False keeps the job running through suspend_all(): a way in
+        from outside (Telegram) must not go deaf while the screen sleeps.
         Returns False if a job with that name is already running.
         """
         with cls._lock:
@@ -83,6 +86,7 @@ class BackgroundJobs:
             cls._jobs[name] = {
                 "thread": thread,
                 "stop_event": stop_event,
+                "suspendable": suspendable,
                 "spec": {
                     "target": target,
                     "interval": interval,
@@ -118,18 +122,18 @@ class BackgroundJobs:
 
     @classmethod
     def suspend_all(cls) -> typing.List[str]:
-        """Stop every running job but remember how to start it again.
+        """Stop every suspendable job but remember how to start it again.
 
-        Used when the assistant is paused — a paused assistant should not be
-        announcing new email, but resuming should give the user back the
+        Used when the device sleeps — a sleeping panel should not be
+        announcing new email, but waking should give the user back the
         pollers they asked for rather than silently dropping them.
         """
         with cls._lock:
-            names = list(cls._jobs.keys())
-            for name, job in cls._jobs.items():
+            names = [name for name, job in cls._jobs.items() if job["suspendable"]]
+            for name in names:
+                job = cls._jobs.pop(name)
                 job["stop_event"].set()
                 cls._suspended[name] = job["spec"]
-            cls._jobs.clear()
         return names
 
     @classmethod

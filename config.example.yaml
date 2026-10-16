@@ -47,6 +47,7 @@ enabled_modules:
   # - calendar       # your Google Calendar
   # - google_accounts  # add and sign in to Google accounts from the screen
   # - home_assistant # lights, blinds, heating and more through Home Assistant
+  # - telegram       # message Wony from your phone
 
 modules:
   basics:
@@ -68,6 +69,12 @@ modules:
     # Let Wony create, change and delete events. While off it tells you what
     # to add instead.
     allow_write: false
+  telegram:
+    # The chat Wony answers. Leave empty: Settings shows a code, and the first
+    # chat to send it to your bot is paired. Clear it to pair again.
+    owner: ""
+    # Also send timers, reminders and alerts to that chat.
+    forward_notifications: true
 
 kiosk:
   # After this many minutes of nobody touching the screen, it switches to a
@@ -87,9 +94,9 @@ kiosk:
 
 server:
   # Keep this at 127.0.0.1 unless the screen and Wony run on different machines.
-  # The web page has no password, and it can do everything Wony can — send
-  # email, delete calendar events, power off the device. It refuses requests
-  # from other websites, but any other address hands all of that to whoever can
-  # reach the port.
+  # The screen's connection has no password, and it can do everything Wony can —
+  # send email, delete calendar events, power off the device. It refuses
+  # requests from other websites, but any other address hands all of that to
+  # whoever can reach the port.
   host: "127.0.0.1"
   port: 8000

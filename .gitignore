@@ -17,24 +17,15 @@ logs/
 models/
 training/
 voice/
+# The panel used to be a web page built with npm; setup removes these leftovers.
 kiosk/node_modules/
 kiosk/dist/
 kiosk/.vscode/
 
-# The touch UI
-# Logs
-logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
+# What the display looked like before ./wony.sh autostart install, to undo it.
+.wony_autostart.json
 
-node_modules
-dist
-dist-ssr
-*.local
+*.log
 
 .pytest_cache/
 .coverage

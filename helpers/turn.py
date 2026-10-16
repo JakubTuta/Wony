@@ -2,7 +2,7 @@
 One agent turn, from text in to text out.
 
 Every input path on this device — the console REPL, POST /api/chat, the
-WebSocket chat, a typed message from the touch screen — runs through
+WebSocket chat, a typed message from the touch screen, Telegram — runs through
 run_turn(). It owns the things that must not be duplicated per caller: the
 process-wide agent lock, the cancel signal, the wall-clock backstop, and the
 translation of a failure into something a human can read.
@@ -43,6 +43,8 @@ def run_turn(
     user_input: str,
     on_text: typing.Optional[typing.Callable[[str], None]] = None,
     from_user: bool = True,
+    at_machine: bool = True,
+    quoted: str = "",
     think: bool = False,
 ) -> TurnResult:
     """Run one agent turn. Never raises — failures come back in TurnResult.error.
@@ -52,6 +54,11 @@ def run_turn(
 
     from_user=False for turns nobody asked for (triggers): nothing in them may
     open a sign-in window or follow a link the user never mentioned.
+    at_machine=False for a request from a phone: the user can confirm, but
+    nothing may open a window on the screen.
+    quoted is text someone else wrote that the user passed along (a forwarded
+    message). It reaches the model fenced as data, and is not counted as
+    something the user said.
     """
     from helpers import confirm, toolset
     from helpers.agent import _fallback_from_calls, run_agent
@@ -60,7 +67,7 @@ def run_turn(
     from helpers.decorators import agent_lock, set_agent_active
     from helpers.events import clear_cancel, emit_state, session_cancel
     from helpers.turn_context import mark_untrusted_read, unattended, user_request
-    from helpers.untrusted import OPEN
+    from helpers.untrusted import OPEN, wrap
     from modules.ai import build_agent_system_prompt
 
     timed_out = threading.Event()
@@ -76,7 +83,7 @@ def run_turn(
     agent_result = None
     agent_err: typing.Optional[Exception] = None
 
-    presence = user_request(user_input) if from_user else unattended()
+    presence = user_request(user_input, at_machine=at_machine) if from_user else unattended()
     try:
         with agent_lock, presence:
             # Inside the lock: a cancel raised against a previous turn must not
@@ -89,12 +96,15 @@ def run_turn(
             confirm.begin_turn()
             timer.start()
             try:
+                # Fenced inside the request: wrap() marks the turn as having
+                # read untrusted text, which only sticks within user_request.
+                prompt = f"{user_input}\n{wrap(quoted, 'forwarded message')}" if quoted else user_input
                 history = Conversation.get_messages()
                 # Earlier turns' email bodies ride along in the history. Read
                 # again here, they count as read in this turn too.
-                if any(OPEN in str(m["content"]) for m in history):
+                if OPEN in prompt or any(OPEN in str(m["content"]) for m in history):
                     mark_untrusted_read()
-                quick = _answer_without_model(user_input) if from_user else None
+                quick = None if quoted or not from_user else _answer_without_model(user_input)
                 if quick is not None:
                     agent_result = quick
                     if on_text is not None and quick.text:
@@ -103,7 +113,7 @@ def run_turn(
                     last_reply = history[-1]["content"] if history and history[-1]["role"] == "assistant" else ""
                     agent_result = run_agent(
                         client=get_ai_client(),
-                        user_input=user_input,
+                        user_input=prompt,
                         available_jobs=toolset.pick(
                             f"{user_input}\n{last_reply[:500]}",
                             Conversation.recent_job_names() + confirm.armed_jobs(),
