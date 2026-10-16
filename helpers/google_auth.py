@@ -11,7 +11,6 @@ until the user revokes it or Google retires it. When one does end it is a
 normal event: one notification and a "Sign in again" button. The consent page
 opens in a throwaway browser over the touch panel (helpers/browser.py).
 """
-import datetime
 import os
 import threading
 import typing
@@ -175,7 +174,6 @@ def _consent(name: str, scopes: typing.Set[str]) -> typing.Any:
     GoogleAccounts.update(
         name,
         email=email,
-        signed_in_at=datetime.datetime.now().isoformat(timespec="seconds"),
         needs_sign_in=False,
     )
     GoogleAccounts.drop_legacy_tokens(name)
@@ -280,5 +278,4 @@ def status(account: str) -> typing.Dict[str, typing.Any]:
             module: bool(base) and set(base) <= granted
             for module, (base, _, _) in _MODULE_SCOPES.items()
         },
-        "signed_in_at": record.get("signed_in_at", ""),
     }

@@ -226,10 +226,9 @@ def build_fixture_app(origin: str = "") -> FastAPI:
                                         {"name": "Roadtrip"}]},
         "accounts": {"accounts": [
             {"name": "personal", "email": "me@example.com", "primary": True, "signed_in": True,
-             "needs_sign_in": False, "modules": {"gmail": True, "calendar": True},
-             "signed_in_at": "2026-10-01T09:00:00"},
+             "needs_sign_in": False, "modules": {"gmail": True, "calendar": True}},
             {"name": "work", "email": "", "primary": False, "signed_in": False, "needs_sign_in": True,
-             "modules": {"gmail": False, "calendar": False}, "signed_in_at": ""},
+             "modules": {"gmail": False, "calendar": False}},
         ], "primary": "personal", "services": {"gmail": True, "calendar": True}, "credentials_ready": True},
     }
 
