@@ -222,6 +222,17 @@ queue behind a turn. A new entry point must take it too.
   `device:light.lamp`, `timer:10`, `music`, `volume`, `sleep`). Tapping one
   resolves straight to a job, with no model call. `helpers/kiosk.save_tiles`
   validates against an explicit pattern; the endpoint never stores free text.
+  Nothing is stored until the first edit: while `load_tiles()` is None, Home
+  draws `starterTiles` (`lib/tiles.mjs`) from the live devices and routines, so
+  a device that connects later shows up by itself. Every tile it can pick must
+  also be in `candidateTiles`, or a removed one could not be added back.
+- **Qt's JavaScript is older than Node's.** `lib/*.mjs` run under Qt's engine,
+  which has no `flatMap` (and likely other recent array methods). `node --test`
+  cannot catch that; `tests/test_screen.py` runs the real screens and fails on
+  any QML warning.
+- **Unhandled errors.** `web_app` turns any crash into a 500 with a `detail`
+  sentence, so the panel can show what went wrong; the traceback is still in
+  the service log (`journalctl --user -u wony`).
 - **Panels.** `helpers/panels.py` maps a key to a `snapshot()` on a module. Adding
   one is a snapshot function and a line in `_PANELS`.
 - **Idle screen.** After `kiosk.idle_minutes` the panel shows a clock and

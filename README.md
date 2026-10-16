@@ -89,9 +89,12 @@ set up, your phone is the chat. Four tabs across the bottom: **Home**,
 
 **Home** is a grid of tiles you arrange yourself: tap **Edit**, then **+ Add
 tile** for anything not already placed, or the × on a tile to remove it. A
-tile is a routine, a device, a 10-minute timer, music play/pause, or Sleep —
-whole-button actions that run the moment you tap them, no confirmation needed
-except for a locked door or an alarm. The layout is saved on the device itself.
+tile is a routine, a device, a timer (5, 10, 15 or 30 minutes), volume, music
+play/pause, or Sleep — whole-button actions that run the moment you tap them, no
+confirmation needed except for a locked door or an alarm. Until you change
+anything, Home fills itself: a light, blinds, a lock and your first routines if
+the house has them, then timers, volume and Sleep. The first edit saves the
+layout on the device itself.
 Next to the grid, a Now playing card and a Coming up list (your next timers,
 events and reminders) stay visible without a tap.
 

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { candidateTiles, describeTile, parseTileId, seedTiles } from "../lib/tiles.mjs"
+import { candidateTiles, describeTile, parseTileId, starterTiles } from "../lib/tiles.mjs"
 import { signature } from "../lib/jobs.mjs"
 
 function device(entityId, domain, name, extra = {}) {
@@ -30,19 +30,36 @@ test("tile ids split at the first colon", () => {
     assert.deepEqual(parseTileId("volume"), { kind: "volume", arg: "" })
 })
 
-test("a first run is seeded from what the house has, six at most", () => {
-    const seed = seedTiles(routines, devices)
-    assert.deepEqual(seed, [
+test("an unarranged Home starts with what the house has, then fills two rows", () => {
+    assert.deepEqual(starterTiles(routines, devices, 3), [
         "device:light.lamp", "device:lock.front", "routine:Good night", "routine:movies", "timer:10", "volume",
     ])
-    assert.deepEqual(seedTiles([], null), ["timer:10", "volume"])
+})
+
+test("a house with nothing connected still gets a full first screen", () => {
+    assert.deepEqual(starterTiles([], null, 3), ["timer:10", "volume", "sleep", "timer:5", "timer:30", "music"])
+    assert.deepEqual(starterTiles([], { areas: [] }, 3), starterTiles([], null, 3))
+})
+
+test("the starter set is two rows of the chosen width, or all it has", () => {
+    assert.equal(starterTiles(routines, devices, 4).length, 8)
+    assert.equal(starterTiles(routines.slice(0, 1), null, 4).length, 8)
+    assert.equal(starterTiles([], null, 4).length, 7)
 })
 
 test("everything can be offered as a tile", () => {
     const ids = candidateTiles(routines, devices).map((t) => t.id)
     assert.ok(ids.includes("routine:Good night"))
     assert.ok(ids.includes("device:lock.front"))
-    for (const fixed of ["timer:10", "music", "volume", "sleep"]) assert.ok(ids.includes(fixed))
+    for (const fixed of ["timer:5", "timer:10", "timer:15", "timer:30", "music", "volume", "sleep"]) {
+        assert.ok(ids.includes(fixed), fixed)
+    }
+})
+
+test("a starter tile that is removed can be added back", () => {
+    const offered = candidateTiles(routines, devices).map((t) => t.id)
+    for (const id of starterTiles(routines, devices, 4)) assert.ok(offered.includes(id), id)
+    for (const id of starterTiles([], null, 4)) assert.ok(offered.includes(id), id)
 })
 
 test("a routine tile runs the routine by name", () => {

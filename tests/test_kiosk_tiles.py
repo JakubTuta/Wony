@@ -23,8 +23,8 @@ class TestKioskTileStorage(unittest.TestCase):
         set_kv(kiosk._TILES_KV_KEY, "")
 
     def test_nothing_saved_yet_reads_as_none(self) -> None:
-        """None (not an empty list) is what tells the UI to seed a starter
-        layout instead of showing a blank grid."""
+        """None (not an empty list) is what tells the UI to show its starter
+        layout instead of a blank grid."""
         self.assertIsNone(self.kiosk.load_tiles())
 
     def test_round_trip(self) -> None:

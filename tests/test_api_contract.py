@@ -198,5 +198,30 @@ class TestConfirmNormalizesArgs(unittest.TestCase):
         confirm.reset()
 
 
+class TestUnexpectedErrors(unittest.TestCase):
+    def test_a_crash_answers_with_a_reason_the_screen_can_show(self) -> None:
+        """Bare 'Internal Server Error' text leaves a screen nothing to say but
+        'That did not work.'"""
+        from fastapi.testclient import TestClient
+
+        from helpers.config import Config
+
+        Config.load(os.path.join(_REPO_ROOT, "config.example.yaml"))
+        import modules  # noqa: F401
+        from helpers.web_app import build_app
+
+        app = build_app()
+
+        @app.get("/api/boom")
+        def boom() -> dict:
+            raise RuntimeError("the disk is full")
+
+        client = TestClient(app, base_url="http://127.0.0.1:8123", raise_server_exceptions=False)
+        response = client.get("/api/boom")
+
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json()["detail"], "Wony hit an error: RuntimeError: the disk is full")
+
+
 if __name__ == "__main__":
     sys.exit(0 if unittest.main(exit=False).result.wasSuccessful() else 1)

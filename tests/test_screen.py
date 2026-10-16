@@ -214,6 +214,36 @@ class TestPanel(unittest.TestCase):
         self.tap((400, 270))  # the first thing offered
         self.pump_until(lambda: len(self.state["tiles"]) == 7, "the new tile was not saved")
 
+    def unarranged_home(self) -> None:
+        """Home as it is before anyone has arranged it. The panel is already up,
+        so leave and come back: Home reads the saved layout when it opens."""
+        self.state["tiles"] = None
+        self.tap(NAV["rooms"], 700)
+        self.tap(NAV["home"], 900)
+
+    def test_an_unarranged_home_shows_a_starter_set_and_does_not_save_it(self) -> None:
+        """The first-run set once threw inside Qt's JavaScript engine (no flatMap),
+        and Home stayed bare for anyone who had not arranged it."""
+        self.unarranged_home()
+
+        self.tap(LIGHT_TILE)
+
+        self.pump_until(lambda: self.state["posted"], "no starter tile was there to tap")
+        self.assertEqual(self.state["posted"][0], ("control", {"entity_id": "light.lamp", "action": "toggle"}))
+        self.assertIsNone(self.state["tiles"], "a layout nobody made was saved")
+        self.assertEqual(self.qml_problems(), [])
+
+    def test_the_first_edit_saves_the_starter_set_along_with_the_change(self) -> None:
+        self.unarranged_home()
+
+        self.tap(EDIT)
+        self.tap(ADD_TILE)
+        self.tap((400, 270))  # the first thing offered
+
+        self.pump_until(lambda: self.state["tiles"], "nothing was saved")
+        self.assertEqual(len(self.state["tiles"]), 7)
+        self.assertEqual(self.state["tiles"][0], "device:light.lamp")
+
 
 class TestFindingThePanel(unittest.TestCase):
     def test_the_qml_tool_wins_and_gets_the_api_after_a_double_dash(self) -> None:

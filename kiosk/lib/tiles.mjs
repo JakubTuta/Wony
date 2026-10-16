@@ -5,11 +5,19 @@ import { signature } from "./jobs.mjs"
 import { upcomingTime } from "./time.mjs"
 
 const STATIC_TILES = [
+    { id: "timer:5", kind: "Timer", title: "5 minute timer" },
     { id: "timer:10", kind: "Timer", title: "10 minute timer" },
+    { id: "timer:15", kind: "Timer", title: "15 minute timer" },
+    { id: "timer:30", kind: "Timer", title: "30 minute timer" },
     { id: "music", kind: "Music", title: "Play / pause" },
     { id: "volume", kind: "Volume", title: "Volume" },
     { id: "sleep", kind: "Sleep", title: "Sleep" },
 ]
+
+// Tiles that work in any house, in the order they fill a bare Home. All of
+// them are in STATIC_TILES, so one that is removed can be added back. Seven
+// because one routine plus these fills two rows of four.
+const ANYWHERE_TILES = ["timer:10", "volume", "sleep", "timer:5", "timer:30", "music", "timer:15"]
 
 // Everything worth offering as a tile, built fresh from live data: a routine
 // or a device the user just added shows up in "+ Add tile" without a code change.
@@ -35,10 +43,15 @@ export function parseTileId(id) {
     return i === -1 ? { kind: id, arg: "" } : { kind: id.slice(0, i), arg: id.slice(i + 1) }
 }
 
-// Up to 6 tiles for a first run: whichever of these exist, in this order, so a
-// house with no locks gets a shorter starter grid instead of a dead tile.
-export function seedTiles(routines, devices) {
-    const all = ((devices && devices.areas) || []).flatMap((a) => a.devices)
+// The Home an unarranged panel shows: whichever of a light, blinds, a lock and
+// two routines this house has, then tiles that work anywhere, until two rows are
+// full. A house with no locks gets a timer instead of a dead tile, and a house
+// with nothing connected still gets a grid worth tapping. Music comes last: the
+// Now Playing card already has play/pause.
+export function starterTiles(routines, devices, columns) {
+    // No flatMap: Qt's JavaScript engine does not have it.
+    const all = []
+    for (const area of (devices && devices.areas) || []) all.push(...area.devices)
     const byDomain = (domain) => all.find((d) => d.primary.domain === domain)
 
     const out = []
@@ -49,11 +62,7 @@ export function seedTiles(routines, devices) {
     const lock = byDomain("lock")
     if (lock) out.push("device:" + lock.primary.entity_id)
     for (const r of routines.slice(0, 2)) out.push("routine:" + r.name)
-    out.push("timer:10")
-    // Not 'music': the Now Playing card is always on screen and already has
-    // play/pause. Volume has no control anywhere else.
-    out.push("volume")
-    return out.slice(0, 6)
+    return out.concat(ANYWHERE_TILES).slice(0, columns * 2)
 }
 
 function truncate(text, n) {

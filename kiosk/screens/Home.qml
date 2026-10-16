@@ -12,8 +12,9 @@ Item {
 
     property bool editing: false
 
-    // null until the saved layout (or the first-run starter set) is known.
-    property var tileIds: null
+    // What the user arranged, or null while nobody has.
+    property var saved: null
+    property bool savedKnown: false
     property bool addOpen: false
     property bool sleepOpen: false
     // Counts seconds so timer tiles and the "Coming up" countdowns move.
@@ -21,6 +22,19 @@ Item {
 
     readonly property int columns: Wony.config ? Wony.config.kiosk.home_columns : 3
     readonly property var music: Live.music.data
+
+    // Until someone edits, Home follows the house: a device that connects later
+    // shows up by itself. Going through a string keeps the list from being
+    // rebuilt (and every tile with it) each time a light changes state.
+    readonly property string starterKey: JSON.stringify(Tiles.starterTiles(
+        Live.routines.data ? Live.routines.data.routines : [], Live.devices.data, columns))
+    readonly property var starter: JSON.parse(starterKey)
+    // Held back until devices and routines have answered once, so the starter
+    // set is not drawn bare and then redrawn a moment later.
+    readonly property bool ready: savedKnown && (saved !== null || (Live.devices.loaded && Live.routines.loaded))
+
+    // null until there is something to draw.
+    readonly property var tileIds: !ready ? null : (saved !== null ? saved : starter)
     readonly property int gridCount: (tileIds ? tileIds.length : 0) + (editing ? 1 : 0)
 
     // Reminders and calendar events together, soonest three. Only the data
@@ -56,7 +70,7 @@ Item {
     }
 
     function persist(next) {
-        tileIds = next
+        saved = next
         Api.saveKioskTiles(next)
     }
 
@@ -72,24 +86,6 @@ Item {
     function candidates() {
         var all = Tiles.candidateTiles(Live.routines.data ? Live.routines.data.routines : [], Live.devices.data)
         return all.filter(function (item) { return tileIds.indexOf(item.id) === -1 })
-    }
-
-    // First run: nobody has arranged a layout yet, so seed one from whatever this
-    // house actually has. One-off reads rather than the live polls, since this
-    // only ever runs once.
-    function loadTiles() {
-        Api.fetchKioskTiles(function (saved) {
-            if (saved !== null) {
-                root.tileIds = saved
-                return
-            }
-            Api.fetchPanel("devices", function (devices) {
-                Api.fetchPanel("routines", function (routines) {
-                    var seed = Tiles.seedTiles(routines.data ? routines.data.routines : [], devices.data)
-                    root.persist(seed)
-                })
-            })
-        })
     }
 
     function run(action) {
@@ -150,7 +146,10 @@ Item {
         })
     }
 
-    Component.onCompleted: loadTiles()
+    Component.onCompleted: Api.fetchKioskTiles(function (tiles) {
+        root.saved = tiles
+        root.savedKnown = true
+    })
 
     Timer {
         running: true

@@ -34,8 +34,8 @@ _TILES_KV_KEY = "kiosk.tiles"
 def load_tiles() -> typing.Optional[typing.List[str]]:
     """The saved home-screen layout, or None when nobody has arranged one yet.
 
-    None (as opposed to an empty list) is what tells the UI to seed a starter
-    layout instead of showing a blank grid.
+    None (as opposed to an empty list) is what tells the UI to show its starter
+    layout instead of a blank grid.
     """
     from helpers.memory_db import get_kv
 
