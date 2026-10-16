@@ -194,6 +194,12 @@ queue behind a turn. A new entry point must take it too.
   are folded into a running summary (`Conversation._fold`), fenced text left out.
   `recall(scope="person")` gathers one person from facts, mail, calendar and
   past chats (`helpers/people.py`).
+- **What Wony says unasked joins the conversation:** `notify` records it as a
+  turn with a `source` and no user words (`Conversation.record_notice`), so a
+  question about it ("what time is that?") has something to refer to. Send
+  every proactive message through `notify`. `untrusted=True` fences the
+  history's copy when it retells someone else's words. Readers of `turns` that
+  mean "what the user said" skip rows with a `source` (`learn.py`, `people.py`).
 
 ## The screen
 
@@ -205,8 +211,9 @@ queue behind a turn. A new entry point must take it too.
   one is a snapshot function and a line in `_PANELS`.
 - **Idle screen.** After `kiosk.idle_minutes` the page shows a clock and
   `kiosk.ambient()` cards. Touching it anywhere returns to Home.
-- **Notifications.** `helpers.notify.notify` writes the database first and pushes
-  to connected screens second. Nothing wakes a sleeping panel.
+- **Notifications.** `helpers.notify.notify` writes the database and the
+  conversation first and pushes to connected screens second. Nothing wakes a
+  sleeping panel.
 - **Sleep.** `helpers/lowpower.py` darkens the panel (`helpers/display.py` tries
   each backend until one works), stops the pollers and leaves the rest running.
   A tap or the wake time ends it. A restart always turns the panel back on.

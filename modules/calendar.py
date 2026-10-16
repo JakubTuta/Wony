@@ -241,9 +241,9 @@ class Calendar:
         status = event.get("status", "")
 
         parts = [f"{summary}"]
-        parts.append(f"Start: {self._format_time(when)}")
+        parts.append(f"Start: {self.format_time(when)}")
         if when_end:
-            parts.append(f"End: {self._format_time(when_end)}")
+            parts.append(f"End: {self.format_time(when_end)}")
         if status and status != "confirmed":
             parts.append(f"Status: {status}")
         if location:
@@ -292,7 +292,9 @@ class Calendar:
 
         return "\n  ".join(parts)
 
-    def _format_time(self, value: str) -> str:
+    def format_time(self, value: str) -> str:
+        """A Google start/end value as shown to the user; the new_event
+        trigger (helpers/triggers.py) uses it too."""
         if not value:
             return "unknown time"
         try:
@@ -802,7 +804,7 @@ class Calendar:
         except Exception as e:
             return f"Failed to create event: {e}"
 
-        start_str = self._format_time(
+        start_str = self.format_time(
             created["start"].get("dateTime", created["start"].get("date", ""))
         )
         return f"Event created: '{title}' on {start_str}."
@@ -963,7 +965,7 @@ class Calendar:
         assert event is not None
         event_id = event["id"]
         title = event.get("summary", "(untitled)")
-        start_str = self._format_time(
+        start_str = self.format_time(
             event.get("start", {}).get("dateTime")
             or event.get("start", {}).get("date", "")
         )

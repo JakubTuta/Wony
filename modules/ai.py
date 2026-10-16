@@ -408,7 +408,10 @@ class AI:
         for turn in turns:
             stamp = turn.get("ts", "")[:16].replace("T", " ")
             lines.append(f"\n[{stamp}]")
-            lines.append(f"  You: {turn['user_text']}")
+            if turn.get("source"):
+                lines.append(f"  (Nobody asked; the assistant spoke up: {turn['source']})")
+            else:
+                lines.append(f"  You: {turn['user_text']}")
             answer = turn.get("assistant_text") or ""
             if answer:
                 preview = answer[:200] + ("…" if len(answer) > 200 else "")

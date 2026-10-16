@@ -3,9 +3,10 @@ Proactive messages: things Wony says without being asked.
 
 A timer firing, the Gmail poller finding mail, a background job crashing. On a
 device with a speaker these were spoken and then gone. Here they land on a
-screen that nobody is necessarily looking at, so each one is written to the
-database first and pushed to connected clients second. A reminder that fired
-while the room was empty is still waiting when someone walks up to it.
+screen that nobody is necessarily looking at, so each one is kept first (the
+database, and the conversation the model reads) and pushed to connected
+clients second. A reminder that fired while the room was empty is still
+waiting when someone walks up to it, and a question about it has an answer.
 """
 
 import typing
@@ -19,12 +20,15 @@ def notify(
     text: typing.Union[str, typing.List[str]],
     kind: str = "info",
     source: str = "",
+    untrusted: bool = False,
 ) -> None:
     """Record a proactive message and push it to every connected screen.
 
     text: one message, or several that belong together (joined into one).
     kind: one of KINDS — how the UI should present it.
     source: which module raised it ("scheduler", "gmail", ...), for the UI.
+    untrusted: it retells words someone else wrote (an email subject, an
+        invite), so the conversation keeps it fenced (helpers/untrusted.py).
 
     Never raises: a poller must not die because the screen is unreachable.
     """
@@ -47,6 +51,17 @@ def notify(
         # The DB is unavailable (locked, disk full). Still try to put the
         # message on screen — a live client is better than nothing at all.
         record = {"id": None, "kind": kind, "source": source, "text": combined}
+
+    # Into the history the next turn reads, so "what time is that?" has
+    # something to refer to.
+    try:
+        from helpers.conversation import Conversation
+        from helpers.untrusted import wrap
+
+        label = source or kind
+        Conversation.record_notice(wrap(combined, label) if untrusted else combined, label)
+    except Exception:
+        pass
 
     try:
         from helpers.events import emit_notification

@@ -184,6 +184,7 @@ def bootstrap(
                     {
                         "user": turn["user_text"],
                         "assistant": turn["assistant_text"],
+                        "source": turn.get("source", ""),
                         "at": datetime.datetime.fromisoformat(turn["ts"]),
                     }
                 )

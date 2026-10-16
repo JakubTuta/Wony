@@ -46,6 +46,13 @@ def _init_schema(conn: sqlite3.Connection) -> None:
         conn.commit()
     except sqlite3.OperationalError:
         pass  # column already exists
+    # "" for an exchange the user started; otherwise the notify() source of
+    # something Wony said on its own, which has no user words (user_text "").
+    try:
+        conn.execute("ALTER TABLE turns ADD COLUMN source TEXT NOT NULL DEFAULT ''")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
     conn.execute("""
         CREATE TABLE IF NOT EXISTS facts (
             key   TEXT PRIMARY KEY,
@@ -152,6 +159,7 @@ def insert_turn(
     user_text: str,
     assistant_text: str,
     calls: typing.Optional[typing.List[typing.Dict[str, typing.Any]]] = None,
+    source: str = "",
 ) -> typing.Optional[int]:
     """Insert a conversation turn and return its row id."""
     conn = _get_conn()
@@ -159,8 +167,9 @@ def insert_turn(
     calls_json = _json.dumps(calls) if calls else None
     with _lock:
         cur = conn.execute(
-            "INSERT INTO turns (session_id, ts, user_text, assistant_text, calls) VALUES (?, ?, ?, ?, ?)",
-            (SESSION_ID, ts, user_text, assistant_text or "", calls_json),
+            "INSERT INTO turns (session_id, ts, user_text, assistant_text, calls, source)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (SESSION_ID, ts, user_text, assistant_text or "", calls_json, source),
         )
         row_id = cur.lastrowid
         if _fts_available:
@@ -200,7 +209,7 @@ def search_turns(
             try:
                 rows = conn.execute(
                     """
-                    SELECT t.id, t.session_id, t.ts, t.user_text, t.assistant_text
+                    SELECT t.id, t.session_id, t.ts, t.user_text, t.assistant_text, t.source
                     FROM turns t
                     JOIN turns_fts f ON t.id = f.rowid
                     WHERE turns_fts MATCH ? AND t.ts >= ?
@@ -215,7 +224,7 @@ def search_turns(
         pattern = f"%{keyword}%"
         rows = conn.execute(
             """
-            SELECT id, session_id, ts, user_text, assistant_text
+            SELECT id, session_id, ts, user_text, assistant_text, source
             FROM turns
             WHERE (user_text LIKE ? OR assistant_text LIKE ?) AND ts >= ?
             ORDER BY id DESC
@@ -236,7 +245,7 @@ def turns_on_date(date_str: str, limit: int = 50) -> typing.List[typing.Dict]:
             # the same second would come back in arbitrary order. Selected
             # newest-first so the limit keeps the end of the day, then reversed
             # back into reading order.
-            "SELECT id, session_id, ts, user_text, assistant_text FROM turns "
+            "SELECT id, session_id, ts, user_text, assistant_text, source FROM turns "
             "WHERE ts LIKE ? ORDER BY id DESC LIMIT ?",
             (f"{day}%", limit),
         ).fetchall()
@@ -247,7 +256,8 @@ def recent_turns(limit: int = 10) -> typing.List[typing.Dict]:
     conn = _get_conn()
     with _lock:
         rows = conn.execute(
-            "SELECT id, session_id, ts, user_text, assistant_text, calls FROM turns ORDER BY id DESC LIMIT ?",
+            "SELECT id, session_id, ts, user_text, assistant_text, calls, source"
+            " FROM turns ORDER BY id DESC LIMIT ?",
             (limit,),
         ).fetchall()
         result = []

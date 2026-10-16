@@ -60,6 +60,15 @@ class TestTaint(unittest.TestCase):
             self.assertTrue(_remember_needs_confirm({"action": "save"}))
 
 
+class TestUnfence(unittest.TestCase):
+    def test_the_chat_window_gets_the_words_without_the_markers(self) -> None:
+        from helpers.untrusted import unfence, wrap
+
+        fenced = "Events on Friday:\n" + wrap("Train at 12:16\nReturn at 22:04", "calendar") + "\nThat's all."
+        self.assertEqual(unfence(fenced), "Events on Friday:\nTrain at 12:16\nReturn at 22:04\nThat's all.")
+        self.assertEqual(unfence("plain >>> text"), "plain >>> text")
+
+
 class TestUntrustedOutlivesItsTurn(unittest.TestCase):
     """Fenced text replayed in the history is read again by every later turn,
     so it has to count against the gates there too."""

@@ -116,7 +116,11 @@ def learn_facts() -> int:
     from helpers.memory_db import count_facts, get_kv, recent_turns, set_kv
 
     since = int(get_kv(_CURSOR_KEY, "0") or 0)
-    turns = [t for t in recent_turns(limit=_MAX_TURNS_PER_PASS) if int(t["id"]) > since]
+    # What Wony said on its own (a reminder, a watcher) says nothing about the user.
+    turns = [
+        t for t in recent_turns(limit=_MAX_TURNS_PER_PASS)
+        if int(t["id"]) > since and not t.get("source")
+    ]
     if len(turns) < _MIN_NEW_TURNS:
         return 0
 

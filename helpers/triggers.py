@@ -249,10 +249,17 @@ def _fire(trigger: Trigger, fact: str) -> None:
         "something you could do about it.]",
         from_user=False,
     )
-    # The turn is deliberately not recorded into Conversation: the user did not
-    # say any of it, and a history full of trigger prompts would have the model
-    # answering questions nobody asked.
-    notify(result.text or fact, kind="alert", source=f"trigger:{trigger.name}")
+    # No usable reply (no AI key, provider down, too slow): the fact is already
+    # a plain sentence, and it beats an error message or silence.
+    said = fact if result.error or result.timed_out or not result.text else result.text
+    # The trigger prompt stays out of the history; notify() records the reply
+    # as something said unprompted, so the user can ask about it.
+    notify(
+        said,
+        kind="alert",
+        source=f"trigger:{trigger.name}",
+        untrusted=not trigger.trusted,
+    )
     if trigger.watermark is not None:
         trigger.watermark.commit()
 
@@ -427,8 +434,15 @@ def _new_event() -> typing.Optional[str]:
     if not events:
         return None
     _events_seen.hold([e["id"] for e in events])
-    titles = ", ".join(f"'{e.get('summary', 'Untitled event')}'" for e in events[:_EMAIL_SCAN])
+    titles = ", ".join(
+        f"'{e.get('summary', 'Untitled event')}' ({_starts(cal, e)})" for e in events[:_EMAIL_SCAN]
+    )
     return f"New on the calendar: {titles}."
+
+
+def _starts(cal: typing.Any, event: typing.Dict[str, typing.Any]) -> str:
+    start = event.get("start", {})
+    return cal.format_time(start.get("dateTime") or start.get("date") or "")
 
 
 _TRIGGERS: typing.List[Trigger] = [
