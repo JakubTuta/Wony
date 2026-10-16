@@ -33,6 +33,18 @@ class TestConfigWriterQuoting(unittest.TestCase):
 
         self.assertEqual(format_value("Wony"), "Wony")
 
+    def test_an_emoji_and_the_line_breaks_yaml_knows_read_back_unchanged(self) -> None:
+        """json's default writes an emoji as a \\ud83c\\udf80 pair, which YAML reads
+        as two broken characters; U+2028 and U+0085 are line breaks to YAML even
+        inside quotes."""
+        import yaml
+
+        from helpers.config_writer import format_value
+
+        for text in ("soft \U0001F380 and ł", "one" + chr(0x2028) + "two" + chr(0x85) + "three", "a: \U0001F380"):
+            with self.subTest(text=ascii(text)):
+                self.assertEqual(yaml.safe_load("key: " + format_value(text))["key"], text)
+
 
 _FOLDED = """\
 assistant:

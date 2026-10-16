@@ -104,6 +104,13 @@ Settings screen renders. There are no secret fields: keys live in `.env` and are
 written by `./wony.sh setup configure`, because a panel with no keyboard of its
 own is the wrong place to type one.
 
+`helpers/config_writer.py` edits the file line by line to keep its comments. It
+writes text as a double-quoted JSON string without `ensure_ascii`: with it, an
+emoji becomes a surrogate pair that YAML reads back as two broken characters,
+and the Settings screen (or the next AI request) fails to encode it. For files
+already written that way, or typed that way by hand, `Config` joins the pairs
+when it reads (`_join_surrogates` in `helpers/config.py`).
+
 `setup.py` asks about the same settings through `ask_setting(key)`, which takes
 the label, help text and limits from the `Field` and writes with `settings.apply`,
 so setup and the screen cannot describe a setting differently. A new `Field`

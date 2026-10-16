@@ -209,6 +209,22 @@ class TestSettingsSurface(unittest.TestCase):
 
         Config.load()
 
+    def test_an_emoji_saved_from_the_screen_is_shown_again(self) -> None:
+        """It used to come back as two lone surrogates, and the settings screen
+        failed with a UnicodeEncodeError instead of showing anything."""
+        from helpers.config import Config
+
+        self.settings.apply({"assistant.personality": "Soft and calm \U0001F380"})
+        Config.load(self.path)  # apply() reloads the default file; read back the one it wrote
+
+        shown = {
+            field["key"]: field["value"]
+            for section in self.settings.describe()["sections"]
+            for field in section["fields"]
+        }
+
+        self.assertEqual(shown["assistant.personality"], "Soft and calm \U0001F380")
+
     def test_unknown_key_is_refused(self) -> None:
         with self.assertRaises(self.settings.SettingsError):
             self.settings.apply({"ai.anthropic_model": "something"})
@@ -316,6 +332,34 @@ class TestSettingsSurface(unittest.TestCase):
                     os.path.exists(os.path.join(_REPO_ROOT, "modules", f"{key}.py")),
                     f"the settings screen offers '{key}', which has no modules/ file.",
                 )
+
+
+class TestSurrogateEscapesInConfig(unittest.TestCase):
+    """A config.yaml written before the writer was fixed, or by someone typing an
+    emoji the way JSON does, holds two escapes that YAML reads as lone surrogates."""
+
+    def load(self, personality: str) -> str:
+        from helpers.config import Config
+
+        folder = tempfile.mkdtemp()
+        path = os.path.join(folder, "config.yaml")
+        with io.open(path, "w", encoding="utf-8") as handle:
+            handle.write('assistant:\n  personality: "' + personality + '"\n')
+        Config.load(path)
+        self.addCleanup(Config.load)
+        return Config.get("assistant.personality")
+
+    def test_a_json_style_pair_loads_as_the_emoji(self) -> None:
+        loaded = self.load("soft \\ud83c\\udf80 and calm")
+
+        self.assertEqual(loaded, "soft \U0001F380 and calm")
+        loaded.encode("utf-8")
+
+    def test_half_of_a_pair_cannot_crash_anything_later(self) -> None:
+        loaded = self.load("soft \\ud83c only")
+
+        self.assertEqual(loaded, "soft " + chr(0xFFFD) + " only")
+        loaded.encode("utf-8")
 
 
 if __name__ == "__main__":

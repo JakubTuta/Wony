@@ -15,6 +15,10 @@ import typing
 
 INDENT = "  "
 
+# Line breaks to YAML even inside quotes, so a value holding one must be
+# quoted and escaped, never written raw.
+_YAML_LINE_BREAKS = (chr(0x85), chr(0x2028), chr(0x2029))
+
 # `- name  # description`, or the same switched off: `# - name  # description`.
 _LIST_LINE = re.compile(r"^\s*(#\s*)?-\s+(\S+)\s*(?:#\s*(.*?))?\s*$")
 
@@ -112,6 +116,7 @@ def format_value(value: typing.Any) -> str:
         or text != text.strip()
         or any(ch in text for ch in ':#\n"\'{}[]&*!|>%@`,')
         or any(ord(ch) < 0x20 for ch in text)
+        or any(ch in text for ch in _YAML_LINE_BREAKS)
     )
     if needs_quoting:
         # json's string escaping is a valid subset of YAML's double-quoted
@@ -119,7 +124,12 @@ def format_value(value: typing.Any) -> str:
         # hand-rolled replace() chain happened to list — a raw \r or \t left
         # unescaped there could otherwise be read as a line break by some
         # YAML parsers and break out of the quotes entirely.
-        return json.dumps(text)
+        # Not ensure_ascii: it writes an emoji as two surrogate escapes, which
+        # YAML reads back as two broken characters.
+        quoted = json.dumps(text, ensure_ascii=False)
+        for ch in _YAML_LINE_BREAKS:
+            quoted = quoted.replace(ch, f"\\u{ord(ch):04x}")
+        return quoted
     try:
         float(text)
         return f'"{text}"'  # keep "1.0" a string, not a number
