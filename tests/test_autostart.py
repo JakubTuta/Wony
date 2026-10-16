@@ -27,28 +27,26 @@ class TestPanelUnit(unittest.TestCase):
         line = next(line for line in text.splitlines() if line.startswith("ExecStart="))
         return shlex.split(line[len("ExecStart="):])
 
-    def test_labwc_runs_the_panel_as_its_session_and_exits_with_it(self) -> None:
+    def test_the_unit_runs_the_session_entry_point_from_the_venv(self) -> None:
         with mock.patch("helpers.autostart._REPO_ROOT", "/home/pi/wony"), mock.patch(
             "helpers.autostart._python", return_value="/home/pi/wony/venv/bin/python"
-        ), mock.patch("helpers.autostart._labwc", return_value="/usr/bin/labwc"):
+        ):
             text = autostart._panel_unit_text("pi")
 
         self.assertEqual(
             self._exec_start(text),
-            ["/usr/bin/labwc", "-C", "/home/pi/wony/kiosk/session",
-             "-S", "/home/pi/wony/venv/bin/python /home/pi/wony/wony.py panel"],
+            ["/home/pi/wony/venv/bin/python", "/home/pi/wony/wony.py", "session"],
         )
 
-    def test_a_path_with_spaces_survives_both_layers_of_quoting(self) -> None:
+    def test_a_path_with_spaces_stays_one_word(self) -> None:
         with mock.patch("helpers.autostart._REPO_ROOT", "/home/pi/my wony"), mock.patch(
             "helpers.autostart._python", return_value="/home/pi/my wony/venv/bin/python"
-        ), mock.patch("helpers.autostart._labwc", return_value="/usr/bin/labwc"):
+        ):
             words = self._exec_start(autostart._panel_unit_text("pi"))
 
-        self.assertEqual(words[2], "/home/pi/my wony/kiosk/session")
         self.assertEqual(
-            shlex.split(words[4]),
-            ["/home/pi/my wony/venv/bin/python", "/home/pi/my wony/wony.py", "panel"],
+            words,
+            ["/home/pi/my wony/venv/bin/python", "/home/pi/my wony/wony.py", "session"],
         )
 
     def test_it_takes_the_display_and_the_login_tty_like_a_display_manager(self) -> None:

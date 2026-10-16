@@ -157,6 +157,20 @@ def cmd_panel(args: argparse.Namespace) -> None:
     os.execv(command[0], command)
 
 
+def cmd_session(args: argparse.Namespace) -> None:
+    """What the boot unit runs: labwc, configured, with the panel as its one
+    program. It becomes labwc, so systemd supervises labwc itself."""
+    import os
+
+    from helpers import session
+
+    command = session.command(sys.executable, os.path.abspath(__file__))
+    if not os.path.exists(command[0]):
+        print("\nThe panel's session needs labwc, which is not installed.\nRun './wony.sh setup' to install it.\n")
+        sys.exit(1)
+    os.execv(command[0], command)
+
+
 def cmd_text(args: argparse.Namespace) -> None:
     from helpers.config import Config
 
@@ -253,6 +267,10 @@ def main() -> None:
         help="A 1280x800 window instead of fullscreen, for trying it on a desktop",
     )
     p_panel.set_defaults(func=cmd_panel)
+
+    # Not for people: the boot unit's entry point (see helpers/session.py).
+    p_session = subparsers.add_parser("session")
+    p_session.set_defaults(func=cmd_session)
 
     p_text = subparsers.add_parser("text", help="Console text REPL")
     p_text.set_defaults(func=cmd_text)

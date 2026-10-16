@@ -23,6 +23,7 @@ confirm gate and Google/Spotify/Home Assistant modules with the PC build on
 | `helpers/wayland.py`   | Finds the Wayland session from a process that was not started inside it   |
 | `helpers/panels.py`    | Structured data for each screen, read through `/api/panel/{key}`          |
 | `helpers/screen.py`    | What the panel needs from the OS: apt packages, the `qml6` tool, how to launch it |
+| `helpers/session.py`   | Builds labwc's config for the panel session: `kiosk/session` plus the user's touch/input settings |
 | `helpers/browser.py`   | The throwaway Chromium (plus keyboard) a Google or Spotify sign-in opens over the panel |
 | `helpers/autostart.py` | `wony.service` (user unit) and `wony-panel.service` (system unit, the display manager) |
 | `modules/`             | One file per switchable feature; each registers jobs                      |
@@ -281,13 +282,25 @@ kiosk/session/       labwc's config: no frames, no shortcuts, kanshi for the dis
 - `wony.service`, a systemd *user* unit (`wony.py kiosk`), with lingering enabled
   so it starts without a login.
 - `wony-panel.service`, a *system* unit installed with sudo, that runs
-  `labwc -C kiosk/session -S "<python> wony.py panel"` as the owner on tty1.
-  `-S` ends labwc when the panel exits, so `Restart=always` brings the whole
-  session back in about 3 s. It has `Alias=display-manager.service`, so it
+  `wony.py session` as the owner on tty1. That builds the session's config
+  (`helpers/session.py`) and becomes
+  `labwc -C ~/.cache/wony/session -S "<python> wony.py panel"`. `-S` ends labwc
+  when the panel exits, so `Restart=always` brings the whole session back in
+  about 3 s. It has `Alias=display-manager.service`, so it
   replaces lightdm: install disables the current display manager, enables the
   panel unit and records both in `.wony_autostart.json` (gitignored);
   `autostart uninstall` restores them. Every sudo command is printed first, and a
   failure after the desktop was switched off switches it back on.
+
+**Touch and rotation.** `-C` makes labwc ignore the user's own config, including
+what Raspberry Pi's Screen Configuration wrote there. labwc rotates touch events
+with a rotated screen only through a libinput `calibrationMatrix` in rc.xml
+(labwc-config(5)), so without it a display set to landscape draws landscape and
+taps portrait. `session.build` therefore copies `<touch>`, `<libinput>` and
+`<tablet>` from the first rc.xml labwc would have read (the user's, else the
+system's) into the session's rc.xml; their keybindings, theme and rules stay
+out. Output rotation itself comes from kanshi, started by
+`kiosk/session/autostart`.
 
 It is never started by `install` itself: it would fight the running desktop for
 the display, so it comes up at the next boot. `--no-screen` installs only the

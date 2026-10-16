@@ -184,19 +184,11 @@ def _uid() -> int:
     return os.getuid() if hasattr(os, "getuid") else 1000
 
 
-def _labwc() -> str:
-    return shutil.which("labwc") or "/usr/bin/labwc"
-
-
 def _panel_unit_text(user: str) -> str:
-    # labwc runs the panel as its session command and exits when it does, so a
-    # crashed or closed panel ends the session and Restart= brings it all back.
-    session_command = shlex.join([_python(), _wony_script(), "panel"])
-    exec_start = " ".join([
-        _systemd_quote(_labwc()),
-        "-C", _systemd_quote(os.path.join(_REPO_ROOT, "kiosk", "session")),
-        "-S", _systemd_quote(session_command),
-    ])
+    # `wony.py session` builds labwc's config (helpers/session.py) and becomes
+    # labwc, with the panel as its one program. labwc exits when the panel does,
+    # so a crashed or closed panel ends the session and Restart= brings it back.
+    exec_start = " ".join(_systemd_quote(word) for word in (_python(), _wony_script(), "session"))
     return f"""[Unit]
 Description=Wony touch panel
 # Takes tty1 and the display, like a display manager does.
@@ -317,6 +309,7 @@ def _install_panel() -> None:
 
     print(f"[autostart] '{PANEL_UNIT_NAME}' enabled — the panel comes up at the next boot.")
     print("  Reboot to start it. (Starting it now would fight the desktop for the display.)")
+    print("  Already running it? Apply this with: sudo systemctl restart wony-panel")
 
 
 def _uninstall_panel() -> bool:

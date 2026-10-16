@@ -406,10 +406,46 @@ The same checklist is there when you type "check setup" in `./wony.sh text`.
 | Nothing happens after a reboot             | Run `./wony.sh autostart install` again                                |
 | The panel never appears at boot            | `sudo systemctl status wony-panel` and `journalctl -u wony-panel -b`   |
 | The display is the wrong way up            | Set it in Raspberry Pi Screen Configuration, then reboot               |
+| Taps land in the wrong place after rotating the display | See [Taps land in the wrong place](#taps-land-in-the-wrong-place) |
 | I want my desktop back                     | `./wony.sh autostart uninstall`, then reboot                           |
 | "Wony is already running"                  | Only one runs at a time: `systemctl --user stop wony`                  |
 | Telegram: "Another program is already collecting this bot's messages" | Each Wony needs its own bot: make another with @BotFather |
 | Something else                             | `journalctl --user -u wony -f` shows what it is doing                  |
+
+### Taps land in the wrong place
+
+You rotated the display (landscape on a screen that is portrait by nature, say)
+and the picture follows, but a tap acts where the button would be in the old
+orientation. The picture and the touch layer are rotated separately. Rotating in
+Raspberry Pi **Screen Configuration** does both, and Wony reuses the touch settings
+that leaves in `~/.config/labwc/rc.xml`, so rotate there, then:
+
+```bash
+sudo systemctl restart wony-panel
+```
+
+If taps are still off, tell the touch layer about the rotation yourself. Add this
+to `~/.config/labwc/rc.xml` (create the file with a `<labwc_config>` wrapper if it is
+not there), using the matrix for the rotation you chose, and restart as above:
+
+```xml
+<labwc_config>
+  <libinput>
+    <device category="touch">
+      <calibrationMatrix>0 -1 1 1 0 0</calibrationMatrix>
+    </device>
+  </libinput>
+</labwc_config>
+```
+
+| Screen turned | Matrix            |
+| ------------- | ----------------- |
+| 90°           | `0 -1 1 1 0 0`    |
+| 180°          | `-1 0 1 0 -1 1`   |
+| 270°          | `0 1 0 -1 0 1`    |
+
+If the taps are mirrored rather than correct, try the other of the 90° and 270°
+rows. `libinput list-devices` names your touch device.
 
 Logs are also kept in the `logs/` folder, and tidied up automatically.
 
