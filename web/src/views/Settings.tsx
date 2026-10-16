@@ -228,7 +228,7 @@ function AccountRow({
           </div>
           <div className={`text-xs truncate ${account.needs_sign_in ? 'text-red' : 'text-muted'}`}>
             {account.needs_sign_in
-              ? 'Needs signing in — Google signs Wony out every week'
+              ? 'Needs signing in'
               : account.email || 'Signed in'}
           </div>
         </div>

@@ -188,11 +188,10 @@ export interface GoogleAccount {
   email: string;
   primary: boolean;
   signed_in: boolean;
-  /** Google signed Wony out (weekly in Testing mode), or a switch needs a new OK. */
+  /** Google signed Wony out, or a switch needs a new OK. */
   needs_sign_in: boolean;
   /** Which Google modules the current sign-in covers. */
   modules: Record<string, boolean>;
-  signed_in_at: string;
 }
 
 export interface AccountsPanel {

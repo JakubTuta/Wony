@@ -6,12 +6,10 @@ read-only until "Change my Drive files" is on, and so on. Turning a switch on
 asks Google once more; turning it off gives the extra permission back the next
 time the user is around to sign in.
 
-The OAuth app stays in Google's Testing mode (publishing needs a public home
-page, privacy policy and terms), so Google ends every sign-in after 7 days.
-That is handled as a normal event: one notification, a "Sign in again" button,
-and a heads-up the day before.
+The OAuth app is published ("In production", unverified), so a sign-in lasts
+until the user revokes it or Google retires it. When one does end it is a
+normal event: one notification and a "Sign in again" button.
 """
-import datetime
 import os
 import threading
 import typing
@@ -40,9 +38,6 @@ _WRITE_SCOPES = {scope for _, extra, _ in _MODULE_SCOPES.values() for scope in e
 # Consent happens in a browser at human speed: long enough for a password and a
 # phone code, short enough that an abandoned sign-in does not hang forever.
 _CONSENT_TIMEOUT_SECONDS = 180
-# Testing-mode refresh tokens die 7 days after consent; warn a day early.
-_WARN_AFTER = datetime.timedelta(days=6)
-_WAKING_HOURS = range(9, 21)
 
 _locks: typing.Dict[str, threading.Lock] = {}
 _locks_guard = threading.Lock()
@@ -146,10 +141,7 @@ def _fresh(name: str, creds: typing.Any) -> typing.Any:
         creds.refresh(Request())
     except RefreshError as exc:
         _mark_signed_out(name)
-        raise SignInNeeded(
-            f"Google signed me out of '{name}' — it does that every week for "
-            f"personal apps. {_sign_in_line(name)}"
-        ) from exc
+        raise SignInNeeded(f"Google signed me out of '{name}'. {_sign_in_line(name)}") from exc
     _save(name, creds)
     return creds
 
@@ -182,9 +174,7 @@ def _consent(name: str, scopes: typing.Set[str]) -> typing.Any:
     GoogleAccounts.update(
         name,
         email=email,
-        signed_in_at=datetime.datetime.now().isoformat(timespec="seconds"),
         needs_sign_in=False,
-        warned_for="",
     )
     GoogleAccounts.drop_legacy_tokens(name)
     return creds
@@ -270,8 +260,7 @@ def _mark_signed_out(name: str) -> None:
     from helpers.notify import notify
 
     notify(
-        f"Google signed me out of '{name}' (it does that weekly for personal apps). "
-        f"{_sign_in_line(name)}",
+        f"Google signed me out of '{name}'. {_sign_in_line(name)}",
         kind="alert", source="google",
     )
 
@@ -289,32 +278,4 @@ def status(account: str) -> typing.Dict[str, typing.Any]:
             module: bool(base) and set(base) <= granted
             for module, (base, _, _) in _MODULE_SCOPES.items()
         },
-        "signed_in_at": record.get("signed_in_at", ""),
     }
-
-
-def warn_before_sign_out() -> None:
-    """A day before Google's weekly sign-out, say so at a waking hour, so the
-    morning briefing does not fail. Called from the health watcher."""
-    from helpers.notify import notify
-
-    now = datetime.datetime.now()
-    if now.hour not in _WAKING_HOURS:
-        return
-    for name in GoogleAccounts.list_accounts():
-        record = GoogleAccounts.record(name)
-        stamp = record.get("signed_in_at", "")
-        if not stamp or record.get("needs_sign_in") or record.get("warned_for") == stamp:
-            continue
-        try:
-            signed_in = datetime.datetime.fromisoformat(stamp)
-        except ValueError:
-            continue
-        if now - signed_in < _WARN_AFTER:
-            continue
-        GoogleAccounts.update(name, warned_for=stamp)
-        notify(
-            f"Google will sign me out of '{name}' tomorrow. Sign in again now to keep "
-            f"mail and calendar working: {_sign_in_line(name)}",
-            kind="alert", source="google",
-        )

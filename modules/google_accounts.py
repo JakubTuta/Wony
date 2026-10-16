@@ -92,8 +92,8 @@ class GoogleAccountsService:
         """
         [GOOGLE ACCOUNTS JOB] Lists, adds, signs in to, renames or removes the Google
         accounts Wony uses for Gmail, Calendar, Drive and Contacts, and picks which one
-        is the default. "Authorize" signs an account in again — Google signs Wony out
-        every week. Adding and authorizing open a browser for consent.
+        is the default. "Authorize" signs an account in again, for example after Google
+        has signed it out. Adding and authorizing open a browser for consent.
 
         Args:
             action (str): "list" (the default), "add", "authorize", "remove", "rename"

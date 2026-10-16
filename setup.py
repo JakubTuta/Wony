@@ -1260,16 +1260,17 @@ def _google_steps(keys):
     return (
         "1. Open console.cloud.google.com and pick (or create) a project.",
         f"2. APIs & Services -> Library: enable {', '.join(repr(a) for a in apis)}.",
-        "3. OAuth consent screen: choose 'External', leave it in Testing, and add your",
-        "   own Google address under Test users.",
+        "3. OAuth consent screen: choose 'External', then press 'Publish app' so it is",
+        "   In production. It stays unverified, which is fine for your own account —",
+        "   in Testing, Google would sign Wony out every 7 days.",
         "4. Credentials -> Create credentials -> OAuth client ID -> Desktop app -> Download JSON.",
     )
 
 
 _GOOGLE_SIGN_IN_NOTES = (
     "Google will say it 'hasn't verified this app'. It is your own app: click",
-    "Advanced, then continue. Because it stays in Testing, Google signs Wony out",
-    "every 7 days — Wony tells you, and signing in again is one click.",
+    "Advanced, then continue. Once the app is published (step 3) you sign in once",
+    "per account.",
 )
 
 

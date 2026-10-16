@@ -227,18 +227,19 @@ then asks Google once more.
 1. In [Google Cloud Console](https://console.cloud.google.com/), pick or create a
    project and enable the APIs for what you ticked (setup lists them: Gmail API,
    Google Calendar API, Drive/Docs/Sheets APIs, People API).
-2. On the OAuth consent screen choose **External**, leave it in **Testing**, and
-   add your own Google address under **Test users**.
+2. On the OAuth consent screen choose **External**, then press **Publish app**
+   so it is **In production**. You do not need to get it verified.
 3. Create an OAuth client of type **Desktop** and download the JSON. Setup offers
    the one it finds in your Downloads folder, files it away and opens the browser.
 
 Google will say it **hasn't verified this app**. It is your own app: click
 **Advanced**, then continue.
 
-**Google signs Wony out every 7 days.** That is Google's rule for apps in
-Testing, and publishing the app needs a public website, privacy policy and
-terms. Wony tells you once when it happens, warns you the day before, and
-**Sign in again** (Settings → Google accounts, or the tray menu) takes one click.
+Because the app is published, you sign in **once per account** and it lasts. If
+Google ever signs Wony out (you removed its access in your Google account, say),
+Wony tells you once and **Sign in again** (Settings → Google accounts, or the
+tray menu) takes one click. If you set the app up in **Testing** earlier, publish
+it and sign in once more: a sign-in made in Testing still ends after 7 days.
 
 Want a second account? Say **"add google account work"** — the same consent —
 then ask for one by name ("what's in my work inbox") or let Wony search all.
