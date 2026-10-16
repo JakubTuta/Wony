@@ -18,6 +18,9 @@ INDENT = "  "
 # `- name  # description`, or the same switched off: `# - name  # description`.
 _LIST_LINE = re.compile(r"^\s*(#\s*)?-\s+(\S+)\s*(?:#\s*(.*?))?\s*$")
 
+# What follows `key:` when the text sits on the lines below: `>`, `|-`, `>+2`, ...
+_BLOCK_SCALAR = re.compile(r"^[|>][+-]?[1-9]?[+-]?\s*(?:#.*)?$")
+
 
 def _line_key(line: str) -> typing.Optional[typing.Tuple[int, str]]:
     """(indent, key) for a `key:` line, else None for blanks, comments, list items."""
@@ -48,16 +51,40 @@ def _block_end(lines: typing.List[str], header: int, indent: int) -> int:
     return end
 
 
+def _scalar_block_end(lines: typing.List[str], at: int, indent: int) -> int:
+    """Index just past the text lines of a `>` or `|` scalar headed at `at`.
+
+    Its text is every following line indented deeper than the key (blank lines
+    included), whatever it looks like: a line reading `**Role**: ...` is prose
+    here, not a key. Blank lines after the last text line are left for whatever
+    follows.
+    """
+    end = at + 1
+    cursor = at + 1
+    while cursor < len(lines):
+        line = lines[cursor]
+        if line.strip() and len(line) - len(line.lstrip(" ")) <= indent:
+            break
+        cursor += 1
+        if line.strip():
+            end = cursor
+    return end
+
+
 def _entry_end(lines: typing.List[str], at: int, indent: int) -> int:
     """Index just past what a new scalar at `at` should replace.
 
-    A scalar owns exactly its own line — the comments under it belong to the
-    next key. A key that heads a nested block owns the block, and the new value
-    replaces the lot.
+    A plain scalar owns exactly its own line — the comments under it belong to
+    the next key. A `>` or `|` scalar owns its text lines too. A key that heads
+    a nested block owns the block, and the new value replaces the lot.
     """
     _, _, after = lines[at].partition(":")
-    heads_a_block = not after.strip() or after.strip().startswith("#")
-    return _block_end(lines, at, indent) if heads_a_block else at + 1
+    value = after.strip()
+    if not value or value.startswith("#"):
+        return _block_end(lines, at, indent)
+    if _BLOCK_SCALAR.match(value):
+        return _scalar_block_end(lines, at, indent)
+    return at + 1
 
 
 def _find_key(
@@ -254,16 +281,41 @@ def _drop_double_blank(lines: typing.List[str], at: int) -> None:
         del lines[at]
 
 
+def _parses(text: str) -> typing.Optional[bool]:
+    """Whether `text` is valid YAML; None while PyYAML is not installed (setup
+    runs before it is)."""
+    try:
+        import yaml
+    except ImportError:
+        return None
+    try:
+        yaml.safe_load(text)
+    except yaml.YAMLError:
+        return False
+    return True
+
+
+def _save(path: str, original: typing.List[str], lines: typing.List[str]) -> None:
+    """Write the edited lines, unless the edit turned a readable file into an
+    unreadable one. A writer that misjudges the file's layout should fail here,
+    with the file untouched, not at the next start with the user's settings
+    half-overwritten."""
+    if _parses("".join(original)) is True and _parses("".join(lines)) is False:
+        raise ValueError("That change would have left config.yaml unreadable, so nothing was written.")
+    with io.open(path, "w", encoding="utf-8", newline="\n") as handle:
+        handle.writelines(lines)
+
+
 def remove(path: str, dotted_keys: typing.Iterable[str]) -> typing.List[str]:
     """Delete `dotted_keys` from the YAML file at `path`. Returns those removed."""
     if not os.path.exists(path):
         return []
     with io.open(path, "r", encoding="utf-8-sig") as handle:
         lines = handle.readlines()
+    original = list(lines)
     removed = [key for key in dotted_keys if remove_value(lines, key)]
     if removed:
-        with io.open(path, "w", encoding="utf-8", newline="\n") as handle:
-            handle.writelines(lines)
+        _save(path, original, lines)
     return removed
 
 
@@ -281,9 +333,9 @@ def update(path: str, updates: typing.Dict[str, typing.Any]) -> typing.List[str]
     if lines and not lines[-1].endswith("\n"):
         lines[-1] += "\n"
 
+    original = list(lines)
     for dotted_key, value in updates.items():
         set_value(lines, dotted_key, value)
 
-    with io.open(path, "w", encoding="utf-8", newline="\n") as handle:
-        handle.writelines(lines)
+    _save(path, original, lines)
     return list(updates)
