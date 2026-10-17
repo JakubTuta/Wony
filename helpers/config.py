@@ -174,6 +174,24 @@ class ModulesSettings(BaseModel):
     telegram: TelegramSettings = Field(default_factory=TelegramSettings)
 
 
+def _join_surrogates(value: typing.Any) -> typing.Any:
+    """YAML reads an emoji written JSON-style (\\ud83c\\udf80) as two lone
+    surrogates, which cannot be encoded to UTF-8, so the first save of the value
+    (or request to the AI) crashes. Join the pairs back; a stray half becomes U+FFFD."""
+    if isinstance(value, str):
+        return value.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+    if isinstance(value, dict):
+        return {key: _join_surrogates(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_join_surrogates(item) for item in value]
+    return value
+
+
+class _YamlSource(YamlConfigSettingsSource):
+    def _read_file(self, file_path: typing.Any) -> dict[str, typing.Any]:
+        return _join_surrogates(super()._read_file(file_path))
+
+
 class AppSettings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="WONY_",
@@ -207,7 +225,7 @@ class AppSettings(BaseSettings):
         sources: list[PydanticBaseSettingsSource] = [init_settings, env_settings]
         if cls._yaml_file:
             sources.append(
-                YamlConfigSettingsSource(settings_cls, yaml_file=cls._yaml_file, yaml_file_encoding="utf-8")
+                _YamlSource(settings_cls, yaml_file=cls._yaml_file, yaml_file_encoding="utf-8")
             )
         return tuple(sources)
 

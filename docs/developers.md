@@ -92,6 +92,13 @@ choose. Tuning thresholds are module-level constants next to their code. Anythin
 a user may change is a `Field` in `helpers/settings.py`, which is what the
 Settings page renders; secrets (`kind="secret"`) are written to `.env`.
 
+`helpers/config_writer.py` edits the file line by line to keep its comments. It
+writes text as a double-quoted JSON string without `ensure_ascii`: with it, an
+emoji becomes a surrogate pair that YAML reads back as two broken characters,
+and the Settings page (or the next AI request) fails to encode it. For files
+already written that way, or typed that way by hand, `Config` joins the pairs
+when it reads (`_join_surrogates` in `helpers/config.py`).
+
 `setup.py` asks about the same settings through `ask_setting(key)`, which takes
 the label, help text, limits and validation from the `Field` and writes with
 `settings.apply`, so setup and the page cannot describe a setting differently.

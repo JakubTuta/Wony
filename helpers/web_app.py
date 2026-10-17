@@ -197,6 +197,14 @@ def build_app() -> FastAPI:
 
     app.add_middleware(_LocalOnlyMiddleware)
 
+    @app.exception_handler(Exception)
+    async def _unexpected_error(request: Request, exc: Exception) -> JSONResponse:
+        """A crash would otherwise answer in bare text and the screen could only
+        say 'That did not work.' The server still logs the traceback."""
+        return JSONResponse(
+            {"detail": f"Wony hit an error: {type(exc).__name__}: {exc}"}, status_code=500
+        )
+
     @app.get("/api/config")
     def get_config() -> typing.Dict[str, typing.Any]:
         """Return frontend-relevant config values."""
