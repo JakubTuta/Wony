@@ -1277,6 +1277,8 @@ _GOOGLE_SIGN_IN_NOTES = (
 def step_google(keys, pending):
     wants = keys & GOOGLE_FEATURES
     section("Google — " + ", ".join(sorted(w.capitalize() for w in wants)))
+    if wants & {"gmail", "calendar"}:
+        ask_setting("ai.hide_mail_and_calendar")
     if not os.path.exists(GOOGLE_CREDENTIALS) and not _install_google_credentials(keys):
         pending.append("Google: credentials/google_credentials.json is still missing.")
         return

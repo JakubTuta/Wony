@@ -74,6 +74,10 @@ ai:
   ollama_model: "llama3.1"  # only used with ollama
   history:
     max_turns: 5   # how many past exchanges Wony keeps in mind during a chat
+  # Show your email and calendar to you exactly as they are, so your AI provider
+  # never sees what is in them. Wony then can't summarise them or answer
+  # questions about them. Not needed with Ollama, which runs on this computer.
+  hide_mail_and_calendar: false
 
 # Which features are on. A feature that is missing a key or a sign-in tells you
 # what it needs. Ask Wony "check my setup" to see.

@@ -108,6 +108,9 @@ class Trigger(typing.NamedTuple):
     # Committed once the fact has actually been announced, so a watcher marks
     # mail as seen only when the user was told about it.
     watermark: typing.Optional[_Watermark] = None
+    # The module whose contents the fact quotes. While the user keeps those from
+    # the AI (helpers/private_data.py), the fact is said as is, without the model.
+    reads: str = ""
 
 
 _last_polled: typing.Dict[str, float] = {}
@@ -222,8 +225,8 @@ def _tick() -> None:
 def _fire(trigger: Trigger, fact: str) -> None:
     global _last_any_fire
 
+    from helpers import private_data
     from helpers.notify import notify
-    from helpers.turn import run_turn
 
     now = time.time()
     _last_fired[trigger.name] = now
@@ -231,6 +234,26 @@ def _fire(trigger: Trigger, fact: str) -> None:
     _last_any_fire = now
 
     logger.log_system_event("trigger", f"{trigger.name}: {fact}")
+    # Mail and events the user keeps from the AI are said as they are, and
+    # stay out of the history the model reads.
+    private = private_data.covers(trigger.reads)
+    said = fact if private else _in_own_words(trigger, fact)
+    # The trigger prompt stays out of the history; notify() records the reply
+    # as something said unprompted, so the user can ask about it.
+    notify(
+        said,
+        kind="alert",
+        source=f"trigger:{trigger.name}",
+        private=private,
+        untrusted=not trigger.trusted,
+    )
+    if trigger.watermark is not None:
+        trigger.watermark.commit()
+
+
+def _in_own_words(trigger: Trigger, fact: str) -> str:
+    from helpers.turn import run_turn
+
     if trigger.trusted:
         noticed = f"You noticed this yourself: {fact}"
     else:
@@ -251,17 +274,7 @@ def _fire(trigger: Trigger, fact: str) -> None:
     )
     # No usable reply (no AI key, provider down, too slow): the fact is already
     # a plain sentence, and it beats an error message or silence.
-    said = fact if result.error or result.timed_out or not result.text else result.text
-    # The trigger prompt stays out of the history; notify() records the reply
-    # as something said unprompted, so the user can ask about it.
-    notify(
-        said,
-        kind="alert",
-        source=f"trigger:{trigger.name}",
-        untrusted=not trigger.trusted,
-    )
-    if trigger.watermark is not None:
-        trigger.watermark.commit()
+    return fact if result.error or result.timed_out or not result.text else result.text
 
 
 # ------------------------------------------------------------------ the checks
@@ -469,6 +482,7 @@ _TRIGGERS: typing.List[Trigger] = [
         # Invite titles, attendee names, locations and the subjects of mail
         # with them are all written by other people.
         trusted=False,
+        reads="calendar",
     ),
     Trigger(
         "new_email",
@@ -480,6 +494,7 @@ _TRIGGERS: typing.List[Trigger] = [
         # gets to write.
         trusted=False,
         watermark=_mail_seen,
+        reads="gmail",
     ),
     Trigger(
         "new_event",
@@ -490,5 +505,6 @@ _TRIGGERS: typing.List[Trigger] = [
         trusted=False,
         default_on=False,
         watermark=_events_seen,
+        reads="calendar",
     ),
 ]

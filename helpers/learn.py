@@ -133,10 +133,11 @@ def learn_facts() -> int:
     if count_facts("auto") >= _MAX_AUTO_FACTS:
         return 0
 
+    from helpers.private_data import strip
     from helpers.private_numbers import hide
 
     transcript = hide("\n".join(
-        f"User: {t['user_text']}\nAssistant: {(t.get('assistant_text') or '')[:400]}"
+        f"User: {t['user_text']}\nAssistant: {strip(t.get('assistant_text') or '')[:400]}"
         for t in turns
     ))
     candidates = _ask_for_facts(transcript)
@@ -183,11 +184,12 @@ def learn_style() -> bool:
     """Summarise how the user writes, from their own sent mail. True when updated."""
     import time
 
+    from helpers import private_data
     from helpers.config import Config
     from helpers.memory_db import get_kv, set_kv
     from helpers.registry import ServiceRegistry
 
-    if not Config.is_module_enabled("gmail"):
+    if not Config.is_module_enabled("gmail") or private_data.covers("gmail"):
         return False
     last = float(get_kv(_STYLE_STAMP_KEY, "0") or 0)
     if time.time() - last < _STYLE_INTERVAL_SECONDS:

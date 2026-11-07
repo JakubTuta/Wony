@@ -1,6 +1,7 @@
 import typing
 from datetime import datetime, timedelta
 
+from helpers import private_data
 from helpers.accounts import CREDENTIALS_FILE, GoogleAccounts
 from helpers.cache import Cache
 from helpers.config import Config
@@ -352,11 +353,12 @@ class Calendar:
         header: str,
         audio: bool,
         count_template: str,
-        verbose_override: typing.Optional[bool] = None,
     ) -> str:
         lines = [header]
         lines.append(count_template.format(count=len(events)))
-        verbose = (not audio) if verbose_override is None else verbose_override
+        # Descriptions and guest lists are for the model to pick from. A list
+        # the user reads as it is (helpers/private_data.py) is times and titles.
+        verbose = not audio and not private_data.covers("calendar")
         for event in events:
             lines.append("")
             lines.append(self._format_event(event, verbose=verbose))

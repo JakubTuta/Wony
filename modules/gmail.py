@@ -5,6 +5,7 @@ import re
 import typing
 from datetime import datetime
 
+from helpers import private_data
 from helpers.accounts import CREDENTIALS_FILE, GoogleAccounts
 from helpers.cache import Cache
 from helpers.config import Config
@@ -477,12 +478,13 @@ class Gmail:
         header: str,
         audio: bool,
         count_template: str,
-        verbose_override: typing.Optional[bool] = None,
     ) -> str:
         lines = [header]
         count_msg = count_template.format(count=len(messages))
         lines.append(count_msg)
-        verbose = (not audio) if verbose_override is None else verbose_override
+        # Whole bodies are for the model to summarise. A list the user reads as
+        # it is (helpers/private_data.py) is senders and subjects.
+        verbose = not audio and not private_data.covers("gmail")
         max_body = self._max_body_chars() if audio else 0
         for msg in messages:
             lines.append("")

@@ -11,7 +11,8 @@ timers, maps and the web — using whatever you switch on, and nothing you don't
   read back to you first, and only happens once you say yes. Small changes —
   a light, a list, a playlist, a timer — just happen; say _"undo"_ to take one back.
 - **Your data stays on your machine** — history, notes and reminders live in a
-  file next to the app. Only what you ask goes to your AI provider.
+  file next to the app. Only what you ask goes to your AI provider, and with
+  one switch your email and calendar never do ([Privacy](#privacy)).
 
 ---
 
@@ -426,11 +427,27 @@ of Google — those are separate, deliberate steps: remove an account from
 Settings → Google accounts, or delete a key by hand from `.env` (Settings →
 Features can replace a key with a new one, but not clear it).
 
-What leaves this computer, and only when a feature you switched on needs it:
+### Keeping email and calendar from the AI
+
+Turn on **Keep my email and calendar from the AI** (Settings → AI) and Wony still
+finds your mail and events, but shows them to you exactly as they are. Your AI
+provider never sees what is in them: not in the answer, the chat history, the
+alerts about new mail or what Wony learns about you. It still sees what you asked
+for, like _"read my last email from Anna"_.
+
+What you give up: Wony can't summarise an email, answer questions about one or
+turn it into an event, and _"what's going on with Anna"_ leaves out your mail and
+meetings with them. Mail and events read before you switched it on stay in
+earlier conversations until you **Wipe data**. With Ollama you don't need it:
+nothing leaves this computer anyway.
+
+### What leaves this computer
+
+Only when a feature you switched on needs it:
 
 | Goes to                                | What                                              | When                                       |
 | --------------------------------------- | -------------------------------------------------- | ------------------------------------------- |
-| Your AI provider                        | Your requests, the last few turns, facts it remembered, and whatever it reads to answer you (an email, a web page, a file, a Drive document, a screenshot) | Every request (nowhere at all with Ollama) |
+| Your AI provider                        | Your requests, the last few turns, facts it remembered, and whatever it reads to answer you (an email, a web page, a file, a Drive document, a screenshot). No email or calendar contents while **Keep my email and calendar from the AI** is on | Every request (nowhere at all with Ollama) |
 | OpenStreetMap, or Google with a Maps key | Place and route searches. Your location itself stays here except as part of one | A maps request                             |
 | ipinfo.io                               | Nothing identifying — just enough to guess your city when Windows location is off | Only if Windows can't say where you are    |
 | OpenWeatherMap                          | City name or coordinates                           | A weather request                           |

@@ -625,6 +625,7 @@ def build_app() -> FastAPI:
     @app.get("/api/chat/history")
     def chat_history(limit: int = 50) -> typing.Dict[str, typing.Any]:
         from helpers.memory_db import visible_turns
+        from helpers.private_data import show
         from helpers.untrusted import unfence
 
         turns = visible_turns(min(limit, 200))
@@ -633,7 +634,7 @@ def build_app() -> FastAPI:
                 {
                     "id": t["id"],
                     "user": unfence(t["user_text"]),
-                    "assistant": unfence(t["assistant_text"] or ""),
+                    "assistant": unfence(show(t["assistant_text"] or "")),
                     "ts": t["ts"],
                     "calls": t.get("calls", []),
                     "source": t.get("source", ""),
