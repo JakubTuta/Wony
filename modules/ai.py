@@ -42,6 +42,7 @@ def build_agent_system_prompt(request: str = "") -> typing.List[str]:
     """
     import datetime
 
+    from helpers import private_data
     from helpers.profile import Profile
     from helpers.settings import working_modules
 
@@ -144,7 +145,15 @@ def build_agent_system_prompt(request: str = "") -> typing.List[str]:
         " value, a menu name or a file to edit. Settings are changed on the Settings"
         " screen, and keys never go into this chat. You cannot change a setting"
         " yourself. If the lookup has no answer, say so."
-        "\nReply in plain prose. No bullet points unless listing multiple items."
+        + (
+            "\n\n13. EMAIL AND CALENDAR STAY PRIVATE: what an email or calendar tool"
+            " returns goes straight to the user and you never see it, and a turn that"
+            " only used those tools ends as soon as they return. So call every other"
+            " tool the request needs in the same step. Still call them for questions"
+            " about what an email or event says: the user reads the answer themselves."
+            if private_data.on() else ""
+        )
+        + "\nReply in plain prose. No bullet points unless listing multiple items."
     )
     return [stable, volatile]
 
@@ -404,6 +413,8 @@ class AI:
 
     @staticmethod
     def _render_turns(turns: typing.List[typing.Dict], header: str) -> str:
+        from helpers.private_data import strip
+
         lines = [f"{header} ({len(turns)} exchange(s)):"]
         for turn in turns:
             stamp = turn.get("ts", "")[:16].replace("T", " ")
@@ -412,7 +423,7 @@ class AI:
                 lines.append(f"  (Nobody asked; the assistant spoke up: {turn['source']})")
             else:
                 lines.append(f"  You: {turn['user_text']}")
-            answer = turn.get("assistant_text") or ""
+            answer = strip(turn.get("assistant_text") or "")
             if answer:
                 preview = answer[:200] + ("…" if len(answer) > 200 else "")
                 lines.append(f"  Assistant: {preview}")

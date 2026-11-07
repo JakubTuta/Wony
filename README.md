@@ -181,8 +181,8 @@ everything you might want to change is here, except passwords and keys.
 
 - **Assistant** — its name, what it calls you, its personality, and your home
   address for local weather
-- **AI** — which service answers, the Ollama model, and how many past exchanges
-  it keeps in mind
+- **AI** — which service answers, the Ollama model, how many past exchanges
+  it keeps in mind, and whether your email and calendar are kept from it
 - **What Wony may do on its own** — the switches below
 - **Telegram** — the paired chat, and whether reminders also go there
 - **This device** — where Home Assistant lives, your working day, how long the
@@ -381,7 +381,7 @@ What leaves the device, and only when a feature you set up needs it:
 
 | Goes to                       | What                                                        |
 | ----------------------------- | ----------------------------------------------------------- |
-| Your AI service               | Your requests, recent turns, remembered facts and whatever it reads to answer (mail, calendar entries) |
+| Your AI service               | Your requests, recent turns, remembered facts and whatever it reads to answer (mail, calendar entries). Not mail or calendar contents while **Keep my email and calendar from the AI** is on |
 | OpenWeatherMap, OpenStreetMap | A city name or coordinates for the weather                  |
 | ipinfo.io                     | Only to guess your city when no home address is set in Settings |
 | Google (Gmail, Calendar)      | What the feature needs, once signed in                      |
@@ -389,6 +389,20 @@ What leaves the device, and only when a feature you set up needs it:
 | Telegram                      | Your messages, Wony's replies, and reminders sent to your chat, once you pair one |
 
 No telemetry. Keys and `appid=`/`key=`/`token=` values are removed from the logs.
+
+### Keeping email and calendar from the AI
+
+Turn on **Keep my email and calendar from the AI** (Settings → AI) and Wony still
+finds your mail and events, but shows them to you exactly as they are. Your AI
+service never sees what is in them: not in the answer, the chat history, the
+alerts about new mail or what Wony learns about you. It still sees what you asked
+for, like _"read my last email from Anna"_.
+
+What you give up: Wony can't summarise an email, answer questions about one or
+turn it into an event, and _"what's going on with Anna"_ leaves out your mail and
+meetings with them. Mail and events read before you switched it on stay in earlier
+conversations until you delete `wony.db`. With Ollama you don't need it: nothing
+leaves your own server anyway.
 
 ## If something goes wrong
 

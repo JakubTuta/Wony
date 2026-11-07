@@ -566,7 +566,13 @@ class Scheduler:
             finally:
                 set_agent_active(previous)
         if result:
-            notify(str(result), kind="reminder", source="scheduler")
+            from helpers import private_data
+            from helpers.untrusted import unfence
+
+            text, private = str(result), private_data.withheld(resolved)
+            # Mail and events the user keeps from the AI only go to the user,
+            # who has no use for the fences around them.
+            notify(unfence(text) if private else text, kind="reminder", source="scheduler", private=private)
 
     def _run_routine(self, name: str) -> None:
         """A routine is steps for the model, not a job, so a timer runs it as a
@@ -579,7 +585,14 @@ class Scheduler:
             notify(f"Could not run the '{name}' routine: it no longer exists.", kind="error", source="scheduler")
             return
         result = run_turn(f"[Scheduled. Nobody asked just now.] {steps}", from_user=False)
-        notify(result.text or f"Ran the '{name}' routine.", kind="reminder", source="scheduler")
+        # A notice joins the history whole, so one that shows mail or events
+        # the user keeps from the AI stays out of it.
+        notify(
+            result.text or f"Ran the '{name}' routine.",
+            kind="reminder",
+            source="scheduler",
+            private=any(call.get("private") for call in result.calls),
+        )
 
     def _load_and_restore(self) -> None:
         try:

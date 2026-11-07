@@ -201,10 +201,11 @@ def _answer_without_model(user_input: str) -> typing.Optional[typing.Any]:
     """An AgentResult for a bare yes / no / undo, or None for the model."""
     import re
 
-    from helpers import confirm, undo
+    from helpers import confirm, private_data, undo
     from helpers.agent import AgentResult
     from helpers.logger import logger
     from helpers.registry import ServiceRegistry
+    from helpers.untrusted import unfence
 
     said = " ".join(re.sub(r"[^\w' ]", " ", user_input.lower()).split())
 
@@ -234,7 +235,10 @@ def _answer_without_model(user_input: str) -> typing.Optional[typing.Any]:
                 result = f"Error executing {call.job}: {e}"
                 logger.log_error(result, "turn.confirmed")
         logger.log_function_response(call.job, result[:200], user_input)
-        calls.append({"name": call.job, "args": call.args, "result": result})
+        entry = {"name": call.job, "args": call.args, "result": result}
+        if private_data.withheld(call.job):
+            entry["result"], entry["private"] = unfence(result), True
+        calls.append(entry)
     text = " ".join(c["result"] for c in calls if c["result"]) or "Done."
     return AgentResult(text=text, calls=calls)
 

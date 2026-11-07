@@ -3,6 +3,7 @@ import threading
 import typing
 from datetime import datetime
 
+from helpers import private_data
 from helpers.untrusted import truncate, unfence, without_fenced
 
 # How many of the most recent turns carry their tool results forward as context.
@@ -50,7 +51,10 @@ def sanitize_calls(
                 safe_args[k] = v
             except (TypeError, ValueError):
                 safe_args[k] = str(v)
-        safe.append({"name": c.get("name", ""), "args": safe_args, "result": str(c.get("result", ""))})
+        entry = {"name": c.get("name", ""), "args": safe_args, "result": str(c.get("result", ""))}
+        if c.get("private"):
+            entry["private"] = True
+        safe.append(entry)
     return safe
 
 
@@ -66,11 +70,12 @@ def _try_persist(
     except Exception:
         turn_id = None
 
-    # Embed in background — never blocks the response path.
+    # Embed in background — never blocks the response path. Recall hands what
+    # it finds to the model, so withheld results stay out of the index.
     try:
         from helpers import semantic
         if semantic.is_available() and turn_id is not None:
-            semantic.store_turn(turn_id, user_text, assistant_text or "")
+            semantic.store_turn(turn_id, user_text, private_data.strip(assistant_text or ""))
     except Exception:
         pass
 
@@ -85,7 +90,7 @@ def _format_calls(
     lines = ["\n\n[Data retrieved this turn — reuse instead of re-calling tools:]"]
     for c in calls:
         name = c.get("name", "?")
-        if name in _NEVER_REUSED:
+        if name in _NEVER_REUSED or c.get("private"):
             continue
         args = c.get("args") or {}
         result = str(c.get("result") or "").strip()
@@ -121,6 +126,8 @@ class Conversation:
 
     @classmethod
     def get_messages(cls) -> typing.List[typing.Dict[str, str]]:
+        """The history as the model gets it — with no withheld email or calendar
+        result (helpers/private_data.py); the turns themselves keep it."""
         messages = []
         turns = cls._turns
         results_start = max(0, len(turns) - _TOOL_RESULT_TURNS)
@@ -132,7 +139,7 @@ class Conversation:
             if turn.get("at"):
                 user_content = f"[{turn['at'].strftime(_STAMP_FORMAT)}] {user_content}"
             messages.append({"role": "user", "content": user_content})
-            assistant_content = turn["assistant"]
+            assistant_content = private_data.strip(turn["assistant"])
             if i >= results_start:
                 calls = turn.get("calls") or []
                 block = _format_calls(calls, _TOOL_RESULT_MAX_CHARS)
@@ -173,10 +180,11 @@ class Conversation:
     ) -> typing.Optional[int]:
         max_turns = cls._max_turns()
         said_at = datetime.now()
+        kept = private_data.fence(assistant_text, calls)
         with cls._lock:
             cls._turns.append({
                 "user": user_text,
-                "assistant": assistant_text,
+                "assistant": kept,
                 "calls": calls,
                 "source": source,
                 "at": said_at,
@@ -188,7 +196,7 @@ class Conversation:
                 fold = len(cls._dropped) >= _SUMMARIZE_EVERY
         if fold:
             threading.Thread(target=cls._fold, daemon=True, name="conversation-summary").start()
-        turn_id = _try_persist(user_text, assistant_text, calls=calls, source=source)
+        turn_id = _try_persist(user_text, kept, calls=calls, source=source)
         if emit:
             try:
                 from helpers.events import emit_turn
@@ -222,6 +230,7 @@ class Conversation:
         from helpers.confirm import normalize
 
         wanted = normalize(job_name, args)
+        kept = result
         for turn in reversed(cls._turns):
             for call in turn.get("calls") or []:
                 if (
@@ -230,8 +239,11 @@ class Conversation:
                     and normalize(job_name, call.get("args") or {}) == wanted
                 ):
                     call.pop("needs_confirm")
+                    if private_data.withheld(job_name):
+                        call["private"] = True
+                        kept = private_data.hold(result)
                     call["result"] = result
-                    turn["assistant"] += f"\n(The user confirmed this with the button. Result: {result})"
+                    turn["assistant"] += f"\n(The user confirmed this with the button. Result: {kept})"
                     return True
         return False
 
@@ -254,7 +266,7 @@ class Conversation:
             # Fenced text stays out: a summary is read as Wony's own notes, and
             # an email's instructions must not turn into those.
             def exchange(t: typing.Dict[str, typing.Any]) -> str:
-                said = without_fenced(t["assistant"])[:600]
+                said = without_fenced(private_data.strip(t["assistant"]))[:600]
                 if t.get("source"):
                     return f"Assistant, unprompted ({t['source']}): {said}"
                 return f"User: {without_fenced(t['user'])}\nAssistant: {said}"

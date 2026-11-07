@@ -95,6 +95,11 @@ _FIELDS: typing.List[typing.Tuple[str, typing.List[Field]]] = [
         Field("ai.history.max_turns", "Conversation memory", "number",
               "How many past exchanges it keeps in mind during a chat.",
               minimum=1, maximum=50, step=1),
+        Field("ai.hide_mail_and_calendar", "Keep my email and calendar from the AI", "toggle",
+              "On: Wony still finds your mail and events, but shows them to you exactly as "
+              "they are, and your AI provider never sees what is in them. It can't "
+              "summarise them, answer questions about them or turn an email into an event. "
+              "Not needed with Ollama, which runs on this computer."),
     ]),
     ("What Wony may do on its own", [
         Field("modules.gmail.allow_write", "Change my mailbox", "toggle",

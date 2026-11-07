@@ -11,7 +11,9 @@ import typing
 import uuid
 
 import helpers.model as helpers_model
+from helpers import private_data
 from helpers.logger import logger
+from helpers.untrusted import unfence
 
 
 class AgentResult(typing.NamedTuple):
@@ -80,6 +82,10 @@ def run_agent(
     more_jobs(name, result): when only some tools were sent (helpers/toolset.py),
     called with each tool name the model used and its result, and returns jobs
     to add — the one it named but was not sent, or what a routine's steps need.
+
+    A result helpers/private_data.py withholds reaches on_text and the answer as
+    it is, and the model a note in its place. A turn that found nothing else
+    ends there, without another step.
     """
     available_jobs = dict(available_jobs)
     available_functions = list(available_jobs.values())
@@ -100,10 +106,27 @@ def run_agent(
     messages.append({"role": "user", "content": user_input})
 
     calls_made: typing.List[typing.Dict[str, typing.Any]] = []
+    # Results the user got as they are, which the model never saw (helpers/private_data.py).
+    shown: typing.List[str] = []
+    paragraph_break = False
 
     def _emit(text: str) -> None:
-        if on_text is not None and text:
-            on_text(text)
+        nonlocal paragraph_break
+        if on_text is None or not text:
+            return
+        if paragraph_break:
+            on_text("\n\n")
+            paragraph_break = False
+        on_text(text)
+
+    def _show(result: str) -> None:
+        nonlocal paragraph_break
+        _emit(result)
+        shown.append(result)
+        paragraph_break = True
+
+    def _reply(text: str) -> AgentResult:
+        return AgentResult(text="\n\n".join((shown + [text]) if text else shown), calls=calls_made)
 
     for step in range(max_steps):
         if cancel_event is not None and cancel_event.is_set():
@@ -118,7 +141,7 @@ def run_agent(
 
             def _tracked(chunk: str) -> None:
                 heard.append(chunk)
-                on_text(chunk)
+                _emit(chunk)
 
             try:
                 text, tool_calls = helpers_model.stream_agent_step(
@@ -136,7 +159,7 @@ def run_agent(
                     # Part of the answer is already out; a retry would say all of it again.
                     tail = " — sorry, I lost the connection there."
                     _emit(tail)
-                    return AgentResult(text="".join(heard) + tail, calls=calls_made)
+                    return _reply("".join(heard) + tail)
 
         if not streamed:
             try:
@@ -151,18 +174,18 @@ def run_agent(
                 logger.log_error(str(e), "agent_loop.send")
                 error_text = f"Error communicating with AI: {e}"
                 _emit(error_text)
-                return AgentResult(text=error_text, calls=calls_made)
+                return _reply(error_text)
             tool_calls = _extract_all_tool_calls(response)
             text = helpers_model.get_text_from_response(response) or ""
 
         if not tool_calls:
             # No tool call — model produced a text response (final answer or clarifying question)
-            if not text and calls_made:
+            if not text and calls_made and not shown:
                 text = _fallback_from_calls(calls_made)
                 _emit(text)
             elif not streamed:
                 _emit(text)
-            return AgentResult(text=text, calls=calls_made)
+            return _reply(text)
 
         # Execute each tool call and append results to messages
         # First record the assistant's tool_call turn(s)
@@ -200,13 +223,24 @@ def run_agent(
             call = {"name": tc["name"], "args": tc["args"], "result": result_str}
             if plan["needs_confirm"]:
                 call["needs_confirm"] = True
+            content = result_str
+            if plan["func"] is not None and private_data.withheld(plan["exec_name"]):
+                call["result"], call["private"] = unfence(result_str), True
+                if call["result"]:
+                    _show(call["result"])
+                content = private_data.note()
             calls_made.append(call)
             messages.append({
                 "role": "tool_result",
                 "id": tc["id"],
                 "name": tc["name"],
-                "content": result_str,
+                "content": content,
             })
+
+        if shown and all(call.get("private") for call in calls_made):
+            # Everything this turn found is already in front of the user, and
+            # the model could only say it again without seeing it.
+            return _reply("")
 
     # Reached max_steps without a text response — ask model to summarize.
     # The tools still go along: the history holds tool calls, and Anthropic
@@ -222,7 +256,7 @@ def run_agent(
                 messages=messages,
                 system_instructions=system_instructions,
                 available_tools=available_functions,
-                on_text=on_text,
+                on_text=_emit,
                 think=think,
             )
         else:
@@ -238,11 +272,11 @@ def run_agent(
     except Exception as e:
         logger.log_error(str(e), "agent_loop.summary")
         text = ""
-    if not text:
+    if not text and not shown:
         text = _fallback_from_calls(calls_made)
         _emit(text)
 
-    return AgentResult(text=text, calls=calls_made)
+    return _reply(text)
 
 
 def _plan(

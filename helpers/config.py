@@ -60,6 +60,9 @@ class AiSettings(BaseModel):
     # Claude and Gemini always use their fastest model (helpers/model.py).
     ollama_model: str = "llama3.1"
     history: HistorySettings = Field(default_factory=HistorySettings)
+    # Gmail and Calendar results go to the user as they are and never to the
+    # model (helpers/private_data.py). Off by default: it costs summaries.
+    hide_mail_and_calendar: bool = False
 
 
 class ServerSettings(BaseModel):

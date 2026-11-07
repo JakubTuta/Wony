@@ -16,6 +16,10 @@ _MAIL_HITS = 3
 _MEETING_DAYS = 30
 _TALK_HITS = 3
 
+# Stands in for mail or meetings while the user keeps those from the AI
+# (helpers/private_data.py), so the model can point them at the real lookup.
+_KEPT_FROM_AI = "{what}: kept from you by the user's privacy setting. They can ask for {ask} to see them."
+
 
 def about(name: str) -> str:
     """A briefing on `name`, or a sentence saying nothing was found."""
@@ -69,16 +73,24 @@ def _facts(name: str) -> str:
 
 
 def _mail(name: str) -> str:
+    from helpers import private_data
+    from helpers.config import Config
+
+    if private_data.covers("gmail") and Config.is_module_enabled("gmail"):
+        return _KEPT_FROM_AI.format(what="Mail with them", ask="their emails")
     line = recent_mail([name])
     return wrap(line, "email subjects") if line else ""
 
 
 def _meetings(name: str) -> str:
+    from helpers import private_data
     from helpers.config import Config
 
     calendar = ServiceRegistry.get_service_instance("calendar")
     if calendar is None or not Config.is_module_enabled("calendar"):
         return ""
+    if private_data.covers("calendar"):
+        return _KEPT_FROM_AI.format(what="Meetings with them", ask="events with them")
     events = calendar.events_with(name, days=_MEETING_DAYS)
     if not events:
         return ""

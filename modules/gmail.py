@@ -5,6 +5,7 @@ import re
 import typing
 from datetime import datetime
 
+from helpers import private_data
 from helpers.accounts import CREDENTIALS_FILE, GoogleAccounts
 from helpers.config import Config
 from helpers.decorators import capture_response
@@ -436,12 +437,13 @@ class Gmail:
         messages: typing.List[Msg],
         header: str,
         count_template: str,
-        verbose_override: typing.Optional[bool] = None,
     ) -> str:
         lines = [header]
         count_msg = count_template.format(count=len(messages))
         lines.append(count_msg)
-        verbose = True if verbose_override is None else verbose_override
+        # A list the user reads as it is (helpers/private_data.py) is senders
+        # and subjects, without bodies.
+        verbose = not private_data.covers("gmail")
         for msg in messages:
             lines.append("")
             lines.append(self._format_message(msg, verbose=verbose))

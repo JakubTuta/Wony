@@ -1024,6 +1024,7 @@ _GOOGLE_STEPS = (
 
 def step_google(keys, pending):
     section("Google — Gmail and Calendar")
+    ask_setting("ai.hide_mail_and_calendar")
     if not os.path.exists(GOOGLE_CREDENTIALS) and not _install_google_credentials():
         pending.append("Google: credentials/google_credentials.json is still missing.")
         return

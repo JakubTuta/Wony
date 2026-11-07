@@ -205,6 +205,17 @@ queue behind a turn. A new entry point must take it too.
   their order. Workers carry the turn's state (`turn_context.capture/carried`)
   and hand back what they marked (`absorb`), so an email read on a worker still
   gates the rest of the turn.
+- **Email and calendar can stay off the model** (`helpers/private_data.py`,
+  switch `ai.hide_mail_and_calendar`): a Gmail or Calendar job's result goes to
+  `on_text` and the answer unfenced, the model gets `note()` instead, and a turn
+  where every call was withheld ends without another model step. Withheld calls
+  carry `private: True`; `Conversation` fences their text in the kept turn
+  (`fence`), and every reader that hands past turns to the model `strip`s it —
+  history, the summary, `recall`, `learn` and the semantic index. A new such
+  reader must `strip` too. Triggers name the module they quote (`Trigger.reads`)
+  and are said as is through `notify(private=True)`; so is a scheduled job or
+  routine that showed any. Covering another module means adding it to
+  `_MODULES` and renaming the switch to say so.
 - **Thinking:** typed turns think (`run_turn(think=True)`); triggers and
   scheduled routines do not. Claude's reply blocks travel back unchanged
   (`_anthropic_content`, like Gemini's `_gemini_content`), which thinking needs.
