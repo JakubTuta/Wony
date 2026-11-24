@@ -157,10 +157,17 @@ export interface Control {
   current: number | null;
 }
 
+/** What a device reports rather than does: a battery level, a filter's life left. */
+export interface Reading {
+  name: string;
+  value: string;
+}
+
 export interface Device {
   name: string;
   primary: Control;
   extras: Control[];
+  readings: Reading[];
 }
 
 export interface DevicesPanel {
@@ -263,6 +270,54 @@ export async function controlDevice(
     return { ok: false, text: 'Wony is not responding.' };
   }
 }
+
+// ── Smart home map ─────────────────────────────────────────────────────────
+// One floor plan, and where devices sit on it as fractions (0-1) of its size.
+
+export interface MapPlacement {
+  entity_id: string;
+  x: number;
+  y: number;
+}
+
+export interface DeviceMap {
+  image: { url: string; width: number; height: number } | null;
+  placements: MapPlacement[];
+}
+
+export type MapResult<T> = { ok: true; data: T } | { ok: false; text: string };
+
+async function mapRequest<T>(path: string, init?: RequestInit): Promise<MapResult<T>> {
+  try {
+    const res = await fetch(`${BASE}/devices/map${path}`, init);
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return { ok: false, text: typeof body.detail === 'string' ? body.detail : 'That did not work.' };
+    }
+    return { ok: true, data: body };
+  } catch {
+    return { ok: false, text: 'Wony is not responding.' };
+  }
+}
+
+export const fetchDeviceMap = () => mapRequest<DeviceMap>('');
+
+/** The file's own bytes, as the speech endpoint takes audio. */
+export const uploadMapImage = (file: File) =>
+  mapRequest<DeviceMap>('/image', {
+    method: 'PUT',
+    headers: { 'Content-Type': file.type || 'application/octet-stream' },
+    body: file,
+  });
+
+export const saveMapPlacements = (placements: MapPlacement[]) =>
+  mapRequest<{ ok: boolean }>('/placements', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ placements }),
+  });
+
+export const deleteDeviceMap = () => mapRequest<{ ok: boolean }>('', { method: 'DELETE' });
 
 // ── Notifications ──────────────────────────────────────────────────────────
 

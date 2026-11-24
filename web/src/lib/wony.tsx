@@ -167,7 +167,19 @@ export function WonyProvider({ children }: { children: ReactNode }) {
 
   // ---------------------------------------------------------------- confirm modal (outside chat)
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
-  const requestConfirm = useCallback((req: ConfirmRequest) => setConfirmRequest(req), []);
+  const requestConfirm = useCallback(
+    (req: ConfirmRequest) =>
+      // Nothing else closes the dialog after Confirm, and a second click
+      // would run the action again.
+      setConfirmRequest({
+        ...req,
+        onConfirm: () => {
+          setConfirmRequest(null);
+          req.onConfirm();
+        },
+      }),
+    [],
+  );
   const cancelConfirm = useCallback(() => {
     confirmRequest?.onCancel?.();
     setConfirmRequest(null);

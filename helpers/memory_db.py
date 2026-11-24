@@ -158,6 +158,20 @@ def _init_schema(conn: sqlite3.Connection) -> None:
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_emb_keyed "
         "ON embeddings(source_type, ref_key) WHERE ref_key IS NOT NULL"
     )
+    # The one floor plan on the Smart home page. A single row, so a picture and
+    # the positions on it can never get out of step. Positions are fractions of
+    # the picture, which is why replacing it keeps them.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS home_map (
+            id         INTEGER PRIMARY KEY CHECK (id = 1),
+            image      BLOB NOT NULL,
+            mime       TEXT NOT NULL,
+            width      INTEGER NOT NULL,
+            height     INTEGER NOT NULL,
+            placements TEXT NOT NULL DEFAULT '[]',
+            updated    REAL NOT NULL
+        )
+    """)
     try:
         conn.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS turns_fts
@@ -787,11 +801,54 @@ def delete_embedding_by_ref(
         conn.commit()
 
 
+# ------------------------------------------------------------------ home map (one floor plan)
+
+def get_home_map() -> typing.Optional[typing.Dict[str, typing.Any]]:
+    """The floor plan and its placements as stored, or None before an upload."""
+    conn = _get_conn()
+    with _lock:
+        row = conn.execute(
+            "SELECT image, mime, width, height, placements, updated FROM home_map WHERE id = 1"
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def save_home_map_image(image: bytes, mime: str, width: int, height: int) -> None:
+    """Store the picture. A first upload starts with no placements; a
+    replacement keeps the ones already there."""
+    conn = _get_conn()
+    with _lock:
+        conn.execute(
+            "INSERT INTO home_map (id, image, mime, width, height, placements, updated)"
+            " VALUES (1, ?, ?, ?, ?, '[]', ?)"
+            " ON CONFLICT(id) DO UPDATE SET image=excluded.image, mime=excluded.mime,"
+            " width=excluded.width, height=excluded.height, updated=excluded.updated",
+            (image, mime, width, height, datetime.now().timestamp()),
+        )
+        conn.commit()
+
+
+def save_home_map_placements(placements: str) -> bool:
+    """False when there is no map yet to put them on."""
+    conn = _get_conn()
+    with _lock:
+        cursor = conn.execute("UPDATE home_map SET placements = ? WHERE id = 1", (placements,))
+        conn.commit()
+        return cursor.rowcount == 1
+
+
+def delete_home_map() -> None:
+    conn = _get_conn()
+    with _lock:
+        conn.execute("DELETE FROM home_map")
+        conn.commit()
+
+
 # ------------------------------------------------------------------
 
 def wipe_all() -> None:
     """Delete every row the user owns: turns, facts, notes, routines, reminders,
-    notifications, mcp servers, embeddings, and everything in kv except the
+    notifications, mcp servers, embeddings, the home map, and everything in kv except the
     remembered web port (not user data, and losing it would change the URL
     a bookmark points at for no reason connected to what Wipe is for).
 
@@ -809,7 +866,7 @@ def wipe_all() -> None:
         except sqlite3.OperationalError:
             pass
         for table in ("turns", "facts", "notes", "routines", "reminders",
-                      "notifications", "mcp_servers", "embeddings"):
+                      "notifications", "mcp_servers", "embeddings", "home_map"):
             try:
                 conn.execute(f"DELETE FROM {table}")
             except sqlite3.OperationalError:

@@ -80,7 +80,9 @@ is a change to both branches.
 | `GET /api/notifications`, `POST /api/notifications/{id}/ack`, `POST /api/notifications/ack-all` | The bell |
 | `GET/POST /api/settings`, `POST /api/data/wipe` | Settings the UI may show and write; wiping the data           |
 
-Everything else belongs to one branch: `/api/restart`, `/api/capabilities`, `/api/pins`, `/api/ack` and `/api/stt`. Requests are
+Everything else belongs to one branch: `/api/restart`, `/api/capabilities`, `/api/pins`, `/api/ack`, `/api/stt` and
+`/api/devices/map*` (the Smart home map: `helpers/home_map.py` checks every upload and placement, and stores the one
+picture in the `home_map` table of `wony.db`, so Wipe removes it). Requests are
 checked by `helpers/local_only.py` (Host, Origin and Sec-Fetch-Site), which both
 branches call with their own list of served host names (`_allowed_hosts` in
 `helpers/web_app.py`).

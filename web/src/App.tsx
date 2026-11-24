@@ -5,30 +5,33 @@ import { TopBar, type View } from './components/TopBar';
 import { ChatPanel } from './components/ChatPanel';
 import { ConfirmModal } from './components/ConfirmModal';
 import { Dashboard } from './views/Dashboard';
+import { SmartHome } from './views/SmartHome';
 import { Modules } from './views/Modules';
 import { Macros } from './views/Macros';
 import { Settings } from './views/Settings';
 
 const TITLES: Record<View, [string, string]> = {
   dashboard: ['Dashboard', 'Pinned controls and live data'],
+  home: ['Smart home', 'Your devices by room, or on a map of your home'],
   modules: ['Features', 'Run any command directly'],
   macros: ['Routines', 'Steps in plain words, run on tap or on a schedule'],
   settings: ['Settings', 'Voice, integrations, accounts, and what Wony may do on its own'],
 };
 
-function parseHash(): { view: View; module: string | null } {
+// #view, or #view/sub: a feature to open, or a mode of the Smart home page.
+function parseHash(): { view: View; sub: string | null } {
   const raw = location.hash.replace(/^#/, '');
-  const [view, module] = raw.split('/');
-  const known: View[] = ['dashboard', 'modules', 'macros', 'settings'];
+  const [view, sub] = raw.split('/');
+  const known: View[] = ['dashboard', 'home', 'modules', 'macros', 'settings'];
   return {
     view: known.includes(view as View) ? (view as View) : 'dashboard',
-    module: module ? decodeURIComponent(module) : null,
+    sub: sub ? decodeURIComponent(sub) : null,
   };
 }
 
 function AppShell() {
   const { jobs, routinesCount, pins } = useWony();
-  const [{ view, module }, setRoute] = useState(parseHash);
+  const [{ view, sub }, setRoute] = useState(parseHash);
   const [editing, setEditing] = useState(false);
 
   useEffect(() => {
@@ -78,8 +81,9 @@ function AppShell() {
         </header>
 
         {view === 'dashboard' && <Dashboard editing={editing} />}
+        {view === 'home' && <SmartHome mode={sub} />}
         {view === 'modules' && (
-          <Modules selectedModule={module} onSelectModule={(key) => (location.hash = `modules/${encodeURIComponent(key)}`)} />
+          <Modules selectedModule={sub} onSelectModule={(key) => (location.hash = `modules/${encodeURIComponent(key)}`)} />
         )}
         {view === 'macros' && <Macros />}
         {view === 'settings' && <Settings />}

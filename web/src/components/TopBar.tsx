@@ -3,10 +3,11 @@ import { Bell } from 'lucide-react';
 import { useWony } from '../lib/wonyContext';
 import { NotificationsMenu } from './NotificationsMenu';
 
-export type View = 'dashboard' | 'modules' | 'macros' | 'settings';
+export type View = 'dashboard' | 'home' | 'modules' | 'macros' | 'settings';
 
 const NAV: { id: View; label: string }[] = [
   { id: 'dashboard', label: 'Dashboard' },
+  { id: 'home', label: 'Smart home' },
   { id: 'modules', label: 'Features' },
   { id: 'macros', label: 'Routines' },
   { id: 'settings', label: 'Settings' },
@@ -23,8 +24,11 @@ export function TopBar({
   onOpenModule: (moduleKey: string) => void;
   counts: Partial<Record<View, number>>;
 }) {
-  const { health, unreadCount } = useWony();
+  const { health, unreadCount, panels } = useWony();
   const [notifOpen, setNotifOpen] = useState(false);
+  // Only listed once Home Assistant is switched on; the page itself explains
+  // a module that is on but not working.
+  const items = NAV.filter((item) => item.id !== 'home' || panels.some((p) => p.key === 'devices'));
 
   return (
     <div
@@ -37,7 +41,7 @@ export function TopBar({
       </div>
 
       <nav className="flex gap-1 min-w-0 overflow-x-auto">
-        {NAV.map((item) => {
+        {items.map((item) => {
           const active = view === item.id;
           const count = counts[item.id];
           return (

@@ -8,7 +8,7 @@ import json
 import os
 import typing
 
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -83,6 +83,22 @@ class DeviceControlRequest(BaseModel):
     # A slider position, or a named mode picked from the device's own options.
     value: typing.Optional[float] = None
     option: str = ""
+
+
+class MapPlacement(BaseModel):
+    entity_id: str
+    # Fractions of the floor plan, so they survive any window size.
+    x: float
+    y: float
+
+
+class MapPlacementsRequest(BaseModel):
+    placements: typing.List[MapPlacement]
+
+
+def _require_home_assistant() -> None:
+    if "home_assistant" not in Config.enabled_modules():
+        raise HTTPException(status_code=503, detail="Home Assistant is not enabled.")
 
 
 class SettingsRequest(BaseModel):
@@ -386,8 +402,7 @@ def build_app() -> FastAPI:
         control_home_device resolves a spoken name, which would toggle both
         lamps called 'Lamp'. The UI already knows which one was pressed.
         """
-        if "home_assistant" not in Config.enabled_modules():
-            raise HTTPException(status_code=503, detail="Home Assistant is not enabled.")
+        _require_home_assistant()
 
         from helpers.logger import logger
         from modules import home_assistant
@@ -405,6 +420,81 @@ def build_app() -> FastAPI:
 
         logger.log_function_response("control_device", text[:200], "[web]")
         return {"ok": ok, "text": text}
+
+    # The Smart home map: one floor plan, and where devices sit on it.
+
+    @app.get("/api/devices/map")
+    def get_device_map() -> typing.Dict[str, typing.Any]:
+        _require_home_assistant()
+        from helpers import home_map
+
+        return home_map.load()
+
+    @app.put("/api/devices/map/image")
+    async def put_device_map_image(request: Request) -> typing.Dict[str, typing.Any]:
+        """The floor plan as the raw bytes of the file, like /api/stt."""
+        _require_home_assistant()
+        from starlette.concurrency import run_in_threadpool
+
+        from helpers import home_map
+
+        too_big = HTTPException(status_code=413, detail="That file is too big. The limit is 15 MB.")
+        declared = request.headers.get("content-length", "")
+        if declared.isdigit() and int(declared) > home_map.MAX_UPLOAD_BYTES:
+            raise too_big
+
+        # Not request.body(): a missing or false Content-Length must not let a
+        # huge body into memory before the size is checked.
+        data = bytearray()
+        async for chunk in request.stream():
+            data.extend(chunk)
+            if len(data) > home_map.MAX_UPLOAD_BYTES:
+                raise too_big
+
+        try:
+            # Decoding and re-encoding a photo is seconds of CPU.
+            await run_in_threadpool(home_map.save_image, bytes(data))
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        return home_map.load()
+
+    @app.get("/api/devices/map/image")
+    def get_device_map_image() -> Response:
+        _require_home_assistant()
+        from helpers import home_map
+
+        stored = home_map.image()
+        if stored is None:
+            raise HTTPException(status_code=404, detail="No map has been uploaded.")
+        data, mime = stored
+        # The URL carries the picture's version, so a new upload is a new URL.
+        return Response(
+            data,
+            media_type=mime,
+            headers={
+                "Cache-Control": "private, max-age=31536000, immutable",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    @app.put("/api/devices/map/placements")
+    def put_device_map_placements(req: MapPlacementsRequest) -> typing.Dict[str, bool]:
+        _require_home_assistant()
+        from helpers import home_map
+
+        try:
+            home_map.save_placements([p.model_dump() for p in req.placements])
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        return {"ok": True}
+
+    @app.delete("/api/devices/map")
+    def delete_device_map() -> typing.Dict[str, bool]:
+        _require_home_assistant()
+        from helpers import home_map
+
+        home_map.delete()
+        return {"ok": True}
 
     @app.get("/api/notifications")
     def list_notifications(

@@ -106,6 +106,7 @@ briefing"_.
 | Tab        | What it is                                                                 |
 | ---------- | -------------------------------------------------------------------------- |
 | Dashboard  | Tiles for what is worth looking at: weather, today's events, timers, lists, music, your devices. Tiles appear when you switch the feature on. |
+| Smart home | Appears when Home Assistant is on. Your devices as a **List** by room, or on a **Map** of your home. |
 | Features   | Every feature, an on/off switch for each, what it needs, and every command it has. |
 | Routines   | Your routines in plain words — run one, edit it, schedule it.              |
 | Settings   | Name, voice, microphone, AI provider, Google accounts, and the safety switches. |
@@ -340,6 +341,20 @@ open"_, _"start the vacuum"_, _"turn all the lights off"_. A room or a device ty
 has to be named before Wony will change a whole set of things at once. Locks,
 alarms and the garage stay refused until you allow them.
 
+The **Smart home** page shows the same devices without asking. **List** groups
+them by room; open a device for its brightness, modes and what it reports, such
+as a battery level. **Map** is a picture of your home with your devices on it, and
+a tap switches one:
+
+1. Open **Map** and drop in a floor plan, or a photo of one. A screenshot or a
+   photo of a sketch works.
+2. Drag each device onto the picture. On a touch screen, tap the device in the
+   list first, then tap the map.
+3. Press **Done**. From then on, tap a device on the map to turn it on or off.
+
+**Edit map** lets you add or move devices, swap the picture or remove the map.
+The map lives in Wony only; it does not change anything in Home Assistant.
+
 ### Telegram — Wony on your phone
 
 1. In Telegram, message **@BotFather**, send `/newbot`, and follow the questions.
@@ -415,8 +430,9 @@ Ask Wony _"check setup"_ for a full checklist.
 
 ## Privacy
 
-Conversations, remembered facts, lists and reminders are stored in `wony.db` in
-this folder. Speech recognition, speech, the wake word and (when
+Conversations, remembered facts, lists, reminders and the floor plan you
+upload for the Smart home map are stored in `wony.db` in this folder. The picture
+is re-saved without the location and camera details a phone photo carries. Speech recognition, speech, the wake word and (when
 [easyocr](https://github.com/JaidedAI/EasyOCR) is installed) screen reading
 all run locally — nothing about your voice, your screen or what you asked
 has to leave this computer for those to work.

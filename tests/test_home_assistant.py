@@ -36,7 +36,7 @@ def _index(ha):
           "", ha._OPTION_SEP.join(["Quiet", "Standard", "Turbo", "Max"]), "Robot"),
         E("number.robot_volume", "Robot Volume", "Utility", "4", "", "", "", "Robot"),
         E("sensor.robot_battery", "Robot Battery", "Utility", "79", "battery",
-          "", "", "Robot"),
+          "", "", "Robot", unit="%"),
     ]
 
 
@@ -140,6 +140,20 @@ class TestHomeAssistant(unittest.TestCase):
         cleaning = self.ha._Entity("vacuum.a", "A", "", "cleaning", "")
         self.assertEqual(self.ha._service_for(docked, "toggle"), "start")
         self.assertEqual(self.ha._service_for(cleaning, "toggle"), "return_to_base")
+
+    def test_toggle_undoes_what_a_lock_or_alarm_is_doing(self) -> None:
+        """A locked door is "off" but the verb that locks is "on", so toggling it
+        used to lock it again, and a disarmed alarm was disarmed again."""
+        for entity_id, state, service in [
+            ("lock.x", "locked", "unlock"),
+            ("lock.x", "unlocked", "lock"),
+            ("alarm_control_panel.x", "disarmed", "alarm_arm_away"),
+            ("alarm_control_panel.x", "armed_away", "alarm_disarm"),
+            ("alarm_control_panel.x", "armed_night", "alarm_disarm"),
+        ]:
+            with self.subTest(entity_id=entity_id, state=state):
+                entity = self.ha._Entity(entity_id, "X", "", state, "")
+                self.assertEqual(self.ha._service_for(entity, "toggle"), service)
 
     def test_unknown_verb_falls_through_to_home_assistant(self) -> None:
         """Integration-specific services stay reachable without a code change."""
@@ -334,12 +348,13 @@ class TestHomeAssistant(unittest.TestCase):
         """Hiding an entity in Home Assistant means 'do not show me this'."""
         def row(entity_id: str, hidden: bool) -> str:
             return self.ha._SEP.join(
-                [entity_id, "A", "Hall", "off", "", "", "", "Lamp", "", "", str(hidden)]
+                [entity_id, "A", "Hall", "off", "", "", "", "Lamp", "", "", "%", str(hidden)]
             )
 
         parsed = self.ha._parse_index("\n".join([row("light.a", False), row("light.b", True)]))
         self.assertEqual([e.entity_id for e in parsed], ["light.a"])
         self.assertEqual(parsed[0].device, "Lamp")
+        self.assertEqual(parsed[0].unit, "%")
 
     def test_a_whole_house_listing_is_one_line_per_device(self) -> None:
         """Four entities of one vacuum must not read as four devices."""
@@ -378,6 +393,32 @@ class TestHomeAssistant(unittest.TestCase):
         }
         self.assertNotIn("sensor.robot_battery", ids)
         self.assertNotIn("binary_sensor.kitchen_motion", ids)
+
+    def test_a_card_carries_what_its_device_reports(self) -> None:
+        self.assertEqual(
+            self._cards()["Robot"]["readings"], [{"name": "Battery", "value": "79 %"}]
+        )
+
+    def test_a_reading_with_nothing_to_say_is_left_out(self) -> None:
+        cls = type(self)
+        original = cls.index
+        cls.index = original + [
+            self.ha._Entity(
+                "sensor.robot_filter", "Robot Filter", "Utility", "unavailable", "",
+                "", "", "Robot", unit="%",
+            )
+        ]
+        try:
+            names = [r["name"] for r in self._cards()["Robot"]["readings"]]
+        finally:
+            cls.index = original
+        self.assertEqual(names, ["Battery"])
+
+    def test_a_device_with_nothing_to_control_gets_no_card(self) -> None:
+        """A bare sensor is not something the panel can switch."""
+        cards = self._cards()
+        self.assertNotIn("Temperature", cards)
+        self.assertNotIn("Motion", cards)
 
     def test_a_scene_is_a_button_not_a_switch(self) -> None:
         """Nothing turns a scene off again, so a switch would be a lie."""
