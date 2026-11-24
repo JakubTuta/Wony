@@ -16,10 +16,13 @@ _SVG_URL = "https://unpkg.com/lucide-static@{version}/icons/{name}.svg"
 _OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "icons", "Icons.mjs")
 
 ICONS = [
-    "arrow-big-up", "bell", "calendar", "check", "delete", "download", "heart", "lock",
-    "mail", "minus", "moon", "music", "pause", "play", "plus", "refresh-cw",
-    "rotate-cw", "settings", "shuffle", "skip-back", "skip-forward", "star",
-    "trash-2", "triangle-alert", "user-plus", "wifi-off", "x",
+    "arrow-big-up", "bell", "blinds", "bot", "calendar", "check", "chevron-down",
+    "circle-dot", "clapperboard", "delete", "download", "droplets", "fan", "heart",
+    "image-plus", "lightbulb", "list", "lock", "mail", "map", "minus", "moon",
+    "music", "pause", "play", "plug", "plus", "power", "refresh-cw", "rotate-cw",
+    "settings", "shield-check", "shuffle", "siren", "skip-back", "skip-forward",
+    "sliders-horizontal", "star", "thermometer", "trash-2", "triangle-alert", "tv",
+    "user-plus", "warehouse", "wifi-off", "workflow", "x",
 ]
 
 _HEADER = """\

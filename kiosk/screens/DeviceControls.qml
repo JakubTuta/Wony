@@ -3,102 +3,59 @@ import "../theme"
 import "../components"
 import "../lib/devices.mjs" as Devices
 
-// One physical thing in a room, drawn as the widget its kind calls for.
-Rectangle {
+// What one control can do, drawn as the widget its kind calls for: a level bar,
+// a thermostat, blinds buttons, a mode list. Shared by every row of the device
+// list. A control that is a plain switch has nothing here unless it is an extra,
+// which carries its own name and switch (`label`).
+Column {
     id: root
 
-    required property var device
+    required property var control
     property bool locksAllowed: false
+    property string label: ""
 
     // act(action, value, option) runs straight away; guardedAct(action, yesLabel)
     // goes through the confirm sheet when the device or the Settings switch asks.
     signal act(string action, var value, var option)
     signal guardedAct(string action, string yesLabel)
 
-    readonly property var control: device.primary
     readonly property string shape: Devices.shapeFor(control)
-    readonly property bool blocked: control.guarded && !locksAllowed
-    readonly property bool disabled: !control.available || blocked
-    readonly property bool usable: !disabled
+    readonly property bool usable: control.available && !(control.guarded && !locksAllowed)
+    readonly property bool hasSwitch: label !== "" && (shape === "toggle" || shape === "toggle-level")
+    readonly property bool hasBody: usable && shape !== "toggle" && shape !== "plain"
 
-    radius: Theme.radiusTile
-    color: Theme.surface
-    clip: true
+    spacing: 12
 
     Item {
-        id: header
-        x: 24
-        y: 22
-        width: parent.width - 48
-        height: Math.max(64, names.implicitHeight)
+        visible: root.label !== ""
+        width: parent.width
+        height: visible ? 64 : 0
 
-        Column {
-            id: names
-            width: parent.width - (toggle.visible ? toggle.width + 12 : 0)
-            spacing: 4
-
-            Row {
-                width: parent.width
-                spacing: 6
-
-                Icon {
-                    visible: root.control.guarded
-                    anchors.verticalCenter: parent.verticalCenter
-                    name: "lock"
-                    size: 16
-                    color: Theme.muted
-                }
-                Txt {
-                    width: parent.width - (root.control.guarded ? 22 : 0)
-                    text: root.device.name
-                    elide: Text.ElideRight
-                    font.pixelSize: 26
-                    font.weight: Font.Bold
-                }
-            }
-            Txt {
-                width: parent.width
-                elide: Text.ElideRight
-                color: root.control.on ? Theme.accent : Theme.muted
-                text: root.blocked ? "Locked off in Settings"
-                    : root.disabled ? "Unavailable"
-                    : Devices.stateText(root.control, root.shape)
-            }
+        Txt {
+            anchors.verticalCenter: parent.verticalCenter
+            width: parent.width - (root.hasSwitch ? 124 : 0)
+            text: root.label
+            elide: Text.ElideRight
+            color: Theme.muted
+            font.pixelSize: 20
+            font.weight: Font.DemiBold
         }
-
-        Pressable {
-            id: toggle
-            visible: root.shape === "toggle" || root.shape === "toggle-level"
+        ToggleSwitch {
+            visible: root.hasSwitch
             anchors.right: parent.right
-            width: 112
-            height: 64
-            radius: 32
-            color: root.control.on ? Theme.accent : Theme.off
-            opacity: root.disabled ? 0.4 : 1
+            checked: root.control.on
             enabled: root.usable
             onClicked: root.act("toggle", undefined, undefined)
-
-            Rectangle {
-                width: 52
-                height: 52
-                radius: 26
-                color: Theme.text
-                y: 6
-                x: root.control.on ? parent.width - width - 6 : 6
-                Behavior on x { NumberAnimation { duration: 150; easing.type: Easing.OutCubic } }
-            }
         }
     }
 
     Item {
         id: body
-        x: 24
-        anchors.bottom: parent.bottom
-        anchors.bottomMargin: 22
-        width: parent.width - 48
-        height: root.shape === "options" ? optionsFlow.implicitHeight
+        visible: root.hasBody
+        width: parent.width
+        height: !visible ? 0
+              : root.shape === "options" ? optionsFlow.implicitHeight
               : root.shape === "number" ? 48 : 72
-        visible: root.usable && root.shape !== "toggle" && root.shape !== "plain"
 
         // − bar +   (toggle-level and climate)
         Row {

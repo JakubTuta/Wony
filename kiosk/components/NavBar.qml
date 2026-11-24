@@ -12,7 +12,7 @@ Item {
 
     readonly property var tabs: [
         { id: "home", label: "Home" },
-        { id: "rooms", label: "Rooms" },
+        { id: "smarthome", label: "Smart home" },
         { id: "music", label: "Music" },
         { id: "macros", label: "Macros" }
     ]

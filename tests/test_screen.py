@@ -27,7 +27,7 @@ os.environ.setdefault("QT_QUICK_BACKEND", "software")
 HAVE_QT = importlib.util.find_spec("PySide6") is not None
 
 # Where things are on the 1280x800 panel. The layout is fixed, so a tap is a point.
-NAV = {"home": (150, 740), "rooms": (450, 740), "music": (750, 740), "macros": (1050, 740)}
+NAV = {"home": (150, 740), "smarthome": (450, 740), "music": (750, 740), "macros": (1050, 740)}
 GEAR = (1126, 48)
 BELL = (1208, 48)
 SETTINGS_ACCOUNTS = (240, 132)
@@ -42,6 +42,19 @@ CONFIRM_YES = (796, 474)
 SLEEP_NOW = (640, 627)
 EDIT = (1037, 48)
 ADD_TILE = (170, 560)
+# Smart home. The map picture is 800x600, so it sits in the middle of the panel
+# with room beside it: 645 wide on the map, 485 high.
+CHOOSE_A_PICTURE = (640, 606)
+FIRST_PICTURE = (640, 394)
+LIST_TAB = (260, 132)
+EDIT_MAP = (1183, 132)
+REMOVE_MAP = (1057, 132)
+TRAY_FIRST = (1068, 345)
+MAP_SPOT_WHILE_EDITING = (300, 300)
+LAMP_ON_THE_MAP = (488, 300)
+MAP_CENTRE = (640, 422)
+FIRST_ROW = (600, 264)
+LEVEL_PLUS = (1184, 348)
 
 # Not QML problems: the offscreen platform has no system font directory.
 _HARMLESS = ("Cannot find font directory", "Note that Qt no longer ships fonts")
@@ -85,6 +98,7 @@ class TestPanel(unittest.TestCase):
         self.messages.clear()
         self.state["posted"].clear()
         self.state["tiles"] = list(screen_fixture.DEFAULT_TILES)
+        self.state["map"] = None
         self.state["seen"].clear()
 
         self.engine = QQmlApplicationEngine()
@@ -142,7 +156,7 @@ class TestPanel(unittest.TestCase):
         self.assertEqual(self.qml_problems(), [])
 
     def test_every_tab_and_sheet_opens_without_a_qml_warning(self) -> None:
-        for name in ("rooms", "music", "macros", "home"):
+        for name in ("smarthome", "music", "macros", "home"):
             self.tap(NAV[name], 700)
 
         self.tap(EDIT)
@@ -218,7 +232,7 @@ class TestPanel(unittest.TestCase):
         """Home as it is before anyone has arranged it. The panel is already up,
         so leave and come back: Home reads the saved layout when it opens."""
         self.state["tiles"] = None
-        self.tap(NAV["rooms"], 700)
+        self.tap(NAV["smarthome"], 700)
         self.tap(NAV["home"], 900)
 
     def test_an_unarranged_home_shows_a_starter_set_and_does_not_save_it(self) -> None:
@@ -243,6 +257,106 @@ class TestPanel(unittest.TestCase):
         self.pump_until(lambda: self.state["tiles"], "nothing was saved")
         self.assertEqual(len(self.state["tiles"]), 7)
         self.assertEqual(self.state["tiles"][0], "device:light.lamp")
+
+
+    # ── Smart home ───────────────────────────────────────────────────────
+
+    def smart_home(self, placements=None, tab: str = "") -> None:
+        """Open the Smart home tab with a map that already has this picture and
+        these devices on it, or with no map when `placements` is None."""
+        self.state["map"] = None if placements is None else {
+            # A new URL each time, because Qt keeps fetched pictures by URL.
+            "image": {"url": f"/api/devices/map/image?v={time.time_ns()}", "width": 800, "height": 600},
+            "placements": placements,
+        }
+        self.tap(NAV["smarthome"], 900)
+        if tab:
+            self.tap(tab, 700)
+
+    def swipe_up(self) -> None:
+        from PySide6.QtCore import QPoint, Qt
+        from PySide6.QtTest import QTest
+
+        start, end = (600, 600), (600, 200)
+        QTest.mousePress(self.window, Qt.LeftButton, Qt.NoModifier, QPoint(*start))
+        for step in range(1, 13):
+            QTest.mouseMove(self.window, QPoint(start[0], start[1] + (end[1] - start[1]) * step // 12))
+            self.pump(16)
+        QTest.mouseRelease(self.window, Qt.LeftButton, Qt.NoModifier, QPoint(*end))
+        self.pump(900)
+
+    def test_the_map_explains_itself_and_a_chosen_picture_becomes_the_map(self) -> None:
+        self.smart_home()
+        self.tap(CHOOSE_A_PICTURE, 900)
+        self.tap(FIRST_PICTURE, 1500)
+        self.assertEqual(self.state["posted"], [("import", {"id": "plan"})])
+        self.pump_until(
+            lambda: "/api/devices/map/image" in self.state["seen"], "the picture was never fetched",
+        )
+        self.assertEqual(self.qml_problems(), [])
+
+    def test_a_device_is_placed_by_tapping_it_and_then_the_map(self) -> None:
+        """A picture with nothing on it opens ready to place devices."""
+        self.smart_home([])
+        self.tap(TRAY_FIRST)
+        self.tap(MAP_SPOT_WHILE_EDITING, 900)
+        self.pump_until(
+            lambda: self.state["map"]["placements"], "the placement was never saved",
+        )
+        (placed,) = self.state["map"]["placements"]
+        self.assertEqual(placed["entity_id"], "light.lamp")
+        self.assertAlmostEqual(placed["x"], 0.2645, delta=0.03)
+        self.assertAlmostEqual(placed["y"], 0.2479, delta=0.03)
+        self.assertEqual(self.qml_problems(), [])
+
+    def test_tapping_a_device_on_the_map_switches_it(self) -> None:
+        self.smart_home([{"entity_id": "light.lamp", "x": 0.2645, "y": 0.2479}])
+        self.tap(LAMP_ON_THE_MAP)
+        self.pump_until(lambda: self.state["posted"], "the tap did nothing")
+        self.assertEqual(self.state["posted"][0], ("control", {"entity_id": "light.lamp", "action": "toggle"}))
+
+    def test_a_lock_on_the_map_asks_before_it_moves(self) -> None:
+        self.smart_home([{"entity_id": "lock.front", "x": 0.5, "y": 0.5}])
+        self.tap(MAP_CENTRE)
+        self.assertEqual(self.state["posted"], [], "the lock moved without being confirmed")
+        self.tap(CONFIRM_YES)
+        self.pump_until(lambda: self.state["posted"], "confirming did nothing")
+        self.assertEqual(self.state["posted"][0], ("control", {"entity_id": "lock.front", "action": "unlock"}))
+
+    def test_a_device_home_assistant_forgot_does_not_break_the_map(self) -> None:
+        self.smart_home([{"entity_id": "light.gone", "x": 0.5, "y": 0.5}])
+        self.tap(MAP_CENTRE)
+        self.assertEqual(self.state["posted"], [])
+        self.assertEqual(self.qml_problems(), [])
+
+    def test_removing_the_map_asks_first_and_goes_back_to_the_start(self) -> None:
+        self.smart_home([{"entity_id": "light.lamp", "x": 0.5, "y": 0.5}])
+        self.tap(EDIT_MAP)
+        self.tap(REMOVE_MAP)
+        self.assertIsNotNone(self.state["map"], "the map went without being confirmed")
+        self.tap(CONFIRM_YES, 900)
+        self.assertIsNone(self.state["map"])
+        self.assertEqual(self.qml_problems(), [])
+
+    def test_the_list_opens_a_device_for_its_controls(self) -> None:
+        self.smart_home(None, LIST_TAB)
+        self.tap(FIRST_ROW, 700)
+        self.tap(LEVEL_PLUS)
+        self.pump_until(lambda: self.state["posted"], "the brightness never changed")
+        self.assertEqual(
+            self.state["posted"][0], ("control", {"entity_id": "light.lamp", "action": "on", "value": 80}),
+        )
+
+    def test_every_kind_of_device_opens_in_the_list_without_a_qml_warning(self) -> None:
+        self.smart_home(None, LIST_TAB)
+        for y in (264, 372, 480, 588):  # lamp, blinds, thermostat, vacuum
+            self.tap((600, y), 600)
+            self.tap((600, y), 400)
+        self.swipe_up()
+        for y in (232, 340, 448, 608):  # door, doorbell, mode list, number
+            self.tap((600, y), 600)
+            self.tap((600, y), 400)
+        self.assertEqual(self.qml_problems(), [])
 
 
 class TestFindingThePanel(unittest.TestCase):

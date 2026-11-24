@@ -102,6 +102,43 @@ QtObject {
         })
     }
 
+    // The Smart home map: { image: { url, width, height } | null, placements }.
+    // done({ data, error })
+    function fetchHomeMap(done) {
+        request("GET", "/devices/map", undefined, function (status, data) {
+            done(status === 200 ? { data: data, error: null } : { data: null, error: _detail(status, data) })
+        })
+    }
+
+    // Pictures on this device that could become the map. done({ pictures, error })
+    function fetchMapPictures(done) {
+        request("GET", "/devices/map/sources", undefined, function (status, data) {
+            done(status === 200 && data
+                ? { pictures: data.pictures, error: null }
+                : { pictures: [], error: _detail(status, data) })
+        })
+    }
+
+    // Takes an id from fetchMapPictures, never a path. done({ data, error })
+    function importMapPicture(id, done) {
+        request("POST", "/devices/map/import", { id: id }, function (status, data) {
+            done(status === 200 ? { data: data, error: null } : { data: null, error: _detail(status, data) })
+        })
+    }
+
+    // done({ ok, error })
+    function saveMapPlacements(placements, done) {
+        request("PUT", "/devices/map/placements", { placements: placements }, function (status, data) {
+            done({ ok: status === 200, error: status === 200 ? null : _detail(status, data) })
+        })
+    }
+
+    function deleteHomeMap(done) {
+        request("DELETE", "/devices/map", undefined, function (status) {
+            done(status === 200)
+        })
+    }
+
     function fetchSleep(done) {
         request("GET", "/sleep", undefined, function (status, data) {
             done(status === 200 && data ? data : null)

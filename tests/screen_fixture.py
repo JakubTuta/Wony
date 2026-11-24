@@ -42,7 +42,10 @@ def _control(entity_id: str, name: str, domain: str, **extra: typing.Any) -> dic
 def _device(name: str, **control: typing.Any) -> dict:
     entity_id = control.pop("entity_id")
     domain = control.pop("domain")
-    return {"name": name, "primary": _control(entity_id, name, domain, **control), "extras": []}
+    extras = control.pop("extras", [])
+    readings = control.pop("readings", [])
+    return {"name": name, "primary": _control(entity_id, name, domain, **control),
+            "extras": extras, "readings": readings}
 
 
 def _devices() -> dict:
@@ -51,7 +54,9 @@ def _devices() -> dict:
         "areas": [
             {"name": "Living room", "devices": [
                 _device("Floor lamp", entity_id="light.lamp", domain="light", state="on", on=True,
-                        toggle=True, slider=True, level=70),
+                        toggle=True, slider=True, level=70,
+                        extras=[_control("switch.night", "Night mode", "switch", toggle=True)],
+                        readings=[{"name": "Power", "value": "9 W"}]),
                 _device("Blinds", entity_id="cover.blinds", domain="cover", state="open", on=True, level=100),
                 _device("Thermostat", entity_id="climate.main", domain="climate", state="heat", on=True,
                         target=21.5, current=20.5),
@@ -117,6 +122,23 @@ def _cover_png(size: int = 96) -> bytes:
     return signature + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
 
 
+def _plan_png(width: int = 800, height: int = 600) -> bytes:
+    """A floor plan of two rooms: walls on a dark floor, so a marker has something to sit on."""
+    wall, floor = bytes((95, 130, 134)), bytes((31, 67, 71))
+    solid = bytes([0]) + wall * width
+    middle = width // 2
+    open_row = bytes([0]) + wall + floor * (middle - 1) + wall + floor * (width - middle - 2) + wall
+    rows = b"".join(solid if y in (0, height // 2, height - 1) else open_row for y in range(height))
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        body = kind + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
+
+    signature = bytes([137]) + b"PNG" + bytes([13, 10, 26, 10])
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return signature + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
+
+
 class _LocalOnly:
     """The guard the real server has (helpers/local_only.py), so the panel is
     tested against it: a QML request that sent a foreign Origin would be refused
@@ -142,7 +164,15 @@ def build_fixture_app(origin: str = "") -> FastAPI:
     """`origin` is where this app is served, so the playing track can point at its own cover."""
     app = FastAPI()
     # posted: what the panel changed; seen: every path it asked for.
-    state: dict = {"tiles": list(DEFAULT_TILES), "posted": [], "seen": []}
+    state: dict = {
+        "tiles": list(DEFAULT_TILES), "posted": [], "seen": [],
+        # The Smart home map: None until a picture is chosen.
+        "map": None,
+        "pictures": [
+            {"id": "plan", "name": "floor-plan.png", "place": "Pictures", "size": 482_000},
+            {"id": "sketch", "name": "sketch-of-the-flat.jpg", "place": "USB", "size": 2_400_000},
+        ],
+    }
     app.state.fixture = state
 
     app.add_middleware(_LocalOnly, seen=state["seen"])
@@ -244,6 +274,39 @@ def build_fixture_app(origin: str = "") -> FastAPI:
     def control(body: dict) -> dict:
         state["posted"].append(("control", body))
         return {"ok": True, "text": "Done."}
+
+    @app.get("/api/devices/map")
+    def get_map() -> dict:
+        return state["map"] or {"image": None, "placements": []}
+
+    @app.get("/api/devices/map/image")
+    def map_image() -> Response:
+        return Response(_plan_png(), media_type="image/png")
+
+    @app.get("/api/devices/map/sources")
+    def map_sources() -> dict:
+        return {"pictures": state["pictures"]}
+
+    @app.post("/api/devices/map/import")
+    def import_map(body: dict) -> dict:
+        state["posted"].append(("import", body))
+        kept = state["map"]["placements"] if state["map"] else []
+        # A new URL each time, like the server's, because Qt keeps fetched pictures by URL.
+        state["map"] = {"image": {"url": f"/api/devices/map/image?v={time.time_ns()}", "width": 800, "height": 600},
+                        "placements": kept}
+        return state["map"]
+
+    @app.put("/api/devices/map/placements")
+    def put_placements(body: dict) -> dict:
+        state["posted"].append(("placements", body["placements"]))
+        state["map"]["placements"] = body["placements"]
+        return {"ok": True}
+
+    @app.delete("/api/devices/map")
+    def delete_map() -> dict:
+        state["posted"].append(("map-removed", None))
+        state["map"] = None
+        return {"ok": True}
 
     @app.get("/api/settings")
     def settings() -> dict:

@@ -8,7 +8,7 @@ import asyncio
 import json
 import typing
 
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -80,6 +80,26 @@ class DeviceControlRequest(BaseModel):
     # A slider position, or a named mode picked from the device's own options.
     value: typing.Optional[float] = None
     option: str = ""
+
+
+class MapPlacement(BaseModel):
+    entity_id: str
+    # Fractions of the floor plan, so they survive any screen size.
+    x: float
+    y: float
+
+
+class MapPlacementsRequest(BaseModel):
+    placements: typing.List[MapPlacement]
+
+
+class MapImportRequest(BaseModel):
+    id: str
+
+
+def _require_home_assistant() -> None:
+    if "home_assistant" not in Config.enabled_modules():
+        raise HTTPException(status_code=503, detail="Home Assistant is not enabled.")
 
 
 class KioskTilesRequest(BaseModel):
@@ -433,8 +453,7 @@ def build_app() -> FastAPI:
         control_home_device resolves a spoken name, which would toggle both
         lamps called 'Lamp'. The UI already knows which one was pressed.
         """
-        if "home_assistant" not in Config.enabled_modules():
-            raise HTTPException(status_code=503, detail="Home Assistant is not enabled.")
+        _require_home_assistant()
 
         from helpers.logger import logger
         from modules import home_assistant
@@ -452,6 +471,74 @@ def build_app() -> FastAPI:
 
         logger.log_function_response("control_device", text[:200], "[web]")
         return {"ok": ok, "text": text}
+
+    # The Smart home map: one floor plan, and where devices sit on it.
+
+    @app.get("/api/devices/map")
+    def get_device_map() -> typing.Dict[str, typing.Any]:
+        _require_home_assistant()
+        from helpers import home_map
+
+        return home_map.load()
+
+    @app.get("/api/devices/map/sources")
+    def get_device_map_sources() -> typing.Dict[str, typing.Any]:
+        """Pictures on this device that could become the map."""
+        _require_home_assistant()
+        from helpers import home_map
+
+        return {"pictures": home_map.sources()}
+
+    @app.post("/api/devices/map/import")
+    def import_device_map(req: MapImportRequest) -> typing.Dict[str, typing.Any]:
+        """Make one of the listed pictures the map. Takes an id from the list,
+        never a path: the API has no password."""
+        _require_home_assistant()
+        from helpers import home_map
+
+        try:
+            home_map.import_source(req.id)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        return home_map.load()
+
+    @app.get("/api/devices/map/image")
+    def get_device_map_image() -> Response:
+        _require_home_assistant()
+        from helpers import home_map
+
+        stored = home_map.image()
+        if stored is None:
+            raise HTTPException(status_code=404, detail="No map has been chosen.")
+        data, mime = stored
+        # The URL carries the picture's version, so a new picture is a new URL.
+        return Response(
+            data,
+            media_type=mime,
+            headers={
+                "Cache-Control": "private, max-age=31536000, immutable",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    @app.put("/api/devices/map/placements")
+    def put_device_map_placements(req: MapPlacementsRequest) -> typing.Dict[str, bool]:
+        _require_home_assistant()
+        from helpers import home_map
+
+        try:
+            home_map.save_placements([p.model_dump() for p in req.placements])
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        return {"ok": True}
+
+    @app.delete("/api/devices/map")
+    def delete_device_map() -> typing.Dict[str, bool]:
+        _require_home_assistant()
+        from helpers import home_map
+
+        home_map.delete()
+        return {"ok": True}
 
     @app.get("/api/notifications")
     def list_notifications(

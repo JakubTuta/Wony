@@ -18,6 +18,7 @@ MIN_DEBIAN_VERSION = 13
 
 # Everything `qml6 kiosk/Main.qml` and the sign-in browser need. Chromium opens
 # only while Google or Spotify asks the user to sign in (helpers/browser.py).
+# The image plugins are for WebP, the format the Smart home map is stored in.
 APT_PACKAGES = (
     "qml-qt6",
     "qml6-module-qtqml",
@@ -28,6 +29,7 @@ APT_PACKAGES = (
     "qml6-module-qtquick-shapes",
     "qml6-module-qtwebsockets",
     "qt6-wayland",
+    "qt6-image-formats-plugins",
     "labwc",
     "wlopm",
     "wvkbd",

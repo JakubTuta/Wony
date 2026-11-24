@@ -67,8 +67,8 @@ Item {
         }
         Loader {
             anchors.fill: parent
-            active: shell.tab === "rooms"
-            source: "screens/Rooms.qml"
+            active: shell.tab === "smarthome"
+            source: "screens/SmartHome.qml"
         }
         Loader {
             anchors.fill: parent

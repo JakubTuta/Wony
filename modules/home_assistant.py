@@ -45,10 +45,11 @@ _INDEX_TEMPLATE = (
     "{{ device_attr(s.entity_id, 'name') or '' }}\x1f"
     "{{ s.attributes.get('temperature', '') }}\x1f"
     "{{ s.attributes.get('current_temperature', '') }}\x1f"
+    "{{ s.attributes.get('unit_of_measurement') or '' }}\x1f"
     "{{ is_hidden_entity(s.entity_id) }}\n{% endfor %}"
 )
 # The last field is the hidden flag, which is dropped rather than stored.
-_INDEX_FIELDS = 11
+_INDEX_FIELDS = 12
 
 # Service calls block until Home Assistant has run the handler; the default
 # 8s read timeout would report failure for a command that actually landed.
@@ -202,6 +203,9 @@ _OFF_STATES = {
 # a scene's when it was last applied. Neither means the thing is on now.
 _STATELESS_DOMAINS = {"button", "input_button", "scene"}
 
+# A sensor in one of these states has nothing to report.
+_NO_READING = {"", "unavailable", "unknown", "none"}
+
 # Set to a bare number, with a range only the device knows.
 _NUMBER_DOMAINS = {"number", "input_number"}
 
@@ -227,6 +231,8 @@ class _Entity:
     # every other domain — Home Assistant only puts these on thermostats.
     target: str = ""
     current: str = ""
+    # What a sensor's number is in ("%", "°C"); empty for everything else.
+    unit: str = ""
 
     @property
     def domain(self) -> str:
@@ -242,6 +248,10 @@ class _Entity:
         if self.device and self.name.startswith(prefix):
             return self.name[len(prefix):]
         return self.name
+
+    def reading(self) -> str:
+        """The state as a person reads it: '87 %', not '87'."""
+        return f"{self.state} {self.unit}".strip()
 
     def level_percent(self) -> typing.Optional[int]:
         try:
@@ -680,16 +690,23 @@ def snapshot() -> typing.Dict[str, typing.Any]:
 
     One card per physical device, not per entity: a robot vacuum is a vacuum
     with a suction setting and three buttons, not six unrelated switches. What
-    it reports — battery, filter life, error text — is not here at all; the
-    panel is for changing things, and asking is what the listing job is for.
+    it reports — battery, filter life, error text — rides along as readings,
+    but a device with nothing to control gets no card at all.
     """
     entities = _index_or_fail("home_assistant_snapshot")
-    controllable = [e for e in entities if e.domain in _CONTROLLABLE]
 
     by_area: typing.Dict[str, typing.List[typing.Dict[str, typing.Any]]] = {}
-    for members in _by_device(controllable).values():
+    for group in _by_device(entities).values():
+        members = [e for e in group if e.domain in _CONTROLLABLE]
+        if not members:
+            continue
         primary = _primary(members)
         extras = [e for e in members if e is not primary]
+        readings = [
+            {"name": e.short_name(), "value": e.reading()}
+            for e in group
+            if e.domain not in _CONTROLLABLE and e.state.lower() not in _NO_READING
+        ]
         # Momentary buttons after the settings they belong with.
         extras.sort(key=lambda e: (e.domain in _STATELESS_DOMAINS, e.short_name()))
 
@@ -708,6 +725,7 @@ def snapshot() -> typing.Dict[str, typing.Any]:
                 "name": primary.name,
                 "primary": main,
                 "extras": rest,
+                "readings": readings,
             }
         )
 
@@ -851,10 +869,23 @@ def _service_for(entity: _Entity, action: str) -> str:
     if action == "toggle":
         # Vacuums, mowers and water heaters have no toggle service, but the
         # panel's switch still has to mean something.
-        return actions.get("off" if _is_on(entity) else "on", "")
+        return actions.get(_toggle_verb(entity), "")
     if _SERVICE_NAME.match(action) and f"{entity.domain}.{action}" in _known_services():
         return action
     return ""
+
+
+def _toggle_verb(entity: _Entity) -> str:
+    """The verb that undoes what the device is doing now."""
+    state = entity.state.lower()
+    # A lock counts as off while locked, but locking is its verb "on". Followed
+    # blindly, toggling a locked door locked it again and nothing happened.
+    if entity.domain == "lock":
+        return "unlock" if state == "locked" else "lock"
+    # Disarmed is not in _OFF_STATES, so by state alone it would be "on".
+    if entity.domain == "alarm_control_panel":
+        return "arm" if state == "disarmed" else "disarm"
+    return "off" if _is_on(entity) else "on"
 
 
 def _spelling(entity: _Entity, option: str) -> str:
@@ -1015,7 +1046,7 @@ def _detail_lines(
             if e.domain in _CONTROLLABLE
         )
         readings = [
-            f"{e.short_name()}: {e.state}" for e in rest if e.domain not in _CONTROLLABLE
+            f"{e.short_name()}: {e.reading()}" for e in rest if e.domain not in _CONTROLLABLE
         ]
         if readings:
             lines.append("  " + "; ".join(readings))

@@ -67,7 +67,7 @@ export function stateText(control, shape) {
 }
 
 // One tap's worth of action for a Home tile: a tile has room for one gesture.
-// Rooms cards use their own per-shape buttons instead.
+// The device list draws its own per-shape controls instead.
 export function primaryAction(control) {
     switch (control.domain) {
     case "cover":
@@ -120,4 +120,50 @@ export function findControl(panel, entityId) {
         }
     }
     return null
+}
+
+// The lucide icon for what a device is, so a row or a map marker reads at a glance.
+const ICONS = {
+    light: "lightbulb",
+    switch: "power",
+    input_boolean: "power",
+    cover: "blinds",
+    climate: "thermometer",
+    media_player: "tv",
+    remote: "tv",
+    lock: "lock",
+    alarm_control_panel: "shield-check",
+    fan: "fan",
+    vacuum: "bot",
+    lawn_mower: "bot",
+    scene: "clapperboard",
+    script: "workflow",
+    automation: "workflow",
+    siren: "siren",
+    humidifier: "droplets",
+    water_heater: "droplets",
+    valve: "droplets",
+    button: "circle-dot",
+    select: "sliders-horizontal",
+    input_select: "sliders-horizontal",
+    number: "sliders-horizontal",
+    input_number: "sliders-horizontal",
+}
+
+export function iconFor(control) {
+    // A garage door or gate is a cover, but a blind icon would be the wrong promise.
+    if (control.domain === "cover" && control.guarded) return "warehouse"
+    return ICONS[control.domain] ?? "plug"
+}
+
+// Shapes where one tap has an obvious meaning (primaryAction). A thermostat or a
+// mode list needs a choice, so those stay in the list.
+const ONE_TAP_SHAPES = ["toggle", "toggle-level", "press", "lock", "cover", "vacuum"]
+
+export function oneTap(control) {
+    return ONE_TAP_SHAPES.includes(shapeFor(control))
+}
+
+export function areaLabel(area) {
+    return area.name || "Other"
 }

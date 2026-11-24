@@ -85,7 +85,7 @@ see [Start at boot](#start-at-boot). Other ways to start:
 The panel has no chat and no microphone: you tap. (A text field in Settings
 opens Wony's own on-screen keyboard.) With [Telegram](#telegram--wony-on-your-phone)
 set up, your phone is the chat. Four tabs across the bottom: **Home**,
-**Rooms**, **Music**, **Macros**.
+**Smart home**, **Music**, **Macros**.
 
 **Home** is a grid of tiles you arrange yourself: tap **Edit**, then **+ Add
 tile** for anything not already placed, or the × on a tile to remove it. A
@@ -98,9 +98,22 @@ layout on the device itself.
 Next to the grid, a Now playing card and a Coming up list (your next timers,
 events and reminders) stay visible without a tap.
 
-**Rooms** lists your Home Assistant devices by room, one card each — a switch,
-a slider, Open/Stop/Close, a thermostat's ± , a lock, or a vacuum's Start/Dock
-— built from whatever Home Assistant reports.
+**Smart home** shows your Home Assistant devices two ways, and opens on **Map**:
+a picture of your home with your devices on it, where a tap switches one.
+**List** has every device by room; tap one to open its brightness, modes,
+Open/Stop/Close, thermostat buttons, lock or vacuum buttons, and what it reports,
+such as a battery level. Both are built from whatever Home Assistant reports.
+
+To make the map, tap **Choose a picture**. The panel has no file picker, so it
+lists the PNG, JPG and WebP files (up to 15 MB) it finds in the **Pictures**,
+**Downloads** and **Desktop** folders and on a USB stick the system has mounted.
+Put a floor plan, or a photo of one, in the Pictures folder first (create it with
+`mkdir ~/Pictures` if it is not there), for example from your computer with
+`scp plan.png <user>@<address of the Pi>:Pictures/`. Then tap a device in the
+list, tap where it is on the map, and press **Done** when you are finished.
+**Edit map** brings the list back to add or move devices, change the picture or
+remove the map. The map lives on this device only; it changes nothing in Home
+Assistant.
 
 **Music** is cover art, transport controls, volume and your playlists, wired
 to Spotify.
@@ -313,9 +326,9 @@ here.
 2. Paste it when setup asks, along with the address you open Home Assistant at.
    Setup checks both before saving them.
 
-The **Devices** tile then lists your devices by room, one card each, with its
-switch, slider and settings on it. Doors, garages and alarms are shown but stay
-locked until you turn on **Unlock doors and open the garage** in Settings.
+The **Smart home** tab then shows your devices as a map and a list. Doors,
+garages and alarms are shown but stay locked until you turn on **Unlock doors
+and open the garage** in Settings.
 
 ### Telegram — Wony on your phone
 
@@ -371,8 +384,9 @@ out if the device is short on it.
 
 ## Privacy
 
-Conversations, remembered facts, lists and reminders live in `wony.db` in this
-folder. The panel has no button to clear it. To start clean, stop Wony and delete
+Conversations, remembered facts, lists, reminders and the Smart home map (the
+picture, shrunk and stripped of its camera data and location, and where your
+devices sit on it) live in `wony.db` in this folder. The panel has no button to clear it. To start clean, stop Wony and delete
 `wony.db`, `cache.json` (the Spotify sign-in) and the files in `logs/`; they are
 made again on the next start. Your API keys and Google sign-ins are separate:
 delete those by hand (`.env`, `credentials/`).
@@ -420,6 +434,7 @@ The same checklist is there when you type "check setup" in `./wony.sh text`.
 | The panel says "Starting Wony…" and stays  | The assistant is not running: `systemctl --user status wony`           |
 | "No AI service is set up yet"              | Add a key with `./wony.sh setup configure`, then try again             |
 | The screen stays lit after Sleep           | `sudo apt install wlopm`, then check with `./wony.sh doctor`           |
+| The map says it could not show the picture | `./wony.sh doctor` names the missing package (`qt6-image-formats-plugins`) |
 | Nothing happens after a reboot             | Run `./wony.sh autostart install` again                                |
 | The panel never appears at boot            | `sudo systemctl status wony-panel` and `journalctl -u wony-panel -b`   |
 | The display is the wrong way up            | Set it in Raspberry Pi Screen Configuration, then reboot               |

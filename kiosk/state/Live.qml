@@ -1,7 +1,7 @@
 pragma Singleton
 import QtQuick
 
-// One poll per live panel, shared by the header, Home, Rooms, Music and
+// One poll per live panel, shared by the header, Home, Smart home, Music and
 // Macros, so two screens never poll the same data side by side.
 QtObject {
     id: live

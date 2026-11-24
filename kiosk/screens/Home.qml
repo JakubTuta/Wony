@@ -101,17 +101,7 @@ Item {
             Ui.toast(action.text)
             break
         case "device":
-            var go = function () {
-                Api.controlDevice(action.entityId, action.action, undefined, undefined, function (r) {
-                    Live.devices.refresh()
-                    if (action.confirm)
-                        Ui.toast(r.text || action.name + " " + action.action + ".")
-                })
-            }
-            if (action.confirm)
-                Ui.confirm({ title: action.confirm.title, sig: action.confirm.sig, yesLabel: action.confirm.yesLabel, onConfirm: go })
-            else
-                go()
+            DeviceActions.tap(action)
             break
         case "timer-start":
             Api.invokeJob("add_reminder", { when: "in " + action.minutes + " minutes", text: action.text }, function () {
