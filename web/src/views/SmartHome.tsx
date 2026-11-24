@@ -41,10 +41,8 @@ function SmartHomeBody({ mode }: { mode: string | null }) {
     });
   }, []);
 
-  // With no mode in the address, open on the map once there is one to open.
-  const known = map !== null || mapError !== null;
-  const view: Mode | null =
-    mode === 'list' || mode === 'map' ? mode : known ? (map?.image ? 'map' : 'list') : null;
+  // The map is the main view: with no image yet it shows how to make one.
+  const view: Mode = mode === 'list' ? 'list' : 'map';
 
   const onPlacements = (placements: MapPlacement[]) =>
     setMap((prev) => (prev ? { ...prev, placements } : prev));

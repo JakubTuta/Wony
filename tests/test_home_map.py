@@ -106,6 +106,14 @@ class TestHomeMapEndpoints(unittest.TestCase):
         image = self._upload(_png(3000, 1000)).json()["image"]
         self.assertEqual((image["width"], image["height"]), (2400, 800))
 
+    def test_a_huge_jpeg_is_shrunk_to_the_same_size_as_any_other(self) -> None:
+        """A JPEG may decode at reduced size to save memory; the stored size
+        must still be that of the picture the user chose, scaled to fit."""
+        big = io.BytesIO()
+        Image.new("RGB", (4800, 4800), "white").save(big, "JPEG")
+        image = self._upload(big.getvalue()).json()["image"]
+        self.assertEqual((image["width"], image["height"]), (2400, 2400))
+
     def test_a_phone_photo_is_turned_upright_and_loses_its_exif(self) -> None:
         """Orientation 6 is a sideways picture plus a rotate flag; the GPS and
         make/model in the same block must not be kept."""

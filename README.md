@@ -341,12 +341,12 @@ open"_, _"start the vacuum"_, _"turn all the lights off"_. A room or a device ty
 has to be named before Wony will change a whole set of things at once. Locks,
 alarms and the garage stay refused until you allow them.
 
-The **Smart home** page shows the same devices without asking. **List** groups
-them by room; open a device for its brightness, modes and what it reports, such
-as a battery level. **Map** is a picture of your home with your devices on it, and
-a tap switches one:
+The **Smart home** page shows the same devices without asking, and opens on
+**Map**: a picture of your home with your devices on it, where a tap switches
+one. **List** groups them by room; open a device for its brightness, modes and
+what it reports, such as a battery level. To make the map:
 
-1. Open **Map** and drop in a floor plan, or a photo of one. A screenshot or a
+1. On **Map**, drop in a floor plan, or a photo of one. A screenshot or a
    photo of a sketch works.
 2. Drag each device onto the picture. On a touch screen, tap the device in the
    list first, then tap the map.

@@ -37,6 +37,9 @@ def save_image(data: bytes) -> None:
         with Image.open(io.BytesIO(data), formats=_FORMATS) as source:
             if source.width * source.height > _MAX_PIXELS:
                 raise ValueError("That image is too large. Try a smaller picture.")
+            # A big JPEG can decode at half or quarter size, which on a Pi is the
+            # difference between seconds and running out of memory.
+            source.draft(None, (_MAX_EDGE, _MAX_EDGE))
             source.load()
             # Phones store a sideways picture plus a rotation flag.
             picture = ImageOps.exif_transpose(source)
